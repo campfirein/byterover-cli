@@ -24,7 +24,7 @@ class TestableSettingsSet extends SettingsSet {
     })
   }
 
-  protected override async writeSetting(key: string, value: unknown) {
+  protected override async writeSetting(key: string, value: boolean | number) {
     return super.writeSetting(key, value, {
       maxRetries: 1,
       retryDelayMs: 0,

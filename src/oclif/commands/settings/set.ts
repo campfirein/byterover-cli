@@ -114,7 +114,7 @@ export default class SettingsSet extends Command {
 
   protected async writeSetting(
     key: string,
-    value: unknown,
+    value: boolean | number,
     options?: DaemonClientOptions,
   ): Promise<SettingsSetResponse> {
     return withDaemonRetry<SettingsSetResponse>(
