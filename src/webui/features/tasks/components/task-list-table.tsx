@@ -10,7 +10,7 @@ import {
 } from '@campfirein/byterover-packages/components/table'
 import {Tooltip, TooltipContent, TooltipTrigger} from '@campfirein/byterover-packages/components/tooltip'
 import {cn} from '@campfirein/byterover-packages/lib/utils'
-import {CircleStop, Trash2} from 'lucide-react'
+import {CircleStop, LoaderCircle, Trash2} from 'lucide-react'
 
 import type {StatusFilter} from '../stores/task-store'
 import type {StoredTask} from '../types/stored-task'
@@ -213,7 +213,7 @@ function TaskRow({
         {actionKind === 'delete' ? (
           <DeleteRowAction onClick={() => onDelete(task.taskId)} />
         ) : (
-          <CancelRowAction disabled={cancelling} onClick={() => onCancel(task.taskId)} />
+          <CancelRowAction cancelling={cancelling} onClick={() => onCancel(task.taskId)} />
         )}
       </TableCell>
     </TableRow>
@@ -255,17 +255,17 @@ function DeleteRowAction({onClick}: {onClick: () => void}) {
   )
 }
 
-function CancelRowAction({disabled, onClick}: {disabled: boolean; onClick: () => void}) {
+function CancelRowAction({cancelling, onClick}: {cancelling: boolean; onClick: () => void}) {
   return (
     <Button
       aria-label="Cancel task"
-      disabled={disabled}
+      disabled={cancelling}
       onClick={onClick}
       size="icon-xs"
-      title="Cancel task"
+      title={cancelling ? 'Cancelling…' : 'Cancel task'}
       variant="ghost"
     >
-      <CircleStop className="size-3.5" />
+      {cancelling ? <LoaderCircle className="size-3.5 animate-spin" /> : <CircleStop className="size-3.5" />}
     </Button>
   )
 }

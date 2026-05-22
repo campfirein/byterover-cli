@@ -1,12 +1,9 @@
 import type {ComponentRef} from 'react'
 
-import {toast} from 'sonner'
-
 import type {StoredTask} from '../types/stored-task'
 
 import {TourTaskBanner, TourTaskContinueCta} from '../../onboarding/components/tour-task-banner'
 import {useOnboardingStore} from '../../onboarding/stores/onboarding-store'
-import {useCancelTask} from '../api/cancel-task'
 import {useGetTaskDetail} from '../api/get-task'
 import {useStickToBottom} from '../hooks/use-stick-to-bottom'
 import {useTickingNow} from '../hooks/use-ticking-now'
@@ -18,6 +15,8 @@ import {DetailHeader} from './task-detail-header'
 import {ErrorSection, InputSection, LiveStreamSection, NotFound, ResultSection} from './task-detail-sections'
 
 interface TaskDetailViewProps {
+  cancelling: boolean
+  onCancel: (taskId: string) => void
   taskId: string
 }
 
@@ -29,7 +28,7 @@ function hasRichDetail(task: StoredTask | undefined): boolean {
 }
 
 // eslint-disable-next-line complexity
-export function TaskDetailView({taskId}: TaskDetailViewProps) {
+export function TaskDetailView({cancelling, onCancel, taskId}: TaskDetailViewProps) {
   const storeTask = useTaskById(taskId)
   const isLiveInStore = storeTask !== undefined && isActiveStatus(storeTask.status)
   const needsFetch = !hasRichDetail(storeTask) && !isLiveInStore
@@ -43,14 +42,6 @@ export function TaskDetailView({taskId}: TaskDetailViewProps) {
 
   const tourTaskId = useOnboardingStore((s) => s.tourTaskId)
   const isTourTask = tourTaskId === taskId
-
-  const cancelMutation = useCancelTask()
-  const handleCancel = (id: string) => {
-    cancelMutation.mutate(
-      {taskId: id},
-      {onError: (err) => toast.error(err.message)},
-    )
-  }
 
   const lastReasoning = task?.reasoningContents?.at(-1)
   const {onScroll, ref: scrollRef} = useStickToBottom<ComponentRef<'div'>>(
@@ -91,7 +82,7 @@ export function TaskDetailView({taskId}: TaskDetailViewProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <DetailHeader cancelling={cancelMutation.isPending} now={now} onCancel={handleCancel} task={task} />
+      <DetailHeader cancelling={cancelling} now={now} onCancel={onCancel} task={task} />
       <div className="border-border/50 border-t" />
       <div className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto px-6 py-5" onScroll={onScroll} ref={scrollRef}>
         <TourTaskBanner task={task} />

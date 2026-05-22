@@ -1,7 +1,7 @@
 import {Button} from '@campfirein/byterover-packages/components/button'
 import {Tooltip, TooltipContent, TooltipTrigger} from '@campfirein/byterover-packages/components/tooltip'
 import {cn} from '@campfirein/byterover-packages/lib/utils'
-import {CircleStop} from 'lucide-react'
+import {CircleStop, LoaderCircle} from 'lucide-react'
 import {toast} from 'sonner'
 
 import type {StoredTask} from '../types/stored-task'
@@ -63,8 +63,8 @@ export function DetailHeader({cancelling, now, onCancel, task}: DetailHeaderProp
             size="xs"
             variant="outline"
           >
-            <CircleStop className="size-3" />
-            Cancel
+            {cancelling ? <LoaderCircle className="size-3 animate-spin" /> : <CircleStop className="size-3" />}
+            {cancelling ? 'Cancelling…' : 'Cancel'}
           </Button>
         )}
       </div>
