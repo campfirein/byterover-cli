@@ -61,6 +61,22 @@ export BRV_BRIDGE_PARLEY_PROFILE=codex                          # or kimi/openco
 export BRV_BRIDGE_AUTO_PROVISION=auto                           # accept first-contact peers
 export BRV_BRIDGE_MAX_CONCURRENT_PER_PROFILE=2                  # 2 concurrent in-flight prompts per profile
 
+# CROSS-MACHINE bridge: bind the daemon-integrated libp2p host on a
+# routable interface. Default is loopback-only — fine for local testing,
+# but a peer on another machine (LAN, Tailscale, VPN) cannot reach it
+# until you set this. Comma-separated multiaddrs.
+#
+# Tailscale-friendly: bind on 0.0.0.0 so any interface (incl. the
+# `100.x.x.x` Tailscale virtual NIC) accepts inbound.
+export BRV_BRIDGE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/60001
+# Or pin to a specific Tailscale-IP'd multiaddr:
+# export BRV_BRIDGE_LISTEN_ADDRS=/ip4/100.84.167.73/tcp/60001
+# Or multiple interfaces:
+# export BRV_BRIDGE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/60001,/ip6/::/tcp/60001
+#
+# This setting persists to <dataDir>/state/bridge-config.json on first
+# use, so subsequent daemon respawns inherit it without re-exporting.
+
 brv bridge listen      # keeps running; ctrl-C to stop
 ```
 

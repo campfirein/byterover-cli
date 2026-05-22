@@ -182,4 +182,67 @@ describe('BridgeConfigStore + resolveBridgeRuntimeConfig (post-merge hardening)'
   it('exports the canonical config filename so callers don\'t hand-roll the path', () => {
     expect(BRIDGE_CONFIG_FILE).to.equal('bridge-config.json')
   })
+
+  describe('listenAddrs — cross-machine bridge configurability', () => {
+    it('parses BRV_BRIDGE_LISTEN_ADDRS as comma-separated multiaddrs', () => {
+      const store = new BridgeConfigStore({stateDir})
+      const result = resolveBridgeRuntimeConfig({
+        cwd: () => '/cwd',
+        env: {BRV_BRIDGE_LISTEN_ADDRS: '/ip4/0.0.0.0/tcp/60001,/ip4/100.84.167.73/tcp/60001'},
+        log,
+        store,
+      })
+      expect(result.listenAddrs).to.deep.equal([
+        '/ip4/0.0.0.0/tcp/60001',
+        '/ip4/100.84.167.73/tcp/60001',
+      ])
+      // Persisted so daemon respawns inherit:
+      const onDisk = store.load()
+      expect(onDisk.listenAddrs).to.deep.equal([
+        '/ip4/0.0.0.0/tcp/60001',
+        '/ip4/100.84.167.73/tcp/60001',
+      ])
+    })
+
+    it('ignores empty / whitespace-only entries in the comma list', () => {
+      const store = new BridgeConfigStore({stateDir})
+      const result = resolveBridgeRuntimeConfig({
+        cwd: () => '/cwd',
+        env: {BRV_BRIDGE_LISTEN_ADDRS: '/ip4/0.0.0.0/tcp/60001, , /ip4/100.x/tcp/60001 ,'},
+        log,
+        store,
+      })
+      expect(result.listenAddrs).to.deep.equal([
+        '/ip4/0.0.0.0/tcp/60001',
+        '/ip4/100.x/tcp/60001',
+      ])
+    })
+
+    it('returns undefined when env + file are both empty (caller falls back to DEFAULT_BRIDGE_CONFIG)', () => {
+      const store = new BridgeConfigStore({stateDir})
+      const result = resolveBridgeRuntimeConfig({cwd: () => '/cwd', env: {}, log, store})
+      expect(result.listenAddrs).to.equal(undefined)
+    })
+
+    it('reads previously-persisted listenAddrs when env is absent (respawn recovery)', () => {
+      const store = new BridgeConfigStore({stateDir})
+      store.save({listenAddrs: ['/ip4/0.0.0.0/tcp/60001']})
+      const result = resolveBridgeRuntimeConfig({cwd: () => '/cwd', env: {}, log, store})
+      expect(result.listenAddrs).to.deep.equal(['/ip4/0.0.0.0/tcp/60001'])
+    })
+
+    it('env overrides file when both are present', () => {
+      const store = new BridgeConfigStore({stateDir})
+      store.save({listenAddrs: ['/ip4/127.0.0.1/tcp/0']})
+      const result = resolveBridgeRuntimeConfig({
+        cwd: () => '/cwd',
+        env: {BRV_BRIDGE_LISTEN_ADDRS: '/ip4/0.0.0.0/tcp/60001'},
+        log,
+        store,
+      })
+      expect(result.listenAddrs).to.deep.equal(['/ip4/0.0.0.0/tcp/60001'])
+      // File reflects the new env-supplied value for future respawns.
+      expect(store.load().listenAddrs).to.deep.equal(['/ip4/0.0.0.0/tcp/60001'])
+    })
+  })
 })

@@ -900,7 +900,29 @@ async function main(): Promise<void> {
         bridgeHostPromise = (async () => {
           await bridgeInstall.loadOrGenerate()
           await bridgeL2.loadOrGenerate()
-          const host = new Libp2pHost({config: DEFAULT_BRIDGE_CONFIG, identity: bridgeInstall})
+
+          // Resolve persisted bridge runtime config (env > file > default)
+          // BEFORE constructing the libp2p host — cross-machine deployments
+          // set `BRV_BRIDGE_LISTEN_ADDRS` so the daemon binds on a routable
+          // interface (e.g. `/ip4/0.0.0.0/tcp/60001` or a Tailscale-IP'd
+          // multiaddr) instead of the loopback-only default. Other resolved
+          // values (parley profile, auto-provision policy, etc.) are read
+          // again below for the parley-server wiring.
+          const bridgeConfigStore = new BridgeConfigStore({stateDir: join(getGlobalDataDir(), 'state')})
+          const bridgeRuntime = resolveBridgeRuntimeConfig({log, store: bridgeConfigStore})
+          // `listen_addrs` is the on-disk snake_case field per
+          // `BridgeConfig` (mirrors §6.5 on-disk JSON shape per the
+          // file-level comment in bridge-config.ts).
+          const bridgeListenConfig: typeof DEFAULT_BRIDGE_CONFIG =
+            bridgeRuntime.listenAddrs === undefined
+              ? DEFAULT_BRIDGE_CONFIG
+              // eslint-disable-next-line camelcase
+              : {...DEFAULT_BRIDGE_CONFIG, listen_addrs: [...bridgeRuntime.listenAddrs]}
+          if (bridgeRuntime.listenAddrs !== undefined) {
+            log(`Bridge listen_addrs: ${bridgeRuntime.listenAddrs.join(', ')}`)
+          }
+
+          const host = new Libp2pHost({config: bridgeListenConfig, identity: bridgeInstall})
           await host.start()
           // Register inbound handlers BEFORE returning so the host is
           // dial-ready in both directions by the time any caller uses it.
@@ -916,17 +938,9 @@ async function main(): Promise<void> {
           // `--l2-pub-key` on every invite).
           await registerIdentityServer({host, identity: bridgeInstall, l2Identity: bridgeL2})
 
-          // Internal-test hardening (2026-05-20) — resolve all
-          // BRV_BRIDGE_* settings through the persistent
-          // `<dataDir>/state/bridge-config.json` store so a daemon
-          // respawn that lost the env vars (e.g. when an unrelated
-          // CLI call auto-spawned the daemon without
-          // `BRV_BRIDGE_PARLEY_PROFILE` in scope) still recovers
-          // the previously-configured posture. Resolved values are
-          // env > file > built-in default; env-supplied values are
-          // persisted back so subsequent respawns inherit them.
-          const bridgeConfigStore = new BridgeConfigStore({stateDir: join(getGlobalDataDir(), 'state')})
-          const bridgeRuntime = resolveBridgeRuntimeConfig({log, store: bridgeConfigStore})
+          // `bridgeRuntime` was already resolved above (before host
+          // construction so that `BRV_BRIDGE_LISTEN_ADDRS` could
+          // override the loopback-only default).
 
           // Slice 9.4c — opt-in real ACP dispatch via the
           // `BRV_BRIDGE_PARLEY_PROFILE` env var (now via the

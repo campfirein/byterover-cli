@@ -28,6 +28,13 @@ export const BridgePersistedConfigSchema = z
   .object({
     autoProvision: z.enum(['auto', 'pinned-only', 'deny']).optional(),
     delegatePolicy: z.enum(['auto', 'prompt', 'deny']).optional(),
+    // libp2p listen multiaddrs the daemon-integrated bridge binds.
+    // DEFAULT_BRIDGE_CONFIG.listen_addrs is `['/ip4/127.0.0.1/tcp/0']`
+    // (loopback-only, ephemeral port). Cross-machine bridge needs an
+    // externally-routable address — operators set `BRV_BRIDGE_LISTEN_ADDRS`
+    // (comma-separated) to something like
+    // `/ip4/0.0.0.0/tcp/60001,/ip4/100.x.x.x/tcp/60001`.
+    listenAddrs: z.array(z.string().min(1)).min(1).optional(),
     maxConcurrentPerProfile: z.number().int().positive().optional(),
     parleyProfile: z.string().min(1).optional(),
     projectRoot: z.string().min(1).optional(),
@@ -80,6 +87,13 @@ export class BridgeConfigStore {
 export interface ResolvedBridgeRuntimeConfig {
   readonly autoProvision: 'auto' | 'deny' | 'pinned-only'
   readonly delegatePolicy: 'auto' | 'deny' | 'prompt'
+  /**
+   * Listen multiaddrs the daemon-integrated bridge will bind. When env or
+   * file don't supply this, `undefined` — caller falls back to
+   * `DEFAULT_BRIDGE_CONFIG.listen_addrs` (loopback-only). Cross-machine
+   * operators set `BRV_BRIDGE_LISTEN_ADDRS` (comma-separated multiaddrs).
+   */
+  readonly listenAddrs: readonly string[] | undefined
   readonly maxConcurrentPerProfile: number
   readonly parleyProfile: string | undefined
   readonly projectRoot: string
@@ -108,6 +122,11 @@ export function resolveBridgeRuntimeConfig(args: ResolveBridgeRuntimeConfigArgs)
     args.log(`[Daemon] invalid BRV_BRIDGE_MAX_CONCURRENT_PER_PROFILE="${raw}"; expected positive integer`),
   )
   const envProjectRoot = readStringEnv(env.BRV_BRIDGE_PROJECT_ROOT)
+  // Cross-machine bridge — operators set this to expose the
+  // daemon-integrated bridge on a routable interface
+  // (e.g. `/ip4/0.0.0.0/tcp/60001` or a Tailscale-IP'd multiaddr).
+  // Comma-separated for multi-interface binding.
+  const envListenAddrs = readCommaListEnv(env.BRV_BRIDGE_LISTEN_ADDRS)
 
   // env > file > default
   const resolvedParleyProfile = envParleyProfile ?? fileCfg.parleyProfile
@@ -115,6 +134,7 @@ export function resolveBridgeRuntimeConfig(args: ResolveBridgeRuntimeConfigArgs)
   const resolvedDelegatePolicy = envDelegatePolicy ?? fileCfg.delegatePolicy ?? 'prompt'
   const resolvedMaxConcurrent = envMaxConcurrent ?? fileCfg.maxConcurrentPerProfile ?? 1
   const resolvedProjectRoot = envProjectRoot ?? fileCfg.projectRoot ?? cwdFn()
+  const resolvedListenAddrs = envListenAddrs ?? fileCfg.listenAddrs
 
   // Persist env-supplied values (and any settled defaults that env
   // promoted) so a future daemon respawn without env vars sees the
@@ -124,6 +144,7 @@ export function resolveBridgeRuntimeConfig(args: ResolveBridgeRuntimeConfigArgs)
   const envSnapshot = {
     autoProvision: envAutoProvision,
     delegatePolicy: envDelegatePolicy,
+    listenAddrs: envListenAddrs,
     maxConcurrentPerProfile: envMaxConcurrent,
     parleyProfile: envParleyProfile,
     projectRoot: envProjectRoot,
@@ -140,6 +161,7 @@ export function resolveBridgeRuntimeConfig(args: ResolveBridgeRuntimeConfigArgs)
   return {
     autoProvision: resolvedAutoProvision,
     delegatePolicy: resolvedDelegatePolicy,
+    listenAddrs: resolvedListenAddrs,
     maxConcurrentPerProfile: resolvedMaxConcurrent,
     parleyProfile: resolvedParleyProfile,
     projectRoot: resolvedProjectRoot,
@@ -149,6 +171,7 @@ export function resolveBridgeRuntimeConfig(args: ResolveBridgeRuntimeConfigArgs)
 interface EnvSnapshot {
   readonly autoProvision: 'auto' | 'deny' | 'pinned-only' | undefined
   readonly delegatePolicy: 'auto' | 'deny' | 'prompt' | undefined
+  readonly listenAddrs: readonly string[] | undefined
   readonly maxConcurrentPerProfile: number | undefined
   readonly parleyProfile: string | undefined
   readonly projectRoot: string | undefined
@@ -159,6 +182,7 @@ function anyDefined(env: EnvSnapshot): boolean {
     env.parleyProfile !== undefined ||
     env.autoProvision !== undefined ||
     env.delegatePolicy !== undefined ||
+    env.listenAddrs !== undefined ||
     env.maxConcurrentPerProfile !== undefined ||
     env.projectRoot !== undefined
   )
@@ -181,6 +205,7 @@ function persistConfigIfChanged(args: {
   if (args.env.parleyProfile !== undefined) overlay.parleyProfile = args.env.parleyProfile
   if (args.env.autoProvision !== undefined) overlay.autoProvision = args.env.autoProvision
   if (args.env.delegatePolicy !== undefined) overlay.delegatePolicy = args.env.delegatePolicy
+  if (args.env.listenAddrs !== undefined) overlay.listenAddrs = [...args.env.listenAddrs]
   if (args.env.maxConcurrentPerProfile !== undefined) overlay.maxConcurrentPerProfile = args.env.maxConcurrentPerProfile
   if (args.env.projectRoot !== undefined) overlay.projectRoot = args.env.projectRoot
 
@@ -214,6 +239,16 @@ function readEnumEnv<T extends string>(
   if ((allowed as readonly string[]).includes(value)) return value as T
   onInvalid(value)
   return undefined
+}
+
+function readCommaListEnv(raw: string | undefined): readonly string[] | undefined {
+  const value = readStringEnv(raw)
+  if (value === undefined) return undefined
+  const parts = value
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+  return parts.length === 0 ? undefined : parts
 }
 
 function readPositiveIntEnv(raw: string | undefined, onInvalid: (raw: string) => void): number | undefined {
