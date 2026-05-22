@@ -70,7 +70,7 @@ export class SettingsHandler {
       async (data) => {
         try {
           await this.store.set(data.key, data.value)
-          return {ok: true, restartRequired: true}
+          return {ok: true, restartRequired: restartRequiredFor(data.key)}
         } catch (error) {
           return {error: errorToDTO(error, data.key, data.value), ok: false}
         }
@@ -82,13 +82,17 @@ export class SettingsHandler {
       async (data) => {
         try {
           await this.store.reset(data.key)
-          return {ok: true, restartRequired: true}
+          return {ok: true, restartRequired: restartRequiredFor(data.key)}
         } catch (error) {
           return {error: errorToDTO(error, data.key), ok: false}
         }
       },
     )
   }
+}
+
+function restartRequiredFor(key: string): boolean {
+  return findSettingDescriptor(key)?.restartRequired ?? true
 }
 
 function toItemDTO(item: SettingItem): SettingsItemDTO {
@@ -100,19 +104,22 @@ function toItemDTO(item: SettingItem): SettingsItemDTO {
   return descriptorToDTO(descriptor, item.current)
 }
 
-function descriptorToDTO(descriptor: SettingDescriptor, current: number): SettingsItemDTO {
+function descriptorToDTO(descriptor: SettingDescriptor, current: boolean | number): SettingsItemDTO {
   const dto: SettingsItemDTO = {
     current,
     default: descriptor.default,
     description: descriptor.description,
     key: descriptor.key,
-    max: descriptor.max,
-    min: descriptor.min,
-    restartRequired: true,
+    restartRequired: descriptor.restartRequired,
     type: descriptor.type,
   }
   if (descriptor.category !== undefined) dto.category = descriptor.category
-  if (descriptor.unit !== undefined) dto.unit = descriptor.unit
+  if (descriptor.type === 'integer') {
+    dto.min = descriptor.min
+    dto.max = descriptor.max
+    if (descriptor.unit !== undefined) dto.unit = descriptor.unit
+  }
+
   return dto
 }
 

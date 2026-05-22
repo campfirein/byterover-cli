@@ -112,7 +112,15 @@ export class FileSettingsStore implements ISettingsStore {
     const overrides = await this.readOverrides()
     const proposed = {...overrides, [key]: validatedValue}
 
-    const violations = this.validator.validateCoupling(proposed)
+    // `validateCoupling` only covers integer-keyed invariants today, so
+    // hand it the numeric subset; boolean overrides are passed through
+    // unchanged when persisted.
+    const numericProposed: Record<string, number> = {}
+    for (const [k, v] of Object.entries(proposed)) {
+      if (typeof v === 'number') numericProposed[k] = v
+    }
+
+    const violations = this.validator.validateCoupling(numericProposed)
     if (violations.length > 0) {
       throw new InvalidSettingValueError(key, value, violations[0].reason)
     }
@@ -124,7 +132,7 @@ export class FileSettingsStore implements ISettingsStore {
     return join(this.baseDir, SETTINGS_FILE)
   }
 
-  private async readOverrides(): Promise<Record<string, number>> {
+  private async readOverrides(): Promise<Record<string, boolean | number>> {
     const raw = await this.readRawValues()
     const {valid} = this.validator.partition(raw)
     return {...valid}

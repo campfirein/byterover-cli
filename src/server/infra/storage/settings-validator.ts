@@ -1,4 +1,8 @@
-import type {SettingDescriptor} from '../../core/domain/entities/settings.js'
+import type {
+  BooleanSettingDescriptor,
+  IntegerSettingDescriptor,
+  SettingDescriptor,
+} from '../../core/domain/entities/settings.js'
 
 import {findSettingDescriptor, SETTINGS_KEYS} from '../../core/domain/entities/settings.js'
 
@@ -26,7 +30,7 @@ export class InvalidSettingValueError extends Error {
 
 export type PartitionedSettings = {
   readonly invalid: ReadonlyArray<{readonly key: string; readonly reason: string; readonly value: unknown}>
-  readonly valid: Readonly<Record<string, number>>
+  readonly valid: Readonly<Record<string, boolean | number>>
 }
 
 export type CouplingViolation = {
@@ -52,7 +56,7 @@ export class SettingsValidator {
    * log a warning about.
    */
   public partition(record: Record<string, unknown>): PartitionedSettings {
-    const valid: Record<string, number> = {}
+    const valid: Record<string, boolean | number> = {}
     const invalid: Array<{key: string; reason: string; value: unknown}> = []
 
     for (const [key, value] of Object.entries(record)) {
@@ -78,7 +82,7 @@ export class SettingsValidator {
     // a violation demotes every key participating in the rule back to
     // its registered default; surfaced via `invalid` so the daemon
     // startup loader can log one warning per demoted key.
-    for (const violation of this.validateCoupling(valid)) {
+    for (const violation of this.validateCoupling(numericSubset(valid))) {
       for (const key of violation.keys) {
         if (key in valid) {
           invalid.push({key, reason: violation.reason, value: valid[key]})
@@ -92,9 +96,10 @@ export class SettingsValidator {
 
   /**
    * Validates a single key/value pair. Throws on unknown key or invalid value.
-   * Returns the coerced numeric value on success.
+   * Returns the coerced value on success (integer for integer descriptors,
+   * boolean for boolean descriptors).
    */
-  public validate(key: string, value: unknown): number {
+  public validate(key: string, value: unknown): boolean | number {
     const descriptor = this.validateKey(key)
     return this.validateAgainst(descriptor, value)
   }
@@ -131,25 +136,51 @@ export class SettingsValidator {
     return descriptor
   }
 
-  private validateAgainst(descriptor: SettingDescriptor, value: unknown): number {
-    if (typeof value !== 'number' || !Number.isInteger(value)) {
-      throw new InvalidSettingValueError(
-        descriptor.key,
-        value,
-        `expected integer, got ${describeType(value)}`,
-      )
-    }
-
-    if (value < descriptor.min || value > descriptor.max) {
-      throw new InvalidSettingValueError(
-        descriptor.key,
-        value,
-        `value ${value} is outside allowed range [${descriptor.min}, ${descriptor.max}]`,
-      )
-    }
-
-    return value
+  private validateAgainst(descriptor: SettingDescriptor, value: unknown): boolean | number {
+    if (descriptor.type === 'boolean') return validateBoolean(descriptor, value)
+    return validateInteger(descriptor, value)
   }
+}
+
+function validateInteger(descriptor: IntegerSettingDescriptor, value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new InvalidSettingValueError(
+      descriptor.key,
+      value,
+      `expected integer, got ${describeType(value)}`,
+    )
+  }
+
+  if (value < descriptor.min || value > descriptor.max) {
+    throw new InvalidSettingValueError(
+      descriptor.key,
+      value,
+      `value ${value} is outside allowed range [${descriptor.min}, ${descriptor.max}]`,
+    )
+  }
+
+  return value
+}
+
+function validateBoolean(descriptor: BooleanSettingDescriptor, value: unknown): boolean {
+  if (typeof value !== 'boolean') {
+    throw new InvalidSettingValueError(
+      descriptor.key,
+      value,
+      `expected boolean, got ${describeType(value)}`,
+    )
+  }
+
+  return value
+}
+
+function numericSubset(values: Readonly<Record<string, boolean | number>>): Record<string, number> {
+  const result: Record<string, number> = {}
+  for (const [key, value] of Object.entries(values)) {
+    if (typeof value === 'number') result[key] = value
+  }
+
+  return result
 }
 
 function describeType(value: unknown): string {

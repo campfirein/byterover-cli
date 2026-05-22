@@ -52,10 +52,10 @@ describe('FileSettingsStore', () => {
         'llm.iterationBudgetMs',
         'llm.requestTimeoutMs',
         'taskHistory.maxEntries',
+        'update.checkForUpdates',
       ])
       for (const item of items) {
         expect(item.current).to.equal(item.default)
-        expect(item.restartRequired).to.equal(true)
       }
     })
 

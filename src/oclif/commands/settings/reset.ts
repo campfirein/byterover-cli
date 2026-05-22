@@ -99,7 +99,8 @@ export default class SettingsReset extends Command {
   }
 }
 
-function renderValue(item: SettingsItemDTO, value: number): string {
+function renderValue(item: SettingsItemDTO, value: boolean | number): string {
+  if (typeof value === 'boolean') return value ? 'true' : 'false'
   if (item.unit === 'ms') return formatDuration(value)
   return formatCount(value)
 }

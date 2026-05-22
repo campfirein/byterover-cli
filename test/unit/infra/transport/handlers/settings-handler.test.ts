@@ -89,6 +89,7 @@ describe('SettingsHandler', () => {
         'llm.iterationBudgetMs',
         'llm.requestTimeoutMs',
         'taskHistory.maxEntries',
+        'update.checkForUpdates',
       ])
       const maxSizeItem = result.items.find((i) => i.key === 'agentPool.maxSize')
       expect(maxSizeItem?.current).to.equal(25)
