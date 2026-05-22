@@ -45,13 +45,16 @@ function makeToken(overrides: Partial<{accessToken: string; userId: string}> = {
 }
 
 function makeFakeAuthStateStore(initial?: AuthToken): IAuthStateStore & {
-  fire(oldToken: AuthToken | undefined, newToken: AuthToken | undefined): Promise<void>
+  fire(oldToken?: AuthToken, newToken?: AuthToken): Promise<void>
   readonly preCallbacks: BeforeAuthChangedCallback[]
 } {
   const preCallbacks: BeforeAuthChangedCallback[] = []
   const cached: AuthToken | undefined = initial
   return {
-    async fire(oldToken: AuthToken | undefined, newToken: AuthToken | undefined): Promise<void> {
+    // Optional params let callers omit either slot for anon-side
+    // transitions without triggering `unicorn/no-useless-undefined`
+    // autofix to strip the literal `undefined` we'd otherwise pass.
+    async fire(oldToken?: AuthToken, newToken?: AuthToken): Promise<void> {
       // Serial execution mirrors AuthStateStore.fireBeforeAuthChange.
       for (const cb of preCallbacks) {
         // eslint-disable-next-line no-await-in-loop

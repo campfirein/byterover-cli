@@ -136,7 +136,8 @@ describe('M4.2 wireAnalyticsHttpSender (integration)', () => {
 
     const result = await sender.send([makeRecord({id: 'a'}), makeRecord({id: 'b'})])
 
-    expect(result).to.deep.equal({failed: ['a', 'b'], succeeded: []})
+    // M4.5: 5xx now propagates `reason` so the M4.5 backoff can advance.
+    expect(result).to.deep.equal({failed: ['a', 'b'], reason: 'http_5xx', succeeded: []})
   })
 
   it('returns empty result without HTTP traffic for an empty batch', async () => {

@@ -162,6 +162,22 @@ async function seedPending(client: AnalyticsClient, count: number): Promise<void
   await flushMicrotasks()
 }
 
+// M4.5: hand-rolled sender that returns a tagged failure on demand.
+// Hoisted to module scope to satisfy unicorn/consistent-function-scoping.
+// `reason` is optional so the success-path callers can omit it
+// (the autofix would otherwise rewrite `(undefined)` to `()`).
+function makeSenderWithReason(reason?: 'http_4xx' | 'http_5xx' | 'network' | 'timeout'): IAnalyticsSender {
+  return {
+    async send(records) {
+      if (reason === undefined) {
+        return {failed: [], succeeded: records.map((r) => r.id)}
+      }
+
+      return {failed: records.map((r) => r.id), reason, succeeded: []}
+    },
+  }
+}
+
 describe('AnalyticsClient', () => {
   describe('disabled state (M4.4 semantic: track local-only)', () => {
     // Pre-M4.4 this test asserted "no-op when disabled" (no JSONL append,
@@ -1301,6 +1317,189 @@ describe('AnalyticsClient', () => {
         jsonlStore.records.every((r) => r.status === 'pending'),
         'records remain pending so the next enabled flush ships them cleanly',
       ).to.be.true
+    })
+  })
+
+  describe('M4.5 backoff policy feedback', () => {
+    type StubPolicy = {
+      consecutiveFailures: () => number
+      nextDelayMs: () => number
+      onFailure: ReturnType<typeof stub>
+      onSuccess: ReturnType<typeof stub>
+    }
+
+    function makePolicyStub(): StubPolicy {
+      return {
+        consecutiveFailures: () => 0,
+        nextDelayMs: () => 30_000,
+        onFailure: stub(),
+        onSuccess: stub(),
+      }
+    }
+
+    it('calls policy.onSuccess() when the batch fully succeeds', async () => {
+      const policy = makePolicyStub()
+      const client = new AnalyticsClient({
+        backoffPolicy: policy,
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        queue: new BoundedQueue(),
+        sender: makeSenderWithReason(),
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+      await seedPending(client, 2)
+      await client.flush()
+
+      expect(policy.onSuccess.calledOnce, 'success advances onSuccess once').to.be.true
+      expect(policy.onFailure.called).to.be.false
+    })
+
+    it('calls policy.onFailure() on http_5xx (transient → back off)', async () => {
+      const policy = makePolicyStub()
+      const client = new AnalyticsClient({
+        backoffPolicy: policy,
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        queue: new BoundedQueue(),
+        sender: makeSenderWithReason('http_5xx'),
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+      await seedPending(client, 1)
+      await client.flush()
+
+      expect(policy.onFailure.calledOnce).to.be.true
+      expect(policy.onSuccess.called).to.be.false
+    })
+
+    it('calls policy.onFailure() on timeout', async () => {
+      const policy = makePolicyStub()
+      const client = new AnalyticsClient({
+        backoffPolicy: policy,
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        queue: new BoundedQueue(),
+        sender: makeSenderWithReason('timeout'),
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+      await seedPending(client, 1)
+      await client.flush()
+
+      expect(policy.onFailure.calledOnce).to.be.true
+    })
+
+    it('calls policy.onFailure() on network failure', async () => {
+      const policy = makePolicyStub()
+      const client = new AnalyticsClient({
+        backoffPolicy: policy,
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        queue: new BoundedQueue(),
+        sender: makeSenderWithReason('network'),
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+      await seedPending(client, 1)
+      await client.flush()
+
+      expect(policy.onFailure.calledOnce).to.be.true
+    })
+
+    it('does NOT advance the policy on http_4xx (payload shape is wrong, not a backend health signal)', async () => {
+      const policy = makePolicyStub()
+      const client = new AnalyticsClient({
+        backoffPolicy: policy,
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        queue: new BoundedQueue(),
+        sender: makeSenderWithReason('http_4xx'),
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+      await seedPending(client, 1)
+      await client.flush()
+
+      expect(policy.onFailure.called, '4xx must NOT advance backoff').to.be.false
+      expect(policy.onSuccess.called, '4xx is not a success either').to.be.false
+    })
+
+    it('does NOT touch the policy when abort() fired during the flush (user-driven cancel, not a backend signal)', async () => {
+      const policy = makePolicyStub()
+      let releaseSend!: () => void
+      const sender: IAnalyticsSender = {
+        async send(records, _options) {
+          await new Promise<void>((resolve) => {
+            releaseSend = resolve
+          })
+          // Mimic the abort-classification path: all-failed with network.
+          return {failed: records.map((r) => r.id), reason: 'network', succeeded: []}
+        },
+      }
+      const client = new AnalyticsClient({
+        backoffPolicy: policy,
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        queue: new BoundedQueue(),
+        sender,
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+      await seedPending(client, 1)
+      const flushPromise = client.flush()
+      await flushMicrotasks()
+      client.abort()
+      releaseSend()
+      await flushPromise
+
+      expect(policy.onFailure.called, 'abort-driven failure must NOT poison the M4.6 reachability counter').to.be.false
+      expect(policy.onSuccess.called).to.be.false
+    })
+
+    it('works without a backoff policy wired (back-compat: dep is optional)', async () => {
+      // No backoffPolicy in deps — sender returns http_5xx — must not crash.
+      const client = new AnalyticsClient({
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        queue: new BoundedQueue(),
+        sender: makeSenderWithReason('http_5xx'),
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+      await seedPending(client, 1)
+      await client.flush()
+      // No assertion needed beyond "did not throw".
+    })
+
+    it('does NOT call onSuccess() on failed-without-reason (missing-deviceId / uncategorized failure)', async () => {
+      // Regression for review finding I1: prior code treated `reason === undefined`
+      // as success and called `onSuccess()`. The missing-deviceId path in
+      // `HttpAnalyticsSender` returns `{failed: ids, succeeded: [], reason: undefined}`
+      // — a "we never tried" outcome, NOT a clean ship. Resetting backoff
+      // here would wrongly clear the unreachable counter on a first-boot
+      // config bug. Should skip entirely.
+      const policy = makePolicyStub()
+      const sender: IAnalyticsSender = {
+        async send(records) {
+          // Mimic the missing-deviceId path: failed-with-no-reason.
+          return {failed: records.map((r) => r.id), succeeded: []}
+        },
+      }
+      const client = new AnalyticsClient({
+        backoffPolicy: policy,
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        queue: new BoundedQueue(),
+        sender,
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+      await seedPending(client, 1)
+      await client.flush()
+
+      expect(policy.onSuccess.called, 'failed-without-reason must NOT call onSuccess').to.be.false
+      expect(policy.onFailure.called, 'failed-without-reason must NOT call onFailure either').to.be.false
     })
   })
 })

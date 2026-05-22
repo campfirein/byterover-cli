@@ -8,14 +8,24 @@ export interface AnalyticsFlushSchedulerDeps {
    * crash the interval loop or shutdown sequence.
    */
   flush: () => Promise<unknown>
-  /** Polling interval for the time-based trigger. Defaults to 30s. */
-  intervalMs?: number
   /**
    * Lazy analytics-enabled gate. Re-checked on every trigger so a runtime
    * `brv analytics disable` (M1.4) immediately suspends scheduled flushes
    * without restarting the daemon.
    */
   isEnabled: () => boolean
+  /**
+   * M4.5: live next-tick delay in milliseconds. Read AFTER each tick
+   * settles, when the scheduler arms its `setTimeout` for the next
+   * tick — so the latest backoff state (advanced by the just-finished
+   * flush via `AnalyticsClient.runFlush`) takes effect immediately.
+   *
+   * Production wires this to `analyticsBackoffPolicy.nextDelayMs()`.
+   * Tests pass a literal (`() => 30_000`) or a closure over a mutable
+   * value to exercise dynamic intervals. Defaults to 30s so existing
+   * test fakes that omit the dep keep working.
+   */
+  nextIntervalMs?: () => number
   /**
    * Count of records pending shipment (JSONL `status='pending'` rows).
    * Used by the interval timer and `flushFinal()` to skip flushes when
@@ -53,12 +63,19 @@ export type FlushFinalOptions = {
  * Drives automatic flushes for the daemon-scoped analytics client.
  *
  * Two triggers (whichever fires first wins):
- *   - **Interval timer** (`intervalMs`, default 30s): every tick, if the
- *     queue is non-empty AND analytics is enabled, request a flush.
+ *   - **Periodic tick** (`nextIntervalMs()`, default 30s): each tick
+ *     re-arms via `setTimeout` AFTER the previous flush settles, reading
+ *     the delay live at arm-time. In production this is wired to
+ *     `AnalyticsBackoffPolicy.nextDelayMs()`, so a failing backend
+ *     stretches the gap to 60s → 2m → 5m (M4.5); on first success the
+ *     policy resets and the next tick is 30s again.
  *   - **Threshold notification** (`thresholdCount`, default 20): callers
- *     invoke `notifyPushed()` after enqueuing a record; if the queue is
- *     at or above the threshold, a flush is scheduled via `setImmediate`
- *     so `track()` stays synchronous from the consumer's view.
+ *     invoke `notifyPushed()` after enqueuing a record; if the queue
+ *     has grown by `thresholdCount` since the last threshold fire, a
+ *     flush is scheduled via `setImmediate` so `track()` stays
+ *     synchronous from the consumer's view. The threshold path is
+ *     intentionally NOT throttled by backoff — single-flight rate-limits
+ *     it, and gating the 20-event burst would defeat its purpose.
  *
  * Single-flight: while a flush is in flight, any new trigger is dropped
  * (NOT queued). The in-flight promise is exposed via `flushFinal()` so
@@ -72,13 +89,19 @@ export type FlushFinalOptions = {
  * `stop()` during shutdown (before `flushFinal()` so no new ticks fire
  * mid-shutdown).
  *
- * Errors from `flush()` are swallowed at this layer. M4.5's backoff
- * policy will react to the structured failure reason later; for M4.3
- * the scheduler just needs to keep ticking.
+ * Errors from `flush()` are swallowed at this layer. The M4.5 backoff
+ * policy reacts to the structured failure reason via
+ * `AnalyticsClient.runFlush`; the scheduler itself only needs the live
+ * `nextDelayMs()` value at each re-arm and otherwise keeps ticking.
  */
 export class AnalyticsFlushScheduler {
   private readonly deps: Required<AnalyticsFlushSchedulerDeps>
-  private intervalHandle: ReturnType<typeof setInterval> | undefined
+  // M4.5: handle of the most-recently armed `setTimeout` for the
+  // periodic tick. Each tick re-arms itself from `nextIntervalMs()`
+  // after the flush settles, so the backoff policy's latest state
+  // takes effect on the very next tick. `start()` is idempotent via
+  // this slot (a second start while running is a no-op).
+  private intervalHandle: ReturnType<typeof setTimeout> | undefined
   // Snapshot of `queueSize` at the last threshold fire. Together with
   // `thresholdCount` this gates `notifyPushed` on the DELTA since last
   // fire (queue depths 20/40/60/...) instead of the absolute size — the
@@ -89,12 +112,17 @@ export class AnalyticsFlushScheduler {
   // Single-flight slot. Any trigger that arrives while this is set is
   // dropped; `flushFinal()` awaits it so shutdown joins rather than races.
   private pendingFlush: Promise<void> | undefined
+  // M4.5: set true on `stop()` so a settling flush's `.finally` does
+  // NOT re-arm the next tick. Without this, calling `stop()` while a
+  // tick was in flight would still queue one more tick after the
+  // current one settled.
+  private stopped = false
 
   public constructor(deps: AnalyticsFlushSchedulerDeps) {
     this.deps = {
       flush: deps.flush,
-      intervalMs: deps.intervalMs ?? DEFAULT_INTERVAL_MS,
       isEnabled: deps.isEnabled,
+      nextIntervalMs: deps.nextIntervalMs ?? (() => DEFAULT_INTERVAL_MS),
       pendingCount: deps.pendingCount,
       queueSize: deps.queueSize,
       thresholdCount: deps.thresholdCount ?? DEFAULT_THRESHOLD_COUNT,
@@ -169,27 +197,45 @@ export class AnalyticsFlushScheduler {
   }
 
   /**
-   * Start the recurring interval timer. Idempotent: a second call while
-   * already running is a no-op (does NOT install a second timer).
+   * Start the recurring tick. Idempotent: a second call while already
+   * running is a no-op (the slot is occupied). M4.5: implemented as a
+   * `setTimeout` chain so each tick reads `nextIntervalMs()` at arm-time;
+   * the backoff policy's latest state takes effect on the very next tick.
    */
   public start(): void {
     if (this.intervalHandle !== undefined) return
-    this.intervalHandle = setInterval(() => {
-      // Interval ticks are fire-and-forget; tryFlush handles its own
-      // errors and the void prefix opts out of unhandled-rejection noise.
-      // eslint-disable-next-line no-void
-      void this.tryFlush()
-    }, this.deps.intervalMs)
+    this.stopped = false
+    this.armNextTick()
   }
 
   /**
-   * Stop the recurring timer. Idempotent. Does NOT cancel an in-flight
-   * flush — call `flushFinal()` for that.
+   * Stop the recurring tick. Idempotent. Does NOT cancel an in-flight
+   * flush — call `flushFinal()` for that. The `stopped` flag prevents
+   * a settling flush's `.finally` from arming one extra tick after stop.
    */
   public stop(): void {
+    this.stopped = true
     if (this.intervalHandle === undefined) return
-    clearInterval(this.intervalHandle)
+    clearTimeout(this.intervalHandle)
     this.intervalHandle = undefined
+  }
+
+  /**
+   * Arm the next periodic tick at `nextIntervalMs()` from now. Called
+   * by `start()` initially and by each tick's `.finally` after the
+   * flush settles. `stopped` guard short-circuits when the daemon is
+   * winding down so we don't keep firing post-stop().
+   */
+  private armNextTick(): void {
+    if (this.stopped) {
+      this.intervalHandle = undefined
+      return
+    }
+
+    this.intervalHandle = setTimeout(() => {
+      // eslint-disable-next-line no-void
+      void this.tryFlush().finally(() => this.armNextTick())
+    }, this.deps.nextIntervalMs())
   }
 
   /**

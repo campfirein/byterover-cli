@@ -146,7 +146,7 @@ describe('HttpAnalyticsSender', () => {
   })
 
   describe('failure mapping', () => {
-    it('returns all ids as failed when http client reports http_5xx', async () => {
+    it('returns all ids as failed when http client reports http_5xx (carries reason for M4.5 backoff)', async () => {
       const httpClient = makeCapturingHttpClient({ok: false, reason: 'http_5xx', status: 503})
       const sender = new HttpAnalyticsSender({
         authStateReader: makeAuthReader(),
@@ -159,10 +159,10 @@ describe('HttpAnalyticsSender', () => {
       const r2 = makeRecord({id: 'r2'})
       const result = await sender.send([r1, r2])
 
-      expect(result).to.deep.equal({failed: ['r1', 'r2'], succeeded: []})
+      expect(result).to.deep.equal({failed: ['r1', 'r2'], reason: 'http_5xx', succeeded: []})
     })
 
-    it('returns all ids as failed when http client reports timeout', async () => {
+    it('returns all ids as failed when http client reports timeout (carries reason)', async () => {
       const httpClient = makeCapturingHttpClient({ok: false, reason: 'timeout'})
       const sender = new HttpAnalyticsSender({
         authStateReader: makeAuthReader(),
@@ -173,10 +173,10 @@ describe('HttpAnalyticsSender', () => {
 
       const result = await sender.send([makeRecord({id: 'only'})])
 
-      expect(result).to.deep.equal({failed: ['only'], succeeded: []})
+      expect(result).to.deep.equal({failed: ['only'], reason: 'timeout', succeeded: []})
     })
 
-    it('returns all ids as failed when http client reports network failure', async () => {
+    it('returns all ids as failed when http client reports network failure (carries reason)', async () => {
       const httpClient = makeCapturingHttpClient({ok: false, reason: 'network'})
       const sender = new HttpAnalyticsSender({
         authStateReader: makeAuthReader(),
@@ -187,7 +187,36 @@ describe('HttpAnalyticsSender', () => {
 
       const result = await sender.send([makeRecord({id: 'only'})])
 
-      expect(result).to.deep.equal({failed: ['only'], succeeded: []})
+      expect(result).to.deep.equal({failed: ['only'], reason: 'network', succeeded: []})
+    })
+
+    it('returns http_4xx reason verbatim (caller uses this to decide NOT to advance backoff)', async () => {
+      const httpClient = makeCapturingHttpClient({ok: false, reason: 'http_4xx', status: 400})
+      const sender = new HttpAnalyticsSender({
+        authStateReader: makeAuthReader(),
+        globalConfigStore: makeStubConfigStore(),
+        httpClient,
+        userAgent: 'brv-cli/3.12.0',
+      })
+
+      const result = await sender.send([makeRecord({id: 'only'})])
+
+      expect(result).to.deep.equal({failed: ['only'], reason: 'http_4xx', succeeded: []})
+    })
+
+    it('does NOT set reason on a successful send (M4.5 caller treats absence as success)', async () => {
+      const httpClient = makeCapturingHttpClient({ok: true})
+      const sender = new HttpAnalyticsSender({
+        authStateReader: makeAuthReader(),
+        globalConfigStore: makeStubConfigStore(),
+        httpClient,
+        userAgent: 'brv-cli/3.12.0',
+      })
+
+      const result = await sender.send([makeRecord({id: 'r1'})])
+
+      expect(result).to.deep.equal({failed: [], succeeded: ['r1']})
+      expect(Object.hasOwn(result, 'reason'), 'reason key must be absent on success').to.equal(false)
     })
   })
 
@@ -214,7 +243,9 @@ describe('HttpAnalyticsSender', () => {
       }
 
       expect(threw, 'sender must NOT throw on collaborator failure').to.equal(false)
-      expect(result).to.deep.equal({failed: ['r1'], succeeded: []})
+      // M4.5: collaborator throws are tagged `network` so the M4.5
+      // backoff treats them as transient (caller will advance backoff).
+      expect(result).to.deep.equal({failed: ['r1'], reason: 'network', succeeded: []})
       expect(httpClient.calls).to.have.lengthOf(0)
     })
 

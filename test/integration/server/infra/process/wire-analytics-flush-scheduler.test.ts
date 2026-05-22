@@ -8,6 +8,7 @@ import type {IJsonlAnalyticsStore} from '../../../../../src/server/core/interfac
 import type {StoredAnalyticsRecord} from '../../../../../src/shared/analytics/stored-record.js'
 
 import {AnalyticsBatch} from '../../../../../src/server/core/domain/analytics/batch.js'
+import {AnalyticsBackoffPolicy} from '../../../../../src/server/infra/analytics/analytics-backoff-policy.js'
 import {wireAnalyticsFlushScheduler} from '../../../../../src/server/infra/process/wire-analytics-flush-scheduler.js'
 
 /**
@@ -107,9 +108,9 @@ describe('M4.3 wireAnalyticsFlushScheduler (integration)', () => {
     const client = makeFakeClient()
     const scheduler = wireAnalyticsFlushScheduler({
       analyticsClient: client,
-      intervalMs: 100,
       isEnabled: () => true,
       jsonlStore: makeJsonlStoreStub(5),
+      nextIntervalMs: () => 100,
       queue: makeQueueStub(5),
     })
 
@@ -124,9 +125,9 @@ describe('M4.3 wireAnalyticsFlushScheduler (integration)', () => {
     const client = makeFakeClient()
     const scheduler = wireAnalyticsFlushScheduler({
       analyticsClient: client,
-      intervalMs: 100,
       isEnabled: () => false,
       jsonlStore: makeJsonlStoreStub(5),
+      nextIntervalMs: () => 100,
       queue: makeQueueStub(5),
     })
 
@@ -146,9 +147,9 @@ describe('M4.3 wireAnalyticsFlushScheduler (integration)', () => {
     const client = makeFakeClient()
     const scheduler = wireAnalyticsFlushScheduler({
       analyticsClient: client,
-      intervalMs: 100,
       isEnabled: () => true,
       jsonlStore: makeJsonlStoreStub(0), // nothing left to ship
+      nextIntervalMs: () => 100,
       queue: makeQueueStub(50), // mirror still reflects past pushes
     })
 
@@ -163,9 +164,9 @@ describe('M4.3 wireAnalyticsFlushScheduler (integration)', () => {
     const client = makeFakeClient()
     const scheduler = wireAnalyticsFlushScheduler({
       analyticsClient: client,
-      intervalMs: 100,
       isEnabled: () => true,
       jsonlStore: makeJsonlStoreStub(0),
+      nextIntervalMs: () => 100,
       queue: makeQueueStub(0),
     })
 
@@ -219,9 +220,9 @@ describe('M4.3 wireAnalyticsFlushScheduler (integration)', () => {
 
     const scheduler = wireAnalyticsFlushScheduler({
       analyticsClient: flushSpy,
-      intervalMs: 100,
       isEnabled: () => true,
       jsonlStore: makeJsonlStoreStub(5),
+      nextIntervalMs: () => 100,
       queue: makeQueueStub(5),
     })
     scheduler.start()
@@ -253,9 +254,9 @@ describe('M4.3 wireAnalyticsFlushScheduler (integration)', () => {
     }
     const scheduler = wireAnalyticsFlushScheduler({
       analyticsClient: slowClient,
-      intervalMs: 100,
       isEnabled: () => true,
       jsonlStore: makeJsonlStoreStub(5),
+      nextIntervalMs: () => 100,
       queue: makeQueueStub(5),
     })
 
@@ -295,5 +296,65 @@ describe('M4.3 wireAnalyticsFlushScheduler (integration)', () => {
     scheduler.notifyPushed()
     await clock.tickAsync(1)
     expect(client.flushCalls, 'below default threshold of 20 → no flush').to.equal(0)
+  })
+
+  describe('M4.5 backoff policy integration', () => {
+    it('reads tick delay from the wired backoffPolicy at each arm (30 → 60 → 120 → 300)', async () => {
+      // End-to-end timing: a real AnalyticsBackoffPolicy plus a flush
+      // that always reports failure (via the M4.5 reason injection)
+      // should produce the canonical 30s → 60s → 2m → 5m gap pattern.
+      // We can't easily wire a real `AnalyticsClient.runFlush` from
+      // this seam (the scheduler test owns the client), so we model
+      // production by hand-advancing the policy inside the flush body
+      // — same call sequence runFlush makes on a transient failure.
+      const policy = new AnalyticsBackoffPolicy()
+      const client: IAnalyticsClient = {
+        abort() {
+          /* no-op */
+        },
+        async flush() {
+          policy.onFailure()
+          return AnalyticsBatch.create([])
+        },
+        async onAuthTransition() {},
+        track() {
+          /* no-op */
+        },
+      }
+      const scheduler = wireAnalyticsFlushScheduler({
+        analyticsClient: client,
+        backoffPolicy: policy,
+        isEnabled: () => true,
+        jsonlStore: makeJsonlStoreStub(5),
+        queue: makeQueueStub(5),
+      })
+
+      // T0: tick 1 must fire at +30s (policy starts at 30s base interval).
+      scheduler.start()
+      await clock.tickAsync(30_000)
+      expect(policy.consecutiveFailures(), 'after tick 1 → 1 failure').to.equal(1)
+
+      // Tick 2 must fire at +60s from tick 1 (policy.nextDelayMs == 60_000 now).
+      await clock.tickAsync(59_999)
+      expect(policy.consecutiveFailures(), 'still 1 — 60s arm not elapsed').to.equal(1)
+      await clock.tickAsync(1)
+      expect(policy.consecutiveFailures(), 'after tick 2 → 2 failures').to.equal(2)
+
+      // Tick 3 at +120s from tick 2.
+      await clock.tickAsync(120_000)
+      expect(policy.consecutiveFailures(), 'after tick 3 → 3 failures').to.equal(3)
+
+      // Tick 4 at +300s from tick 3 (cap reached).
+      await clock.tickAsync(299_999)
+      expect(policy.consecutiveFailures(), 'still 3 — 5m cap not elapsed').to.equal(3)
+      await clock.tickAsync(1)
+      expect(policy.consecutiveFailures(), 'after tick 4 → 4 failures, schedule still at cap').to.equal(4)
+
+      // One more tick at +300s confirms the cap holds.
+      await clock.tickAsync(300_000)
+      expect(policy.consecutiveFailures(), 'tick 5 at the cap').to.equal(5)
+
+      scheduler.stop()
+    })
   })
 })

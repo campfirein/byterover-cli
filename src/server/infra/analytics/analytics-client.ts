@@ -3,6 +3,7 @@ import {randomUUID} from 'node:crypto'
 import type {AnalyticsEventName} from '../../../shared/analytics/event-names.js'
 import type {PropsArg, PropsForEvent} from '../../../shared/analytics/events/index.js'
 import type {StoredAnalyticsRecord} from '../../../shared/analytics/stored-record.js'
+import type {IAnalyticsBackoffPolicy} from '../../core/interfaces/analytics/i-analytics-backoff-policy.js'
 import type {IAnalyticsClient} from '../../core/interfaces/analytics/i-analytics-client.js'
 import type {IAnalyticsQueue} from '../../core/interfaces/analytics/i-analytics-queue.js'
 import type {IAnalyticsSender, SendResult} from '../../core/interfaces/analytics/i-analytics-sender.js'
@@ -14,6 +15,22 @@ import {toWireEvent} from '../../../shared/analytics/stored-record.js'
 import {AnalyticsBatch} from '../../core/domain/analytics/batch.js'
 
 export interface AnalyticsClientDeps {
+  /**
+   * M4.5: optional failure-resilience policy. When wired, `runFlush`
+   * feeds the `SendResult.reason` into the policy after every flush:
+   *   - undefined reason (all-succeeded) → `onSuccess()` resets the backoff.
+   *   - `timeout` / `network` / `http_5xx` → `onFailure()` advances the
+   *     backoff one step (capped at 5m by the policy impl).
+   *   - `http_4xx` → neither call. 4xx is a payload-shape error, not a
+   *     backend health signal — retrying or backing off won't help.
+   *   - Aborted (controller.signal.aborted) → neither call. User-driven
+   *     cancellation (M4.4 disable) must not poison the M4.6
+   *     reachability counter.
+   *
+   * Optional so M2/M4.3 test fakes that don't care about backoff keep
+   * working with their pre-M4.5 construction shape.
+   */
+  backoffPolicy?: IAnalyticsBackoffPolicy
   identityResolver: IIdentityResolver
   isEnabled: () => boolean
   jsonlStore: IJsonlAnalyticsStore
@@ -201,6 +218,55 @@ export class AnalyticsClient implements IAnalyticsClient {
     })
   }
 
+  /**
+   * Feed the `SendResult` into the optional M4.5 backoff policy.
+   *
+   * Decision table (skip = call neither onSuccess nor onFailure):
+   *   - policy not wired                      → skip
+   *   - aborted (M4.4 disable cancel)         → skip (user action, not a backend signal)
+   *   - reason = `http_4xx`                   → skip (payload-shape, not a health signal)
+   *   - reason undefined AND succeeded.length === 0 → skip (empty no-op
+   *     race, or HttpAnalyticsSender's `missing-deviceId` path that
+   *     returns failed-without-reason; neither is a clean ship)
+   *   - reason undefined AND succeeded.length > 0   → onSuccess()
+   *   - reason = `timeout` / `network` / `http_5xx` → onFailure()
+   *
+   * Emits a structured log line on every real transition so ops can
+   * trace "why did flushes suddenly slow down" without grepping for
+   * implicit cadence changes.
+   */
+  private feedBackoffPolicy(result: SendResult, aborted: boolean): void {
+    const policy = this.deps.backoffPolicy
+    if (policy === undefined) return
+    if (aborted) return
+    if (result.reason === 'http_4xx') {
+      // Tag 4xx in the log so ops sees the divergence (we do NOT advance
+      // backoff for permanent payload errors, only for transient ones).
+      this.deps.log?.(
+        `analytics.backoff: http_4xx ignored (consecutive_failures=${policy.consecutiveFailures()}, next=${policy.nextDelayMs()}ms)`,
+      )
+      return
+    }
+
+    if (result.reason === undefined) {
+      if (result.succeeded.length === 0) return // empty no-op or uncategorized failure: no signal
+      const beforeFailures = policy.consecutiveFailures()
+      policy.onSuccess()
+      if (beforeFailures > 0) {
+        this.deps.log?.(
+          `analytics.backoff: reset on success (was consecutive_failures=${beforeFailures}, next=${policy.nextDelayMs()}ms)`,
+        )
+      }
+
+      return
+    }
+
+    policy.onFailure()
+    this.deps.log?.(
+      `analytics.backoff: advanced on ${result.reason} (consecutive_failures=${policy.consecutiveFailures()}, next=${policy.nextDelayMs()}ms)`,
+    )
+  }
+
   private async runFlush(): Promise<AnalyticsBatch> {
     const records = await this.deps.jsonlStore.loadPending()
 
@@ -233,6 +299,8 @@ export class AnalyticsClient implements IAnalyticsClient {
     if (!controller.signal.aborted) {
       await this.deps.jsonlStore.updateStatus(result.failed, 'failed')
     }
+
+    this.feedBackoffPolicy(result, controller.signal.aborted)
 
     return AnalyticsBatch.create(records.map((r) => toWireEvent(r)))
   }
