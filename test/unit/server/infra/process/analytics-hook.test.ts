@@ -36,6 +36,7 @@ const buildAnalyticsClient = (): StubBundle => {
       /* M4.4: not exercised in this test */
     },
     flush: flushStub,
+    getRuntimeState: () => Promise.resolve({droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}),
     onAuthTransition: sinon.stub().resolves(),
     track: trackStub,
   }

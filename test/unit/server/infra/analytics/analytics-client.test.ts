@@ -1,4 +1,4 @@
-/* eslint-disable camelcase */
+/* eslint-disable camelcase, max-lines -- this file accumulates AnalyticsClient cases across M2-M4.6; splitting would scatter the contract surface. */
 import {expect} from 'chai'
 import {spy, stub} from 'sinon'
 
@@ -1500,6 +1500,146 @@ describe('AnalyticsClient', () => {
 
       expect(policy.onSuccess.called, 'failed-without-reason must NOT call onSuccess').to.be.false
       expect(policy.onFailure.called, 'failed-without-reason must NOT call onFailure either').to.be.false
+    })
+  })
+
+  describe('M4.6 runtime state tracking', () => {
+    /**
+     * `lastSuccessfulFlushAt` is the timestamp shown by `brv analytics status`
+     * as "Last successful flush". Updated ONLY on a real clean ship —
+     * same gate as M4.5's backoff `onSuccess()`. Aborted, 4xx, failed,
+     * and empty-batch outcomes leave it untouched. The `now: () => number`
+     * dep is injected for deterministic assertions.
+     */
+    it('lastSuccessfulFlushAt is undefined on a fresh client', async () => {
+      const client = new AnalyticsClient({
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        now: () => 1_700_000_000_000,
+        queue: new BoundedQueue(),
+        sender: makeFakeSender(),
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+
+      const state = await client.getRuntimeState()
+      expect(state.lastSuccessfulFlushAt, 'no flush has run yet').to.equal(undefined)
+    })
+
+    it('lastSuccessfulFlushAt is set to now() after a clean successful flush', async () => {
+      const client = new AnalyticsClient({
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        now: () => 1_700_000_000_000,
+        queue: new BoundedQueue(),
+        sender: makeFakeSender({kind: 'all-succeeded'}),
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+
+      await seedPending(client, 2)
+      await client.flush()
+
+      const state = await client.getRuntimeState()
+      expect(state.lastSuccessfulFlushAt).to.equal(1_700_000_000_000)
+    })
+
+    it('lastSuccessfulFlushAt is NOT updated when the flush fails (sender returns reason)', async () => {
+      const client = new AnalyticsClient({
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        now: () => 1_700_000_000_000,
+        queue: new BoundedQueue(),
+        sender: makeSenderWithReason('http_5xx'),
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+
+      await seedPending(client, 1)
+      await client.flush()
+
+      const state = await client.getRuntimeState()
+      expect(state.lastSuccessfulFlushAt, 'failed flush must not advance the timestamp').to.equal(undefined)
+    })
+
+    it('lastSuccessfulFlushAt is NOT updated on http_4xx (payload-shape error)', async () => {
+      const client = new AnalyticsClient({
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        now: () => 1_700_000_000_000,
+        queue: new BoundedQueue(),
+        sender: makeSenderWithReason('http_4xx'),
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+
+      await seedPending(client, 1)
+      await client.flush()
+
+      const state = await client.getRuntimeState()
+      expect(state.lastSuccessfulFlushAt).to.equal(undefined)
+    })
+
+    it('lastSuccessfulFlushAt is NOT updated on an empty-batch no-op flush', async () => {
+      // No records seeded; flush still resolves but ships nothing.
+      const client = new AnalyticsClient({
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        now: () => 1_700_000_000_000,
+        queue: new BoundedQueue(),
+        sender: makeFakeSender(),
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+
+      await client.flush()
+
+      const state = await client.getRuntimeState()
+      expect(state.lastSuccessfulFlushAt, 'empty-batch flush is not a real ship').to.equal(undefined)
+    })
+
+    it('getRuntimeState surfaces JSONL pending count (NOT in-memory mirror) and droppedCount', async () => {
+      // Two pending records, one already-sent record. queueDepth should
+      // see only the pending row; dropped count surfaces from the queue.
+      const queue = new BoundedQueue(5)
+      const jsonlStore = makeFakeJsonlStore()
+      const client = new AnalyticsClient({
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore,
+        now: () => 1_700_000_000_000,
+        queue,
+        sender: makeFakeSender({kind: 'all-succeeded'}),
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+
+      // Seed 3 events, flush 1 batch (all-succeeded), then add 2 more.
+      await seedPending(client, 3)
+      await client.flush() // 3 records → 'sent'
+      await seedPending(client, 2) // 2 new 'pending' records
+
+      const state = await client.getRuntimeState()
+      expect(state.queueDepth, 'JSONL pending count, NOT queue.size()').to.equal(2)
+      // No drops in this scenario.
+      expect(state.droppedCount).to.equal(0)
+    })
+
+    it('getRuntimeState reflects droppedCount when the bounded queue evicts oldest', async () => {
+      // Cap of 2; pushing 4 records evicts the first 2.
+      const queue = new BoundedQueue(2)
+      const client = new AnalyticsClient({
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        now: () => 1_700_000_000_000,
+        queue,
+        sender: makeFakeSender(),
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+
+      await seedPending(client, 4)
+      const state = await client.getRuntimeState()
+      expect(state.droppedCount, 'queue dropped 2 of 4 oldest events').to.equal(2)
     })
   })
 })

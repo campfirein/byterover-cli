@@ -32,6 +32,7 @@ function makeMockAnalyticsClient(): MockAnalyticsClient {
       /* M4.4: not exercised in this test */
     },
     flush: () => Promise.resolve(AnalyticsBatch.create([])),
+    getRuntimeState: () => Promise.resolve({droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}),
     onAuthTransition: () => Promise.resolve(),
     track<E extends AnalyticsEventName>(event: E, ...rest: PropsArg<E>): void {
       if (mock.trackThrows) throw mock.trackThrows

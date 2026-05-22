@@ -62,6 +62,7 @@ import {FsTemplateLoader} from '../template/fs-template-loader.js'
 import {
   AnalyticsHandler,
   AnalyticsListHandler,
+  AnalyticsStatusHandler,
   AuthHandler,
   ConfigHandler,
   ConnectorsHandler,
@@ -259,6 +260,19 @@ export async function setupFeatureHandlers({
   // M11.2: webui-facing read API. Shares the same JsonlAnalyticsStore instance
   // as the AnalyticsClient so reads see exactly what trackAsync persisted.
   new AnalyticsListHandler({jsonlStore: jsonlAnalyticsStore, transport}).setup()
+
+  // M4.6: `brv analytics status` read API. Composes runtime state
+  // (client) + backoff state (policy) + enabled flag (config) + endpoint
+  // (env) into one wire response. Endpoint is `envConfig.analyticsBaseUrl`
+  // or empty string; the handler substitutes "(not configured)" for the
+  // empty case and forces backoff.state to 'unreachable'.
+  new AnalyticsStatusHandler({
+    analyticsClient,
+    backoffPolicy: analyticsBackoffPolicy,
+    endpoint: envConfig.analyticsBaseUrl ?? '',
+    isAnalyticsEnabled: () => globalConfigHandler.getCachedAnalytics(),
+    transport,
+  }).setup()
 
   new AuthHandler({
     authService: new OAuthService(authConfig),

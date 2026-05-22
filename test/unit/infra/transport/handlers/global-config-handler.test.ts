@@ -222,6 +222,7 @@ describe('GlobalConfigHandler', () => {
         analyticsClient: {
           abort: analyticsClient.abort,
           flush: stub().resolves(),
+          getRuntimeState: () => Promise.resolve({droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}),
           onAuthTransition: stub().resolves(),
           // Hand-rolled noop preserves the generic `track<E>` signature.
           track(): void {
@@ -251,6 +252,7 @@ describe('GlobalConfigHandler', () => {
         analyticsClient: {
           abort: analyticsClient.abort,
           flush: stub().resolves(),
+          getRuntimeState: () => Promise.resolve({droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}),
           onAuthTransition: stub().resolves(),
           // Hand-rolled noop preserves the generic `track<E>` signature.
           track(): void {
@@ -278,6 +280,7 @@ describe('GlobalConfigHandler', () => {
         analyticsClient: {
           abort: analyticsClient.abort,
           flush: stub().resolves(),
+          getRuntimeState: () => Promise.resolve({droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}),
           onAuthTransition: stub().resolves(),
           // Hand-rolled noop preserves the generic `track<E>` signature.
           track(): void {
@@ -306,6 +309,7 @@ describe('GlobalConfigHandler', () => {
             throw new Error('abort boom')
           },
           flush: stub().resolves(),
+          getRuntimeState: () => Promise.resolve({droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}),
           onAuthTransition: stub().resolves(),
           // Hand-rolled noop preserves the generic `track<E>` signature.
           track(): void {

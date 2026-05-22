@@ -31,6 +31,23 @@ export interface IAnalyticsClient {
   flush: () => Promise<AnalyticsBatch>
 
   /**
+   * M4.6: client-owned runtime state for the `brv analytics status`
+   * command. Returns the timestamp of the last successful flush (or
+   * `undefined` if none has run this daemon-lifetime), the count of
+   * records currently pending in JSONL, and the cumulative count of
+   * events dropped by the in-memory queue's drop-oldest cap.
+   *
+   * Async because `queueDepth` reads JSONL — that's the authoritative
+   * "waiting to ship" metric. The in-memory queue mirror caps at 1000
+   * via drop-oldest and would mislead operators.
+   */
+  getRuntimeState: () => Promise<{
+    droppedCount: number
+    lastSuccessfulFlushAt: number | undefined
+    queueDepth: number
+  }>
+
+  /**
    * Notify the client that the daemon-wide auth state transitioned
    * (login, logout, account switch, token revoked).
    *

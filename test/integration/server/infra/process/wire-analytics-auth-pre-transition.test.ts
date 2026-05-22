@@ -92,6 +92,7 @@ function makeFakeAnalyticsClient(): IAnalyticsClient & {
     },
     flush: flushSpy,
     flushSpy,
+    getRuntimeState: () => Promise.resolve({droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}),
     onAuthTransition: stub().resolves(),
     track(): void {
       // intentional no-op

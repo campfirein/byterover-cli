@@ -100,6 +100,7 @@ function makeAnalyticsClient(sandbox: SinonSandbox): {client: IAnalyticsClient; 
   const client: IAnalyticsClient = {
     abort: sandbox.stub(),
     flush: sandbox.stub().resolves(),
+    getRuntimeState: sandbox.stub().resolves({droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}),
     onAuthTransition: sandbox.stub().resolves(),
     track: trackStub,
   }
