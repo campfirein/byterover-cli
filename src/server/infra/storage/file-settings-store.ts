@@ -165,12 +165,24 @@ export class FileSettingsStore implements ISettingsStore {
       return {kind: 'corrupt', parseError: 'expected top-level JSON object'}
     }
 
-    if (parsed.values === undefined) return {kind: 'ok', values: {}}
-    if (!isRecord(parsed.values)) {
+    let valuesMap: Record<string, unknown>
+    if (parsed.values === undefined) {
+      valuesMap = {}
+    } else if (isRecord(parsed.values)) {
+      valuesMap = {...parsed.values}
+    } else {
       return {kind: 'corrupt', parseError: "expected object at '.values'"}
     }
 
-    return {kind: 'ok', values: {...parsed.values}}
+    // Forward-migrate older schemas. Idempotent: re-reading a file already
+    // on the current version does not rewrite. Unknown future versions are
+    // left untouched so a newer brv's v3 file isn't silently downgraded by
+    // an older brv that only knows about v2.
+    if (parsed.version === '1') {
+      await this.writeFile({values: valuesMap, version: SETTINGS_SCHEMA_VERSION})
+    }
+
+    return {kind: 'ok', values: valuesMap}
   }
 
   private async writeFile(file: SettingsFile): Promise<void> {
