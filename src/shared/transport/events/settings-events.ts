@@ -11,22 +11,24 @@ export const SettingsEvents = {
  * surfaces (CLI / TUI / WebUI) can consume it without crossing the
  * server import boundary.
  *
- * M7 T2 added three optional fields. `category` and `unit` flow through
- * from the descriptor; `scope` is reserved for the future project-store
- * ticket and is always omitted in v1. All three are additive only —
- * existing JSON consumers that ignore them continue to parse correctly.
+ * M7 T2 added three optional fields (`category`, `unit`, `scope`); T1 of
+ * the Update-check toggle project widened `type`, `current`, `default`,
+ * and `restartRequired` to also cover boolean descriptors, and made
+ * `min` / `max` optional (only integer descriptors carry them). All
+ * widenings are additive at the JSON layer, so consumers that read
+ * existing integer fields continue to parse the wire format.
  */
 export interface SettingsItemDTO {
-  category?: 'concurrency' | 'llm' | 'task-history'
-  current: number
-  default: number
+  category?: 'concurrency' | 'llm' | 'task-history' | 'updates'
+  current: boolean | number
+  default: boolean | number
   description: string
   key: string
-  max: number
-  min: number
-  restartRequired: true
+  max?: number
+  min?: number
+  restartRequired: boolean
   scope?: 'global' | 'project'
-  type: 'integer'
+  type: 'boolean' | 'integer'
   unit?: 'count' | 'ms'
 }
 
@@ -58,7 +60,7 @@ export interface SettingsSetRequest {
 
 export type SettingsSetResponse =
   | {readonly error: SettingsErrorDTO; readonly ok: false}
-  | {readonly ok: true; readonly restartRequired: true}
+  | {readonly ok: true; readonly restartRequired: boolean}
 
 export interface SettingsResetRequest {
   key: string
@@ -66,4 +68,4 @@ export interface SettingsResetRequest {
 
 export type SettingsResetResponse =
   | {readonly error: SettingsErrorDTO; readonly ok: false}
-  | {readonly ok: true; readonly restartRequired: true}
+  | {readonly ok: true; readonly restartRequired: boolean}

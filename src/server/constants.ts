@@ -129,6 +129,10 @@ export const REVIEW_BACKUPS_DIR = 'review-backups'
 export const SETTINGS_FILE = 'settings.json'
 export const SETTINGS_SCHEMA_VERSION = '1'
 
+// Default for the boolean `update.checkForUpdates` setting. ON by default; users
+// flip to false to disable the startup update-notifier hook entirely.
+export const UPDATE_CHECK_FOR_UPDATES_DEFAULT = true
+
 // Default wall-clock budget for the agentic loop (`llm.iterationBudgetMs`).
 // Slow local-LLM users override via `brv settings set llm.iterationBudgetMs <ms>`.
 export const AGENT_LLM_ITERATION_BUDGET_MS = 600_000 // 10 minutes

@@ -1,12 +1,31 @@
 import type {SettingsItemDTO} from '../transport/events/settings-events.js'
-import type {RowParseResult, SettingsRow, SettingsRowUnit} from '../types/settings-row.js'
+import type {RowParseResult, SettingsRow, SettingsRowCategory, SettingsRowUnit} from '../types/settings-row.js'
 
 import {CATEGORY_ORDER} from '../types/settings-row.js'
 import {formatCount, formatDuration, parseDuration} from './format-duration.js'
 
 export function buildSettingsRows(items: readonly SettingsItemDTO[]): SettingsRow[] {
-  const rows = items.map((item) => toRow(item))
-  return [...rows].sort((a, b) => CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category))
+  // Skip non-integer descriptors: this row-builder only knows how to
+  // render bounded numeric values. A separate renderer for boolean
+  // descriptors lands with the oclif / TUI boolean toggle tickets.
+  const rows: SettingsRow[] = []
+  for (const item of items) {
+    if (isIntegerItem(item)) rows.push(toRow(item))
+  }
+
+  return rows.sort((a, b) => CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category))
+}
+
+type IntegerSettingsItemDTO = Omit<SettingsItemDTO, 'current' | 'default' | 'max' | 'min' | 'type'> & {
+  readonly current: number
+  readonly default: number
+  readonly max: number
+  readonly min: number
+  readonly type: 'integer'
+}
+
+function isIntegerItem(item: SettingsItemDTO): item is IntegerSettingsItemDTO {
+  return item.type === 'integer' && typeof item.min === 'number' && typeof item.max === 'number'
 }
 
 export function parseRowInput(row: SettingsRow, raw: string): RowParseResult {
@@ -52,9 +71,9 @@ function parseAsCount(row: SettingsRow, raw: string): RowParseResult {
   return {displayValue: formatCount(numeric), kind: 'ok', value: numeric}
 }
 
-function toRow(item: SettingsItemDTO): SettingsRow {
+function toRow(item: IntegerSettingsItemDTO): SettingsRow {
   const unit: SettingsRowUnit = item.unit ?? 'count'
-  const category = item.category ?? 'other'
+  const category = toRowCategory(item.category)
   const displayCurrent = unit === 'ms' ? formatDuration(item.current) : formatCount(item.current)
   const displayDefault = unit === 'ms' ? formatDuration(item.default) : formatCount(item.default)
   const displayRange = formatRange(item, unit)
@@ -72,13 +91,18 @@ function toRow(item: SettingsItemDTO): SettingsRow {
     max: item.max,
     min: item.min,
     modified: item.current !== item.default,
-    restartRequired: item.restartRequired,
-    type: item.type,
+    restartRequired: true,
+    type: 'integer',
     unit,
   }
 }
 
-function formatRange(item: SettingsItemDTO, unit: SettingsRowUnit): string {
+function toRowCategory(category: SettingsItemDTO['category']): SettingsRowCategory {
+  if (category === 'concurrency' || category === 'llm' || category === 'task-history') return category
+  return 'other'
+}
+
+function formatRange(item: IntegerSettingsItemDTO, unit: SettingsRowUnit): string {
   const min = unit === 'ms' ? formatDuration(item.min) : formatCount(item.min)
   const max = unit === 'ms' ? formatDuration(item.max) : formatCount(item.max)
   const base = `${min}-${max}`
