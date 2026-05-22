@@ -12,23 +12,14 @@ import {AnalyticsEvents} from '../../../../../../src/shared/transport/events/ana
 import {createMockTransportServer} from '../../../../../helpers/mock-factories.js'
 
 /**
- * M4.6 reachability label mapper. The ticket fixes the boundaries:
- *   - 0 failures   → healthy
- *   - 1-2 failures → degraded
- *   - 3+ failures  → unreachable
+ * M4.6 tests for the analytics-status surface:
+ *   - the pure `consecutiveFailuresToReachabilityState` mapper
+ *   - the `AnalyticsStatusHandler` composition (runtime state +
+ *     backoff state + endpoint + enabled flag)
  *
- * The policy exposes the raw counter via `consecutiveFailures()`; this
- * mapper owns the user-facing label so the policy itself stays free of
- * presentation concerns.
- */
-/**
- * Lightweight test doubles for the handler's three collaborators:
- *   - the analytics client (only `getRuntimeState` is read)
- *   - the backoff policy (only `consecutiveFailures` + `nextDelayMs`)
- *   - the cached-analytics getter from GlobalConfigHandler
- *
- * Hoisted above the top-level `describe` to satisfy
- * `unicorn/consistent-function-scoping`.
+ * Test doubles below are hoisted above the top-level `describe` to
+ * satisfy `unicorn/consistent-function-scoping`. They cover only the
+ * surfaces the handler reads from each collaborator.
  */
 type RuntimeStateSnapshot = {
   droppedCount: number

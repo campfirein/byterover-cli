@@ -174,7 +174,7 @@ describe('analytics status command (M4.6)', () => {
       expect(loggedMessages.find((m) => m.includes('Last successful flush'))).to.include('(2d ago)')
     })
 
-    it('backoff state "degraded": shows label + consecutive failures + next delay', async () => {
+    it('backoff state "degraded": shows label + consecutive failures + next delay (humanized)', async () => {
       mockStatusResponse({
         ...HEALTHY_RESPONSE,
         backoff: {consecutiveFailures: 2, nextDelayMs: 120_000, state: 'degraded'},
@@ -183,9 +183,22 @@ describe('analytics status command (M4.6)', () => {
       await createCommand().run()
 
       const backoffLine = loggedMessages.find((m) => m.toLowerCase().includes('backoff'))
-      expect(backoffLine).to.include('degraded')
-      expect(backoffLine).to.include('2')
-      expect(backoffLine).to.include('120000')
+      expect(backoffLine, 'shows label').to.include('degraded')
+      expect(backoffLine, 'shows plural failure count').to.include('2 consecutive failures')
+      expect(backoffLine, 'humanizes next-delay ms (120000 → 2m)').to.include('next attempt in 2m')
+    })
+
+    it('singularises "1 consecutive failure" (no trailing s) on a single-failure backoff', async () => {
+      mockStatusResponse({
+        ...HEALTHY_RESPONSE,
+        backoff: {consecutiveFailures: 1, nextDelayMs: 60_000, state: 'degraded'},
+      })
+
+      await createCommand().run()
+
+      const backoffLine = loggedMessages.find((m) => m.toLowerCase().includes('backoff'))
+      expect(backoffLine, 'singular').to.include('1 consecutive failure')
+      expect(backoffLine, 'humanized delay').to.include('next attempt in 1m')
     })
 
     it('endpoint not configured: shows literal placeholder', async () => {

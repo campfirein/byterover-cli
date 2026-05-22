@@ -29,6 +29,20 @@ export function formatRelativeAgo(deltaMs: number): string {
   return `${Math.floor(deltaMs / MS_PER_DAY)}d ago`
 }
 
+/**
+ * Humanise a forward-looking delay in milliseconds. Used by the
+ * backoff line so an operator sees "next attempt in 2m" instead of
+ * the wire-format "next_delay_ms=120000". Cut points mirror the M4.5
+ * backoff schedule (30s, 60s, 2m, 5m).
+ */
+export function formatDelayMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '0ms'
+  if (ms < 1000) return `${ms}ms`
+  if (ms < MS_PER_MIN) return `${Math.floor(ms / 1000)}s`
+  if (ms < MS_PER_HOUR) return `${Math.floor(ms / MS_PER_MIN)}m`
+  return `${Math.floor(ms / MS_PER_HOUR)}h`
+}
+
 export default class Status extends Command {
   public static description = `Show analytics state: enabled flag, last successful flush, queue depth, dropped event count, backoff state, endpoint.
 
@@ -88,6 +102,21 @@ Toggle: brv analytics enable | brv analytics disable`
     this.renderText(response)
   }
 
+  /**
+   * Human-friendly summary of the backoff counters: a singular/plural
+   * "N consecutive failure(s)" plus the next-attempt delay as a
+   * humanized duration. Wire output (JSON) keeps the raw snake_case
+   * field names and ms units for programmatic consumers.
+   */
+  private formatBackoffSummary(backoff: AnalyticsStatusResponse['backoff']): string {
+    const failurePart =
+      backoff.consecutiveFailures === 1
+        ? '1 consecutive failure'
+        : `${backoff.consecutiveFailures} consecutive failures`
+    const delayPart = `next attempt in ${formatDelayMs(backoff.nextDelayMs)}`
+    return `${failurePart}, ${delayPart}`
+  }
+
   private formatLastFlush(lastFlushAt: number | undefined): string {
     if (lastFlushAt === undefined) return 'never'
     const iso = new Date(lastFlushAt).toISOString()
@@ -105,9 +134,7 @@ Toggle: brv analytics enable | brv analytics disable`
     this.log(`Last successful flush: ${this.formatLastFlush(response.lastFlushAt)}`)
     this.log(`Queue depth: ${response.queueDepth} events`)
     this.log(`Dropped events (this session): ${response.droppedCount}`)
-    this.log(
-      `Backoff state: ${response.backoff.state} (consecutive_failures=${response.backoff.consecutiveFailures}, next_delay_ms=${response.backoff.nextDelayMs})`,
-    )
+    this.log(`Backoff state: ${response.backoff.state} (${this.formatBackoffSummary(response.backoff)})`)
     this.log(`Endpoint: ${response.endpoint}`)
   }
 
