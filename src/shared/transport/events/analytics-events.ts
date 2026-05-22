@@ -5,8 +5,38 @@ import {StoredAnalyticsRecordSchema} from '../../analytics/stored-record.js'
 
 export const AnalyticsEvents = {
   LIST: 'analytics:list',
+  STATUS: 'analytics:status',
   TRACK: 'analytics:track',
 } as const
+
+/**
+ * M4.6 `analytics:status` response. Surfaces operational metrics for
+ * `brv analytics status`: enabled flag (from GlobalConfig), client
+ * runtime state (last-flush timestamp, JSONL pending depth, dropped
+ * count), backoff state (M4.5 policy + derived reachability label),
+ * and the analytics endpoint URL.
+ *
+ * `lastFlushAt` is epoch milliseconds (`undefined` when the daemon has
+ * not shipped anything yet this session → status renders "never").
+ *
+ * `endpoint` is the resolved `BRV_ANALYTICS_BASE_URL` or the literal
+ * `"(not configured)"` placeholder; when not configured, `backoff.state`
+ * is forced to `"unreachable"` regardless of `consecutiveFailures`.
+ */
+export const AnalyticsStatusResponseSchema = z.object({
+  backoff: z.object({
+    consecutiveFailures: z.number().int().min(0),
+    nextDelayMs: z.number().int().min(0),
+    state: z.enum(['healthy', 'degraded', 'unreachable']),
+  }),
+  droppedCount: z.number().int().min(0),
+  enabled: z.boolean(),
+  endpoint: z.string().min(1),
+  lastFlushAt: z.number().int().min(0).optional(),
+  queueDepth: z.number().int().min(0),
+})
+
+export type AnalyticsStatusResponse = z.infer<typeof AnalyticsStatusResponseSchema>
 
 /**
  * Wire-level validation for `analytics:track` payloads. Identity and super

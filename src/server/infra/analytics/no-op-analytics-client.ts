@@ -19,6 +19,14 @@ export class NoOpAnalyticsClient implements IAnalyticsClient {
     return AnalyticsBatch.create([])
   }
 
+  public async getRuntimeState(): Promise<{
+    droppedCount: number
+    lastSuccessfulFlushAt: number | undefined
+    queueDepth: number
+  }> {
+    return {droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}
+  }
+
   public async onAuthTransition(): Promise<void> {
     // intentional no-op
   }

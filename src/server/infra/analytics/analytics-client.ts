@@ -42,6 +42,13 @@ export interface AnalyticsClientDeps {
    */
   log?: (message: string) => void
   /**
+   * M4.6: monotonic clock used to stamp `lastSuccessfulFlushAt`. Injected
+   * so tests can assert against a known value; production defaults to
+   * `Date.now`. Daemon restart resets the in-memory timestamp; the
+   * status command surfaces "never" when undefined.
+   */
+  now?: () => number
+  /**
    * M4.3: optional notification fired after a record has been durably
    * appended (JSONL + queue mirror). The composition root wires this to
    * `AnalyticsFlushScheduler.notifyPushed()` so the scheduler can check
@@ -84,6 +91,11 @@ export class AnalyticsClient implements IAnalyticsClient {
   // `abort()` is a no-op when this is undefined (no in-flight to cancel).
   private currentFlushController?: AbortController
   private readonly deps: AnalyticsClientDeps
+  // M4.6: timestamp of the last flush that actually shipped at least one
+  // record cleanly (same gate as the M4.5 backoff `onSuccess()` path).
+  // Surfaced through `getRuntimeState()` for `brv analytics status`.
+  // Daemon restart resets to undefined; status renders "never".
+  private lastSuccessfulFlushAt: number | undefined
   // Single-flight slot for an in-flight `flush()`. Concurrent callers join the
   // existing promise instead of starting a second read-then-decide cycle —
   // without this, two parallel flushes would both `loadPending()` the same set,
@@ -162,6 +174,24 @@ export class AnalyticsClient implements IAnalyticsClient {
     }
   }
 
+  /**
+   * Snapshot of client-owned runtime state for `brv analytics status`
+   * (M4.6). Backoff state, endpoint, and the enabled flag are NOT here
+   * — those are composed by the daemon-side status handler from other
+   * sources (the policy + envConfig + GlobalConfigHandler). Async
+   * because `queueDepth` reads JSONL pending rows (the authoritative
+   * "waiting to ship" metric, NOT the in-memory queue mirror which
+   * caps at 1000 via drop-oldest).
+   */
+  public async getRuntimeState(): Promise<{droppedCount: number; lastSuccessfulFlushAt: number | undefined; queueDepth: number}> {
+    const pending = await this.deps.jsonlStore.loadPending()
+    return {
+      droppedCount: this.deps.queue.droppedCount(),
+      lastSuccessfulFlushAt: this.lastSuccessfulFlushAt,
+      queueDepth: pending.length,
+    }
+  }
+
   public async onAuthTransition(): Promise<void> {
     // Snapshot in-flight tracks then wait for them to settle. Any
     // `trackAsync` that started before this point may still be between
@@ -228,7 +258,7 @@ export class AnalyticsClient implements IAnalyticsClient {
    *   - reason undefined AND succeeded.length === 0 → skip (empty no-op
    *     race, or HttpAnalyticsSender's `missing-deviceId` path that
    *     returns failed-without-reason; neither is a clean ship)
-   *   - reason undefined AND succeeded.length > 0   → onSuccess()
+   *   - reason undefined AND succeeded.length > 0   → onSuccess() + M4.6 timestamp stamp
    *   - reason = `timeout` / `network` / `http_5xx` → onFailure()
    *
    * Emits a structured log line on every real transition so ops can
@@ -237,34 +267,44 @@ export class AnalyticsClient implements IAnalyticsClient {
    */
   private feedBackoffPolicy(result: SendResult, aborted: boolean): void {
     const policy = this.deps.backoffPolicy
-    if (policy === undefined) return
     if (aborted) return
     if (result.reason === 'http_4xx') {
-      // Tag 4xx in the log so ops sees the divergence (we do NOT advance
-      // backoff for permanent payload errors, only for transient ones).
-      this.deps.log?.(
-        `analytics.backoff: http_4xx ignored (consecutive_failures=${policy.consecutiveFailures()}, next=${policy.nextDelayMs()}ms)`,
-      )
-      return
-    }
-
-    if (result.reason === undefined) {
-      if (result.succeeded.length === 0) return // empty no-op or uncategorized failure: no signal
-      const beforeFailures = policy.consecutiveFailures()
-      policy.onSuccess()
-      if (beforeFailures > 0) {
+      if (policy !== undefined) {
+        // Tag 4xx in the log so ops sees the divergence (we do NOT advance
+        // backoff for permanent payload errors, only for transient ones).
         this.deps.log?.(
-          `analytics.backoff: reset on success (was consecutive_failures=${beforeFailures}, next=${policy.nextDelayMs()}ms)`,
+          `analytics.backoff: http_4xx ignored (consecutive_failures=${policy.consecutiveFailures()}, next=${policy.nextDelayMs()}ms)`,
         )
       }
 
       return
     }
 
-    policy.onFailure()
-    this.deps.log?.(
-      `analytics.backoff: advanced on ${result.reason} (consecutive_failures=${policy.consecutiveFailures()}, next=${policy.nextDelayMs()}ms)`,
-    )
+    if (result.reason === undefined) {
+      if (result.succeeded.length === 0) return // empty no-op or uncategorized failure: no signal
+      // M4.6: stamp the timestamp on the same gate as the backoff
+      // `onSuccess()` so "Last successful flush" reflects real ships.
+      const now = (this.deps.now ?? Date.now)()
+      this.lastSuccessfulFlushAt = now
+      if (policy !== undefined) {
+        const beforeFailures = policy.consecutiveFailures()
+        policy.onSuccess()
+        if (beforeFailures > 0) {
+          this.deps.log?.(
+            `analytics.backoff: reset on success (was consecutive_failures=${beforeFailures}, next=${policy.nextDelayMs()}ms)`,
+          )
+        }
+      }
+
+      return
+    }
+
+    if (policy !== undefined) {
+      policy.onFailure()
+      this.deps.log?.(
+        `analytics.backoff: advanced on ${result.reason} (consecutive_failures=${policy.consecutiveFailures()}, next=${policy.nextDelayMs()}ms)`,
+      )
+    }
   }
 
   private async runFlush(): Promise<AnalyticsBatch> {

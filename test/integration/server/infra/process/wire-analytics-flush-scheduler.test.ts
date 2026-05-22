@@ -35,6 +35,9 @@ function makeFakeClient(): FakeClient {
     get flushCalls() {
       return calls
     },
+    async getRuntimeState() {
+      return {droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}
+    },
     async onAuthTransition() {},
     resetFlushCalls() {
       calls = 0
@@ -204,6 +207,9 @@ describe('M4.3 wireAnalyticsFlushScheduler (integration)', () => {
         new Promise<AnalyticsBatch>((resolve) => {
           releaseFlush = () => resolve(AnalyticsBatch.create([]))
         }),
+      async getRuntimeState() {
+        return {droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}
+      },
       async onAuthTransition() {},
       track() {
         /* no-op */
@@ -247,6 +253,9 @@ describe('M4.3 wireAnalyticsFlushScheduler (integration)', () => {
         new Promise<AnalyticsBatch>(() => {
           /* never resolves */
         }),
+      async getRuntimeState() {
+        return {droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}
+      },
       async onAuthTransition() {},
       track() {
         /* no-op */
@@ -315,6 +324,9 @@ describe('M4.3 wireAnalyticsFlushScheduler (integration)', () => {
         async flush() {
           policy.onFailure()
           return AnalyticsBatch.create([])
+        },
+        async getRuntimeState() {
+          return {droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}
         },
         async onAuthTransition() {},
         track() {

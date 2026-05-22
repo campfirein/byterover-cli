@@ -105,6 +105,7 @@ function makeFakeAnalyticsClient(): IAnalyticsClient & {
       /* M4.4: not exercised in this test */
     },
     flush: stub().resolves(AnalyticsBatch.create([])),
+    getRuntimeState: () => Promise.resolve({droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}),
     onAuthTransition,
     onAuthTransitionSpy: onAuthTransition,
     // Hand-rolled noop to preserve the generic `track<E>(event, ...rest)`
