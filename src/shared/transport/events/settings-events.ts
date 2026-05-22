@@ -33,7 +33,11 @@ export interface SettingsItemDTO {
 }
 
 export interface SettingsErrorDTO {
-  code: 'invalid_value' | 'unknown_key'
+  code: 'invalid_value' | 'invalid_value_type' | 'unknown_key'
+  /** Expected runtime kind, only set when `code === 'invalid_value_type'`. */
+  expected?: 'boolean' | 'integer'
+  /** `typeof` of the offending value, only set when `code === 'invalid_value_type'`. */
+  got?: string
   key: string
   message: string
   value?: unknown
@@ -55,7 +59,7 @@ export type SettingsGetResponse =
 
 export interface SettingsSetRequest {
   key: string
-  value: unknown
+  value: boolean | number
 }
 
 export type SettingsSetResponse =

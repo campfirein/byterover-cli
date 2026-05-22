@@ -68,6 +68,9 @@ export class SettingsHandler {
     this.transport.onRequest<SettingsSetRequest, SettingsSetResponse>(
       SettingsEvents.SET,
       async (data) => {
+        const typeError = checkValueType(data.key, data.value)
+        if (typeError !== undefined) return {error: typeError, ok: false}
+
         try {
           await this.store.set(data.key, data.value)
           return {ok: true, restartRequired: restartRequiredFor(data.key)}
@@ -93,6 +96,48 @@ export class SettingsHandler {
 
 function restartRequiredFor(key: string): boolean {
   return findSettingDescriptor(key)?.restartRequired ?? true
+}
+
+/**
+ * Pre-validates `value`'s runtime type against the descriptor for `key`.
+ *
+ * Returns a structured `invalid_value_type` error when the type does not
+ * match. Returns `undefined` either on match or when the key has no
+ * descriptor at all — in the second case the store's `UnknownSettingKeyError`
+ * surfaces as `unknown_key` through the existing error path, so this helper
+ * intentionally does not duplicate that check.
+ *
+ * Range, coupling, and fractional-number violations are left to the store's
+ * validator and still surface as `invalid_value`.
+ */
+function checkValueType(key: string, value: boolean | number): SettingsErrorDTO | undefined {
+  const descriptor = findSettingDescriptor(key)
+  if (descriptor === undefined) return undefined
+
+  const got = typeof value
+  if (descriptor.type === 'integer' && got !== 'number') {
+    return {
+      code: 'invalid_value_type',
+      expected: 'integer',
+      got,
+      key,
+      message: `expected integer for '${key}', got ${got}`,
+      value,
+    }
+  }
+
+  if (descriptor.type === 'boolean' && got !== 'boolean') {
+    return {
+      code: 'invalid_value_type',
+      expected: 'boolean',
+      got,
+      key,
+      message: `expected boolean for '${key}', got ${got}`,
+      value,
+    }
+  }
+
+  return undefined
 }
 
 function toItemDTO(item: SettingItem): SettingsItemDTO {
