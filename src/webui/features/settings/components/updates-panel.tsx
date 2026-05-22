@@ -19,7 +19,7 @@ export function UpdatesPanel() {
   return (
     <SettingsSection
       action={isLoading ? <LoaderCircle className="text-muted-foreground mt-1 size-4 animate-spin" /> : undefined}
-      description="Background update checks for the brv CLI."
+      description="Update checks performed when brv starts."
       error={isError ? error : undefined}
       errorFallback="Failed to load updates settings"
       onRetry={() => refetch().catch(noop)}
