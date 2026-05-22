@@ -9,14 +9,15 @@ import {formatCount, formatDuration} from '../../../shared/utils/format-duration
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
 
-type CategoryName = 'concurrency' | 'llm' | 'task-history'
+type CategoryName = 'concurrency' | 'llm' | 'task-history' | 'updates'
 
-const CATEGORY_ORDER: readonly CategoryName[] = ['concurrency', 'llm', 'task-history']
+const CATEGORY_ORDER: readonly CategoryName[] = ['concurrency', 'llm', 'task-history', 'updates']
 
 const CATEGORY_HEADERS: Readonly<Record<CategoryName, string>> = {
   concurrency: 'CONCURRENCY',
   llm: 'LLM',
   'task-history': 'TASK HISTORY',
+  updates: 'UPDATES',
 }
 
 const OTHER_HEADER = 'OTHER'
