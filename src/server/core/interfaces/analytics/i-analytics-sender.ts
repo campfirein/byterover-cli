@@ -1,6 +1,18 @@
 import type {StoredAnalyticsRecord} from '../../../../shared/analytics/stored-record.js'
 
 /**
+ * Classification of a failure mode, surfaced by `HttpAnalyticsSender` so
+ * `AnalyticsClient` can feed it into the M4.5 backoff policy.
+ *
+ *   - `timeout`  - request exceeded the 5s budget. Transient → back off.
+ *   - `network`  - connection refused / DNS / TLS / aborted. Transient → back off.
+ *   - `http_5xx` - server error. Transient → back off.
+ *   - `http_4xx` - backend rejected the payload shape. NOT transient — the
+ *     caller MUST NOT advance backoff on 4xx; retrying won't help.
+ */
+export type SendFailureReason = 'http_4xx' | 'http_5xx' | 'network' | 'timeout'
+
+/**
  * Per-send outcome. Each input record's `id` is mirrored back in exactly
  * one of `succeeded` / `failed`; M10.2's flush wiring will then translate
  * those id arrays into `JsonlAnalyticsStore.updateStatus` calls.
@@ -10,7 +22,22 @@ import type {StoredAnalyticsRecord} from '../../../../shared/analytics/stored-re
  */
 export type SendResult = Readonly<{
   failed: string[]
+  /**
+   * Present only when `failed.length > 0`. Absent on success and on
+   * empty-batch no-op calls. Callers that don't care about backoff
+   * (no-op senders, tests) may continue to ignore this field.
+   */
+  reason?: SendFailureReason
   succeeded: string[]
+}>
+
+/**
+ * Per-send options. `signal` is the M4.4 cancellation hook so the
+ * AnalyticsClient can abort an in-flight send when `brv analytics
+ * disable` fires.
+ */
+export type AnalyticsSenderOptions = Readonly<{
+  signal?: AbortSignal
 }>
 
 /**
@@ -26,15 +53,6 @@ export type SendResult = Readonly<{
  *   Test seam — used to assert the M10.2 "leave-JSONL-untouched" invariant
  *   without going through the real transport.
  */
-/**
- * Per-send options. `signal` is the M4.4 cancellation hook so the
- * AnalyticsClient can abort an in-flight send when `brv analytics
- * disable` fires.
- */
-export type AnalyticsSenderOptions = Readonly<{
-  signal?: AbortSignal
-}>
-
 export interface IAnalyticsSender {
   /**
    * Attempts to ship `records`. Returns the per-record outcome as id arrays.

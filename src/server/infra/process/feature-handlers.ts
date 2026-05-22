@@ -26,6 +26,7 @@ import {API_V1_PATH, BRV_DIR} from '../../constants.js'
 import {getGlobalDataDir} from '../../utils/global-data-path.js'
 import {getProjectDataDir} from '../../utils/path-utils.js'
 import {readCliVersion} from '../../utils/read-cli-version.js'
+import {AnalyticsBackoffPolicy} from '../analytics/analytics-backoff-policy.js'
 import {AnalyticsClient} from '../analytics/analytics-client.js'
 import {BoundedQueue} from '../analytics/bounded-queue.js'
 import {IdentityResolver} from '../analytics/identity-resolver.js'
@@ -201,12 +202,18 @@ export async function setupFeatureHandlers({
   // time the first track lands. Queue is hoisted to a shared instance so
   // both client (push) and scheduler (queueSize) observe the same state.
   const analyticsQueue = new BoundedQueue()
+  // M4.5: backoff policy shared between the client (mutates via
+  // onSuccess/onFailure inside runFlush) and the scheduler (reads
+  // nextDelayMs at each arm). Pure in-memory state, no persistence —
+  // a daemon restart starts from the base 30s interval.
+  const analyticsBackoffPolicy = new AnalyticsBackoffPolicy()
   // Holder for the scheduler reference shared with `onAfterTrack`. Using
   // a plain object instead of `let` so the lint rule sees a const binding
   // (the closure reads `.value` on every call). The scheduler instance is
   // assigned immediately after AnalyticsClient construction below.
   const schedulerHolder: {value: AnalyticsFlushScheduler | undefined} = {value: undefined}
   const analyticsClient: IAnalyticsClient = new AnalyticsClient({
+    backoffPolicy: analyticsBackoffPolicy,
     identityResolver: new IdentityResolver(authStateStore, globalConfigStore),
     isEnabled: () => globalConfigHandler.getCachedAnalytics(),
     jsonlStore: jsonlAnalyticsStore,
@@ -220,6 +227,7 @@ export async function setupFeatureHandlers({
 
   const analyticsFlushScheduler = wireAnalyticsFlushScheduler({
     analyticsClient,
+    backoffPolicy: analyticsBackoffPolicy,
     isEnabled: () => globalConfigHandler.getCachedAnalytics(),
     jsonlStore: jsonlAnalyticsStore,
     queue: analyticsQueue,

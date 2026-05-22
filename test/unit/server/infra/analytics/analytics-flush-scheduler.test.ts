@@ -66,7 +66,7 @@ describe('AnalyticsFlushScheduler', () => {
 
     it('does NOT flush before the interval elapses', async () => {
       const deps = buildDeps({size: 5})
-      const scheduler = new AnalyticsFlushScheduler({...deps, intervalMs: 30_000})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => 30_000})
       scheduler.start()
 
       await clock.tickAsync(29_000)
@@ -77,7 +77,7 @@ describe('AnalyticsFlushScheduler', () => {
 
     it('flushes once when the interval elapses with a non-empty queue', async () => {
       const deps = buildDeps({size: 5})
-      const scheduler = new AnalyticsFlushScheduler({...deps, intervalMs: 30_000})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => 30_000})
       scheduler.start()
 
       await clock.tickAsync(30_000)
@@ -88,7 +88,7 @@ describe('AnalyticsFlushScheduler', () => {
 
     it('does NOT flush at the interval when the queue is empty', async () => {
       const deps = buildDeps({size: 0})
-      const scheduler = new AnalyticsFlushScheduler({...deps, intervalMs: 30_000})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => 30_000})
       scheduler.start()
 
       await clock.tickAsync(60_000)
@@ -106,7 +106,7 @@ describe('AnalyticsFlushScheduler', () => {
       // every 30s forever for an empty backlog.
       const deps = buildDeps({size: 0}) // pendingCount + queueSize default sync
       deps.queueSize.returns(50) // mirror still reflects past pushes
-      const scheduler = new AnalyticsFlushScheduler({...deps, intervalMs: 30_000})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => 30_000})
       scheduler.start()
 
       await clock.tickAsync(90_000) // three intervals
@@ -117,7 +117,7 @@ describe('AnalyticsFlushScheduler', () => {
 
     it('skips the tick when analytics is disabled', async () => {
       const deps = buildDeps({enabled: false, size: 5})
-      const scheduler = new AnalyticsFlushScheduler({...deps, intervalMs: 30_000})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => 30_000})
       scheduler.start()
 
       await clock.tickAsync(60_000)
@@ -128,7 +128,7 @@ describe('AnalyticsFlushScheduler', () => {
 
     it('fires every interval, not just once (recurring timer)', async () => {
       const deps = buildDeps({size: 5})
-      const scheduler = new AnalyticsFlushScheduler({...deps, intervalMs: 30_000})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => 30_000})
       scheduler.start()
 
       await clock.tickAsync(30_000)
@@ -141,7 +141,7 @@ describe('AnalyticsFlushScheduler', () => {
 
     it('stop() halts further ticks', async () => {
       const deps = buildDeps({size: 5})
-      const scheduler = new AnalyticsFlushScheduler({...deps, intervalMs: 30_000})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => 30_000})
       scheduler.start()
       await clock.tickAsync(30_000)
       scheduler.stop()
@@ -153,13 +153,81 @@ describe('AnalyticsFlushScheduler', () => {
 
     it('start() is idempotent (double-start does NOT install two timers)', async () => {
       const deps = buildDeps({size: 5})
-      const scheduler = new AnalyticsFlushScheduler({...deps, intervalMs: 30_000})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => 30_000})
       scheduler.start()
       scheduler.start()
 
       await clock.tickAsync(30_000)
 
       expect(deps.flush.callCount).to.equal(1)
+      scheduler.stop()
+    })
+
+    it('M4.5: re-reads nextIntervalMs() on every re-arm (dynamic backoff takes effect on next tick)', async () => {
+      // The whole point of converting setInterval to a setTimeout chain
+      // in M4.5 is that the next-tick delay can change AFTER each tick
+      // settles. A backoff policy that advances 30 → 60 → 120 between
+      // ticks must produce exactly that gap pattern at the scheduler.
+      //
+      // The mutation MUST happen inside the flush (before `.finally`
+      // re-arms), matching production: `AnalyticsClient.runFlush`
+      // updates the policy after `sender.send` returns, then resolves —
+      // and only then does the scheduler's `.finally` read the new value.
+      let currentInterval = 30_000
+      const policyAdvanceQueue: Array<() => void> = [
+        () => {
+          currentInterval = 60_000
+        },
+        () => {
+          currentInterval = 120_000
+        },
+      ]
+      const flushImpl = async (): Promise<void> => {
+        const next = policyAdvanceQueue.shift()
+        if (next) next()
+      }
+
+      const deps = buildDeps({flushImpl, size: 5})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => currentInterval})
+      scheduler.start()
+
+      // Tick 1 fires at +30s; flush body sets currentInterval=60_000
+      // BEFORE the .finally re-arms. The next setTimeout is therefore
+      // armed at +60s from tick 1.
+      await clock.tickAsync(30_000)
+      expect(deps.flush.callCount, 'tick 1 at 30s').to.equal(1)
+
+      // 30s after tick 1 is NOT enough — the next arm is 60s.
+      await clock.tickAsync(30_000)
+      expect(deps.flush.callCount, 'still 1 at +60s (next arm is 60s)').to.equal(1)
+
+      // Reach the 60s mark from tick 1's settle: tick 2 fires; flush
+      // body sets currentInterval=120_000 before the re-arm.
+      await clock.tickAsync(30_000)
+      expect(deps.flush.callCount, 'tick 2 fires once 60s elapsed since tick 1').to.equal(2)
+
+      // 60s after tick 2 is NOT enough for the 120s arm.
+      await clock.tickAsync(60_000)
+      expect(deps.flush.callCount, 'still 2 — 120s arm has not elapsed').to.equal(2)
+
+      // Reach the 120s mark from tick 2.
+      await clock.tickAsync(60_000)
+      expect(deps.flush.callCount, 'tick 3 fires once 120s elapsed since tick 2').to.equal(3)
+
+      scheduler.stop()
+    })
+
+    it('M4.5: defaults to 30s when nextIntervalMs is not provided (back-compat)', async () => {
+      // Existing test fakes that omit the dep continue to work — and
+      // the default is the same 30s constant M4.3 shipped with.
+      const deps = buildDeps({size: 5})
+      const scheduler = new AnalyticsFlushScheduler(deps)
+      scheduler.start()
+
+      await clock.tickAsync(29_999)
+      expect(deps.flush.called, 'must not fire before 30s').to.equal(false)
+      await clock.tickAsync(1)
+      expect(deps.flush.calledOnce, 'fires at exactly 30s').to.equal(true)
       scheduler.stop()
     })
   })
@@ -262,7 +330,7 @@ describe('AnalyticsFlushScheduler', () => {
       const deps = buildDeps({flushImpl: slowFlush, size: 25})
       const scheduler = new AnalyticsFlushScheduler({
         ...deps,
-        intervalMs: 30_000,
+        nextIntervalMs: () => 30_000,
         thresholdCount: 20,
       })
       scheduler.start()
@@ -303,7 +371,7 @@ describe('AnalyticsFlushScheduler', () => {
           releaseFlush = resolve
         })
       const deps = buildDeps({flushImpl: slowFlush, size: 5})
-      const scheduler = new AnalyticsFlushScheduler({...deps, intervalMs: 30_000})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => 30_000})
       scheduler.start()
 
       await clock.tickAsync(30_000)
@@ -331,7 +399,7 @@ describe('AnalyticsFlushScheduler', () => {
 
     it('returns the flush result when flush completes within the timeout', async () => {
       const deps = buildDeps({async flushImpl() {}, size: 5})
-      const scheduler = new AnalyticsFlushScheduler({...deps, intervalMs: 30_000})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => 30_000})
 
       const promise = scheduler.flushFinal({timeoutMs: 3000})
       await clock.tickAsync(1)
@@ -342,7 +410,7 @@ describe('AnalyticsFlushScheduler', () => {
 
     it('resolves after the timeout when flush takes too long (best-effort guarantee)', async () => {
       const deps = buildDeps({flushImpl: neverResolvingFlush, size: 5})
-      const scheduler = new AnalyticsFlushScheduler({...deps, intervalMs: 30_000})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => 30_000})
 
       const promise = scheduler.flushFinal({timeoutMs: 3000})
       await clock.tickAsync(3000)
@@ -353,7 +421,7 @@ describe('AnalyticsFlushScheduler', () => {
 
     it('skips flush entirely when the queue is empty', async () => {
       const deps = buildDeps({size: 0})
-      const scheduler = new AnalyticsFlushScheduler({...deps, intervalMs: 30_000})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => 30_000})
 
       await scheduler.flushFinal({timeoutMs: 3000})
 
@@ -362,7 +430,7 @@ describe('AnalyticsFlushScheduler', () => {
 
     it('skips flush when analytics is disabled', async () => {
       const deps = buildDeps({enabled: false, size: 100})
-      const scheduler = new AnalyticsFlushScheduler({...deps, intervalMs: 30_000})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => 30_000})
 
       await scheduler.flushFinal({timeoutMs: 3000})
 
@@ -376,7 +444,7 @@ describe('AnalyticsFlushScheduler', () => {
           releaseFlush = resolve
         })
       const deps = buildDeps({flushImpl: slowFlush, size: 5})
-      const scheduler = new AnalyticsFlushScheduler({...deps, intervalMs: 30_000})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => 30_000})
       scheduler.start()
 
       await clock.tickAsync(30_000)
@@ -431,7 +499,7 @@ describe('AnalyticsFlushScheduler', () => {
       })
       const scheduler = new AnalyticsFlushScheduler({
         ...deps,
-        intervalMs: 30_000,
+        nextIntervalMs: () => 30_000,
         thresholdCount: 20,
       })
 
@@ -457,7 +525,7 @@ describe('AnalyticsFlushScheduler', () => {
 
     it('does NOT throw when the underlying flush rejects (analytics MUST NOT crash shutdown)', async () => {
       const deps = buildDeps({async flushImpl() { throw new Error('network boom'); }, size: 5})
-      const scheduler = new AnalyticsFlushScheduler({...deps, intervalMs: 30_000})
+      const scheduler = new AnalyticsFlushScheduler({...deps, nextIntervalMs: () => 30_000})
 
       let threw = false
       try {

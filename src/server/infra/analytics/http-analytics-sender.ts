@@ -85,12 +85,20 @@ export class HttpAnalyticsSender implements IAnalyticsSender {
       )
 
       if (httpResult.ok) return {failed: [], succeeded: [...ids]}
-      return {failed: [...ids], succeeded: []}
+      // M4.5: surface the http-level failure reason so AnalyticsClient
+      // can feed it into the backoff policy. `http_4xx` is intentionally
+      // forwarded as-is so the caller can suppress backoff advancement
+      // (4xx is a payload-shape problem, not a transient signal).
+      return {failed: [...ids], reason: httpResult.reason, succeeded: []}
     } catch {
       // Defensive: any collaborator surprise (config read throws,
       // toWireEvent edge case, etc.) maps to a batch-level failure.
-      // The retry-cap policy owns terminal classification.
-      return {failed: [...ids], succeeded: []}
+      // The retry-cap policy owns terminal classification. Tagged as
+      // `network` for M4.5 — internal collaborator failures are treated
+      // as transient (try again later), not as permanent payload-shape
+      // errors. M4.5's `AnalyticsClient` advances the backoff policy
+      // when it sees this reason.
+      return {failed: [...ids], reason: 'network', succeeded: []}
     }
   }
 }
