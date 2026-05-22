@@ -40,6 +40,44 @@ describe('format-settings (tui)', () => {
       expect(groups[0].rows).to.have.lengthOf(1)
       expect(groups[1].rows).to.have.lengthOf(1)
     })
+
+    it('renders an UPDATES header when an updates-category row is present (T5)', () => {
+      const groups = groupRowsByCategory([
+        makeRow({
+          category: 'updates',
+          current: true,
+          default: true,
+          displayCurrent: '[ on ]',
+          displayDefault: '[ on ]',
+          displayRange: '',
+          key: 'update.checkForUpdates',
+          label: 'update.checkForUpdates',
+          restartRequired: false,
+          type: 'boolean',
+        }),
+      ])
+      expect(groups.map((g) => g.header)).to.deep.equal(['UPDATES'])
+      expect(groups[0].rows[0].key).to.equal('update.checkForUpdates')
+    })
+
+    it('orders updates after task-history when both groups are present (T5)', () => {
+      const groups = groupRowsByCategory([
+        makeRow({
+          category: 'updates',
+          current: true,
+          default: true,
+          displayCurrent: '[ on ]',
+          displayDefault: '[ on ]',
+          displayRange: '',
+          key: 'update.checkForUpdates',
+          label: 'update.checkForUpdates',
+          restartRequired: false,
+          type: 'boolean',
+        }),
+        makeRow({category: 'task-history', key: 'taskHistory.maxEntries'}),
+      ])
+      expect(groups.map((g) => g.header)).to.deep.equal(['TASK HISTORY', 'UPDATES'])
+    })
   })
 
   describe('bottomHintFor', () => {
