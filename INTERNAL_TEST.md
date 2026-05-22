@@ -130,7 +130,7 @@ Bridge config now lives at `<dataDir>/state/bridge-config.json`. First time you 
 
 To **revert** the persisted config (e.g. you tested with `BRV_BRIDGE_PARLEY_PROFILE=codex` and now want to clear it for an experiment): `rm <dataDir>/state/bridge-config.json`. The daemon recreates the file the next time env vars supply values, or stays bare-defaults if env stays empty.
 
-**Daemon restart re-randomises libp2p port.** If you (or auto-spawn) kill the daemon and a peer was holding your previous multiaddr, they'll see ECONNREFUSED until they re-invite. There's no `brv channel kick` yet — easiest workaround is to create a new channel and re-invite both sides. We're tracking this.
+**Daemon restart re-randomises libp2p port.** If you (or auto-spawn) kill the daemon and a peer was holding your previous multiaddr, they'll see ECONNREFUSED until they re-invite. Fix: `brv channel uninvite <channel> @<stale-handle>` to drop the stale member (cancels in-flight deliveries + releases the pool driver cleanly), then `brv channel invite <channel> @<handle> --peer ... --multiaddr ...` with the fresh multiaddr from the other side's `brv bridge whoami`. No need to recreate the whole channel.
 
 **`brv channel doctor` is your friend.** Run it on either side when things look weird. It surfaces parley dispatcher mode, auto-provision policy, pinned peers, and reachability classification.
 
