@@ -37,13 +37,40 @@ describe('selectCancelTargetTaskId', () => {
     expect(selectCancelTargetTaskId(tasks)).to.equal('b')
   })
 
-  it('returns the most recently created non-terminal task when several are running', () => {
+  it('returns the OLDEST running task when several are concurrently running', () => {
+    // Policy: Ctrl+Q stops what is currently happening. Among running tasks,
+    // pick the oldest — it has occupied the agent slot longest and is the
+    // most natural "active" task in the user's mental model.
     const tasks = new Map<string, Task>([
       ['mid', makeTask({createdAt: 200, status: 'started', taskId: 'mid', type: 'query'})],
       ['new', makeTask({createdAt: 300, status: 'started', taskId: 'new', type: 'curate'})],
       ['old', makeTask({createdAt: 100, status: 'started', taskId: 'old', type: 'curate'})],
     ])
-    expect(selectCancelTargetTaskId(tasks)).to.equal('new')
+    expect(selectCancelTargetTaskId(tasks)).to.equal('old')
+  })
+
+  it('prefers a running task over any queued (created-status) task', () => {
+    // Regression for the multi-curate bug: ctrl+q must stop the running task,
+    // not the most-recently-queued one. Cancelling the runner also frees the
+    // slot so the queue drains naturally.
+    const tasks = new Map<string, Task>([
+      ['queued-newer', makeTask({createdAt: 300, status: 'created', taskId: 'queued-newer', type: 'curate'})],
+      ['queued-older', makeTask({createdAt: 150, status: 'created', taskId: 'queued-older', type: 'curate'})],
+      ['running', makeTask({createdAt: 100, status: 'started', taskId: 'running', type: 'curate'})],
+    ])
+    expect(selectCancelTargetTaskId(tasks)).to.equal('running')
+  })
+
+  it('falls back to the OLDEST queued task when nothing is running yet', () => {
+    // Cold-start scenario: the agent has not yet picked anything up. The
+    // oldest queued task is closest to dispatch, so cancelling it is the
+    // FIFO-consistent choice (matches what the user just submitted first).
+    const tasks = new Map<string, Task>([
+      ['a', makeTask({createdAt: 100, status: 'created', taskId: 'a', type: 'curate'})],
+      ['b', makeTask({createdAt: 200, status: 'created', taskId: 'b', type: 'curate'})],
+      ['c', makeTask({createdAt: 300, status: 'created', taskId: 'c', type: 'curate'})],
+    ])
+    expect(selectCancelTargetTaskId(tasks)).to.equal('a')
   })
 
   it('treats `created` status as non-terminal (still cancellable before task:started)', () => {

@@ -15,9 +15,10 @@
  *   intercepted everywhere — text inputs, REPL prompt, search box, modals, etc.
  * - DO NOT bind Ctrl+Q to any other action while a curate/query/dream task can
  *   be in flight; the global cancel will eat the chord first.
- * - The binding targets `selectCancelTargetTaskId`'s "most recently created
- *   non-terminal task." With multiple in-flight tasks, Ctrl+Q always cancels
- *   the most recent one, not the one currently focused in the UI.
+ * - The binding targets `selectCancelTargetTaskId`'s "oldest running task,
+ *   falling back to the oldest queued task." With multiple in-flight tasks,
+ *   Ctrl+Q cancels the task occupying the agent slot (FIFO) so the queue
+ *   drains; it does NOT cancel whichever task is currently focused in the UI.
  * - There is no confirmation step today — the cancel network round-trip starts
  *   the instant the chord lands. If a real-world conflict surfaces (user
  *   accidentally cancelling), the recommended follow-up is to mirror the SIGINT
