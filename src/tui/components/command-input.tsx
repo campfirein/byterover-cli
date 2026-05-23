@@ -32,6 +32,7 @@ export const CommandInput = () => {
   const [inputKey, setInputKey] = useState(0)
   const [activeDialog, setActiveDialog] = useState<ReactNode>(null)
   const ctrlOPressedRef = useRef(false)
+  const ctrlQPressedRef = useRef(false)
   const previousInputRef = useRef('')
 
   // Placeholder based on onboarding step
@@ -40,23 +41,37 @@ export const CommandInput = () => {
     return 'Type a command...'
   }, [isStreaming])
 
-  // Filter out "o" character when Ctrl+O is pressed
+  // Filter out the chord-suffix character when Ctrl+O or Ctrl+Q is pressed:
+  // ink-text-input receives the literal "o"/"q" alongside the modifier and
+  // appends it before our useInput handler runs, so we strip it here.
   useEffect(() => {
     if (ctrlOPressedRef.current) {
-      // Check if "o" was just added to the end
       if (inputValue === previousInputRef.current + 'o') {
         setInputValue(previousInputRef.current)
       }
 
       ctrlOPressedRef.current = false
     }
+
+    if (ctrlQPressedRef.current) {
+      if (inputValue === previousInputRef.current + 'q') {
+        setInputValue(previousInputRef.current)
+      }
+
+      ctrlQPressedRef.current = false
+    }
   }, [inputValue])
 
-  // Detect Ctrl+O to prevent "o" from being inserted
+  // Detect Ctrl+O / Ctrl+Q to prevent their letter from being inserted.
+  // Ctrl+Q is the cancel-task chord; see useCancelRunningTaskKeybind.
   useInput((input, key) => {
-    if (key.ctrl && input === 'o') {
+    if (!key.ctrl) return
+    if (input === 'o') {
       previousInputRef.current = inputValue
       ctrlOPressedRef.current = true
+    } else if (input === 'q') {
+      previousInputRef.current = inputValue
+      ctrlQPressedRef.current = true
     }
   })
 
