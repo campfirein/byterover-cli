@@ -2,6 +2,12 @@
 
 All notable user-facing changes to ByteRover CLI will be documented in this file.
 
+## [3.15.1]
+
+### Fixed
+- **Review settings panel restored in `brv webui`.** The on/off toggle for review-before-changes (Configuration → Version Control) went missing in 3.15.0. It is back in the same spot, alongside Identity and Remotes.
+- **`brv update` tidies up old versions.** Each upgrade used to leave previous CLI versions sitting in the plugin cache, slowly eating disk space. The cache now keeps only the version you just installed.
+
 ## [3.15.0]
 
 ### Added

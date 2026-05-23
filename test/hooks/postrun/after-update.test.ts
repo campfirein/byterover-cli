@@ -1,9 +1,9 @@
 import {expect} from 'chai'
 import {restore, stub} from 'sinon'
 
-import {handleRestartAfterUpdate} from '../../../src/oclif/hooks/postrun/restart-after-update.js'
+import {handleRestartAfterUpdate} from '../../../src/oclif/hooks/postrun/after-update.js'
 
-describe('restart-after-update hook', () => {
+describe('after-update hook', () => {
   let spawnRestartStub: ReturnType<typeof stub>
   let fakeChild: {unref: ReturnType<typeof stub>}
   let logStub: ReturnType<typeof stub>
