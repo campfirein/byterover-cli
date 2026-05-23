@@ -427,10 +427,16 @@ private readonly claudeBinary: string
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 function buildSpawnArgs(sessionId: string | undefined): string[] {
+  // `claude -p --output-format stream-json` requires `--verbose` since
+  // Claude Code 2.x (the CLI refuses the combo otherwise with
+  //   "Error: When using --print, --output-format=stream-json requires --verbose"
+  // ). --verbose only affects stderr noise, not the stream-json payload
+  // we parse from stdout.
   const spawnArgs = [
     '-p',
     '--output-format',
     'stream-json',
+    '--verbose',
     '--dangerously-skip-permissions',
   ]
   if (sessionId !== undefined) {
