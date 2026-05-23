@@ -1,4 +1,7 @@
 import {expect} from 'chai'
+import {mkdtempSync, rmSync, writeFileSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
 import * as sinon from 'sinon'
 
 import type {NarrowedUpdateNotifier, UpdateNotifierDeps} from '../../../src/oclif/hooks/init/update-notifier.js'
@@ -6,6 +9,7 @@ import type {NarrowedUpdateNotifier, UpdateNotifierDeps} from '../../../src/ocli
 import {
   handleUpdateNotification,
   isNpmGlobalInstall,
+  shouldRunUpdateCheck,
   UPDATE_CHECK_INTERVAL_MS,
 } from '../../../src/oclif/hooks/init/update-notifier.js'
 
@@ -202,6 +206,54 @@ describe('update-notifier hook', () => {
 
       expect(execSyncStub.called).to.be.false
       expect(logStub.called).to.be.false
+    })
+  })
+
+  describe('shouldRunUpdateCheck (T7 gate)', () => {
+    let tempDir: string
+    let priorBrvDataDir: string | undefined
+    let priorBrvEnv: string | undefined
+
+    beforeEach(() => {
+      priorBrvDataDir = process.env.BRV_DATA_DIR
+      priorBrvEnv = process.env.BRV_ENV
+      tempDir = mkdtempSync(join(tmpdir(), 'brv-updnotify-'))
+      process.env.BRV_DATA_DIR = tempDir
+      delete process.env.BRV_ENV
+    })
+
+    afterEach(() => {
+      rmSync(tempDir, {force: true, recursive: true})
+      if (priorBrvDataDir === undefined) delete process.env.BRV_DATA_DIR
+      else process.env.BRV_DATA_DIR = priorBrvDataDir
+      if (priorBrvEnv === undefined) delete process.env.BRV_ENV
+      else process.env.BRV_ENV = priorBrvEnv
+    })
+
+    it('returns true by default (setting missing, not dev, not update command)', () => {
+      expect(shouldRunUpdateCheck({commandId: 'status'})).to.equal(true)
+    })
+
+    it('returns false when the setting is explicitly off', () => {
+      writeFileSync(
+        join(tempDir, 'settings.json'),
+        JSON.stringify({values: {'update.checkForUpdates': false}, version: '2'}),
+      )
+      expect(shouldRunUpdateCheck({commandId: 'status'})).to.equal(false)
+    })
+
+    it('returns false when the command being invoked is the update command (anti-recursion)', () => {
+      expect(shouldRunUpdateCheck({commandId: 'update'})).to.equal(false)
+    })
+
+    it('returns false when BRV_ENV=development', () => {
+      process.env.BRV_ENV = 'development'
+      expect(shouldRunUpdateCheck({commandId: 'status'})).to.equal(false)
+    })
+
+    it('returns true when BRV_ENV is set to a non-development value', () => {
+      process.env.BRV_ENV = 'production'
+      expect(shouldRunUpdateCheck({commandId: 'status'})).to.equal(true)
     })
   })
 
