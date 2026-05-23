@@ -16,6 +16,7 @@ import {
 } from '../../../core/domain/channel/parley-types.js'
 import {type BridgeTranscriptService} from './bridge-transcript-service.js'
 import {type Libp2pHost, type Libp2pStreamLike} from './libp2p-host.js'
+import {type ParleyAdapterRegistry} from './parley-adapter-registry.js'
 import {NonceLru} from './parley-nonce-lru.js'
 import {HandshakeRateLimiter} from './parley-rate-limit.js'
 import {
@@ -62,6 +63,13 @@ export interface RegisterParleyServerArgs {
   readonly l2Identity: PeerTreeIdentityService
   readonly nonceLru?: NonceLru
   readonly now?: () => Date
+  /**
+   * Phase 9.5.3 — absolute path to the project the bridge is serving.
+   * Passed to `ParleyAdapterContext.projectRoot` so adapters that persist
+   * per-project state (e.g. session IDs) can scope their storage correctly.
+   * Optional for backwards-compat; adapters that need it should assert it.
+   */
+  readonly projectRoot?: string
   readonly rateLimiter?: HandshakeRateLimiter
   /**
    * Slice 9.4c — pluggable content generator. When omitted the server
@@ -69,8 +77,23 @@ export interface RegisterParleyServerArgs {
    * single `agent_message_chunk`). The daemon wires
    * `localAgentResponseGenerator` here when `BRV_BRIDGE_PARLEY_PROFILE`
    * is configured.
+   *
+   * Phase 9.5.2 — also accepts a `{registry, profile}` pair. When
+   * supplied:
+   *   - `profile` is defined and resolves in the registry → use the
+   *     adapter's `generate`.
+   *   - `profile` is defined but the registry returns `undefined` → the
+   *     resolver returns a generator that throws
+   *     `ParleyResponseError('PARLEY_ADAPTER_NOT_FOUND', ...)`, surfacing
+   *     a signed error terminal to the sender (plan §2.3 strict resolution).
+   *   - `profile` is `undefined` → use `mockEchoChunks` (same as today).
+   *
+   * A raw `ParleyResponseGenerator` is still accepted for backwards
+   * compatibility — existing tests and callers keep working unchanged.
    */
-  readonly responseGenerator?: ParleyResponseGenerator
+  readonly responseGenerator?:
+    | ParleyResponseGenerator
+    | {readonly profile: string | undefined; readonly registry: ParleyAdapterRegistry}
   readonly tofuPolicy: TofuPolicy
   readonly tofuStore: TofuStore
   /**
@@ -86,6 +109,89 @@ export interface RegisterParleyServerArgs {
 }
 
 const DEFAULT_CLOCK_SKEW_MS = 5 * 60 * 1000
+
+/**
+ * Per-request context needed to build a full `ParleyAdapterContext`.
+ * Populated from the verified handshake fields after the verifier passes.
+ */
+interface RequestContext {
+  /** AbortController tied to the libp2p stream lifecycle (see `dispatchResponseStream`). */
+  readonly abortController: AbortController
+  /** Absolute project root for session-id persistence (from `bridgeRuntime.projectRoot`). */
+  readonly projectRoot: string
+  /** Verified peer ID from the Noise transport handshake. Cannot be spoofed. */
+  readonly senderPeerId: string
+}
+
+/**
+ * Phase 9.5.2 / 9.5.3 — resolve the effective `ParleyResponseGenerator`
+ * from the `responseGenerator` option, which may be a raw function, a
+ * registry+profile pair, or undefined.
+ *
+ * Phase 9.5.3: `requestCtx` carries the per-request fields that adapters
+ * need for subprocess control and session persistence. The `abortController`
+ * is signalled when the libp2p stream closes, the daemon shuts down, or
+ * the request is cancelled — replacing the never-aborted stub from 9.5.2.
+ *
+ * The returned function has the `ParleyResponseGenerator` shape so
+ * `dispatchResponseStream` is unchanged.
+ */
+function resolveGenerator(
+  responseGenerator: RegisterParleyServerArgs['responseGenerator'],
+  requestCtx: RequestContext,
+): ParleyResponseGenerator {
+  if (responseGenerator === undefined) {
+    return mockEchoChunks
+  }
+
+  // Raw function — backwards-compatible path used by existing tests and
+  // callers that haven't migrated to the registry yet.
+  if (typeof responseGenerator === 'function') {
+    return responseGenerator
+  }
+
+  // Registry+profile pair.
+  const {profile, registry} = responseGenerator
+  if (profile === undefined) {
+    return mockEchoChunks
+  }
+
+  const adapter = registry.resolve(profile)
+  if (adapter === undefined) {
+    // Explicit profile that doesn't resolve → surface a signed error
+    // terminal to the sender rather than silently falling back to echo.
+    // The parley-server owns terminal seal emission; throw here so
+    // dispatchResponseStream projects it as PARLEY_ADAPTER_NOT_FOUND.
+    // (codex round-2 MUST-FIX — plan §2.3)
+    const names = registry
+      .list()
+      .map((a) => `"${a.profile}"`)
+      .join(', ')
+    return () => {
+      throw new ParleyResponseError(
+        'PARLEY_ADAPTER_NOT_FOUND',
+        `Parley adapter profile "${profile}" is not registered. Available: [${names || 'none'}].`,
+      )
+    }
+  }
+
+  // Wrap the adapter's generate() in the ParleyResponseGenerator shape.
+  // Phase 9.5.3: real senderPeerId, projectRoot, and abortSignal are
+  // wired in here (replaces the never-aborted stub from 9.5.2).
+  return ({envelope}) =>
+    adapter.generate({
+      abortSignal: requestCtx.abortController.signal,
+      channelId: envelope.channel_id,
+      envelope,
+      logger(msg) {
+        console.debug(`[parley:${profile}] ${msg}`)
+      },
+      memberHandle: envelope.handshake.install_cert.display_handle ?? '',
+      projectRoot: requestCtx.projectRoot,
+      senderPeerId: requestCtx.senderPeerId,
+      turnId: envelope.turn_id,
+    })
+}
 
 export async function registerParleyServer(args: RegisterParleyServerArgs): Promise<void> {
   const nonceLru = args.nonceLru ?? new NonceLru()
@@ -162,7 +268,21 @@ export async function registerParleyServer(args: RegisterParleyServerArgs): Prom
     }
 
     const l2 = await args.l2Identity.loadOrGenerate()
-    const generator = args.responseGenerator ?? mockEchoChunks
+
+    // Phase 9.5.3 — create the per-request AbortController that is
+    // signalled when the response stream ends (success, error, or cancel).
+    // This replaces the never-aborted stub from 9.5.2 so adapters that
+    // spawn subprocesses (ClaudeCodeHeadlessAdapter) can kill them on
+    // stream close / Alice-side Ctrl-C / daemon shutdown.
+    const requestAbortController = new AbortController()
+
+    const requestCtx: RequestContext = {
+      abortController: requestAbortController,
+      projectRoot: args.projectRoot ?? '',
+      senderPeerId: transportPeerId,
+    }
+
+    const generator = resolveGenerator(args.responseGenerator, requestCtx)
 
     // Slice 9.4e — auto-provision policy gate. When the transcript
     // service is wired, ask it to decide whether to accept this
@@ -211,6 +331,7 @@ export async function registerParleyServer(args: RegisterParleyServerArgs): Prom
       generator,
       heartbeatIntervalMs: args.heartbeatIntervalMs ?? BRIDGE_PARLEY_HEARTBEAT_INTERVAL_MS,
       l2PrivateKey: l2.privateKey,
+      requestAbortController,
       requestEnvelopeHash: verifyResult.requestEnvelopeHash,
       stream,
       transcriptContext,
@@ -221,11 +342,18 @@ export async function registerParleyServer(args: RegisterParleyServerArgs): Prom
   })
 }
 
-interface DispatchResponseStreamArgs {
+export interface DispatchResponseStreamArgs {
   readonly envelope: ParleyQueryEnvelope
   readonly generator: ParleyResponseGenerator
   readonly heartbeatIntervalMs: number
   readonly l2PrivateKey: KeyObject
+  /**
+   * Phase 9.5.3 — AbortController whose signal is wired to
+   * `ParleyAdapterContext.abortSignal`. Signalled in the `finally` block
+   * so adapters that spawn subprocesses can SIGTERM them on stream close.
+   * When absent (legacy/test callers), no signal is fired.
+   */
+  readonly requestAbortController?: AbortController
   readonly requestEnvelopeHash: string
   readonly stream: Libp2pStreamLike
   readonly transcriptContext?: {deliveryId: string; mirrorHandle: string}
@@ -251,12 +379,14 @@ interface DispatchResponseStreamArgs {
  * pre-seal-1 frame is guaranteed to be the terminal — `parley-client.ts`
  * picks the terminal by `sealIdx - 1`, not by kind-filter.
  */
-async function dispatchResponseStream(args: DispatchResponseStreamArgs): Promise<void> {
+// Exported for unit tests only — not part of the public API.
+export async function dispatchResponseStream(args: DispatchResponseStreamArgs): Promise<void> {
   const {
     envelope,
     generator,
     heartbeatIntervalMs,
     l2PrivateKey,
+    requestAbortController,
     requestEnvelopeHash,
     stream,
     transcriptContext,
@@ -326,8 +456,16 @@ async function dispatchResponseStream(args: DispatchResponseStreamArgs): Promise
           const frame: ParleyResponseFrame = {kind: 'heartbeat_ping', seq: nextSeq()}
           await sendFrame(stream, frame)
         })
-        .catch(() => {
-          /* stream may have closed mid-heartbeat; next real emit surfaces it */
+        .catch((error) => {
+          // Fix 9.5.3 (codex K79P0sTCkPTOaaZefPoh1 Fix 1a): heartbeat send
+          // failure means the libp2p substream is dead. Abort EARLY so
+          // adapters that spawned subprocesses (ClaudeCodeHeadlessAdapter)
+          // get SIGTERMed immediately, not after the generator unwinds.
+          if (!terminalQueued) {
+            const msg = error instanceof Error ? error.message : String(error)
+            console.warn(`[parley] heartbeat send failed for turn ${envelope.turn_id}: ${msg} — aborting request`)
+            requestAbortController?.abort()
+          }
         })
     }, heartbeatIntervalMs)
 
@@ -357,8 +495,15 @@ async function dispatchResponseStream(args: DispatchResponseStreamArgs): Promise
 
           await sendFrame(stream, frame)
         })
-        sendChain = emit.catch(() => {
-          /* error is awaited below and re-thrown to the outer catch */
+        sendChain = emit.catch((error) => {
+          // Fix 9.5.3 (codex K79P0sTCkPTOaaZefPoh1 Fix 1b): stream-write
+          // failure means the receiver is gone. Abort EARLY so the adapter
+          // subprocess (if any) gets SIGTERMed before the generator unwinds.
+          if (!terminalQueued) {
+            const msg = error instanceof Error ? error.message : String(error)
+            console.warn(`[parley] sendFrame failed for turn ${envelope.turn_id}: ${msg} — aborting request`)
+            requestAbortController?.abort()
+          }
         })
         await emit
       }
@@ -432,6 +577,11 @@ async function dispatchResponseStream(args: DispatchResponseStreamArgs): Promise
       clearInterval(heartbeatTimer)
       heartbeatTimer = undefined
     }
+
+    // Phase 9.5.3 — signal the per-request AbortController so adapters
+    // that spawned subprocesses (ClaudeCodeHeadlessAdapter) can SIGTERM
+    // them. Fires on success, error, and cancel paths alike.
+    requestAbortController?.abort()
 
     if (transcriptService !== undefined && transcriptContext !== undefined) {
       try {

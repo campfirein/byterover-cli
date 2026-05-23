@@ -4,6 +4,7 @@ import {join} from 'node:path'
 
 import {InstallIdentityService} from '../../../agent/core/trust/install-identity-service.js'
 import {TofuStore} from '../../../agent/core/trust/tofu-store.js'
+import {verifyPin, VerifyPinError} from '../../../agent/core/trust/verify-pin.js'
 import {DEFAULT_BRIDGE_CONFIG} from '../../../server/infra/channel/bridge/bridge-config.js'
 import {fetchAndPin} from '../../../server/infra/channel/bridge/identity-client.js'
 import {Libp2pHost} from '../../../server/infra/channel/bridge/libp2p-host.js'
@@ -39,6 +40,10 @@ public static flags = {
       description: 'Output format',
       options: ['text', 'json'],
     }),
+    verify: Flags.boolean({
+      default: false,
+      description: 'After pinning, immediately promote to user-confirmed (assumes you have eyeballed the multiaddr out-of-band). Eliminates the separate `brv bridge verify` step.',
+    }),
   }
 
   public async run(): Promise<void> {
@@ -66,15 +71,39 @@ public static flags = {
     await host.start()
 
     try {
-      const pinned = await fetchAndPin({
+      let pinned = await fetchAndPin({
         expectedPeerId: peerId,
         host,
         multiaddr: args.multiaddr,
         tofuStore: tofu,
       })
 
+      // Phase 9.5 §3.2 — `--verify` promotes the pin to user-confirmed in one
+      // shot, eliminating the separate `brv bridge verify` step. Surface the
+      // verify error code separately so callers can distinguish pin failure from
+      // verify failure.
+      let verified = false
+      if (flags.verify) {
+        try {
+          pinned = await verifyPin({peerId: pinned.peer_id, tofu})
+          verified = true
+        } catch (error) {
+          const code = error instanceof VerifyPinError ? error.code : 'BRIDGE_VERIFY_FAILED'
+          const msg = error instanceof Error ? error.message : String(error)
+          if (flags.format === 'json') {
+            this.log(JSON.stringify({code, error: msg, ok: false}))
+          } else {
+            this.error(`${code}: ${msg}`, {exit: 1})
+          }
+
+          return
+        }
+      }
+
       if (flags.format === 'json') {
-        this.log(JSON.stringify({data: pinned, ok: true}))
+        const out: Record<string, unknown> = {data: pinned, ok: true}
+        if (flags.verify) out.verified = verified
+        this.log(JSON.stringify(out))
       } else {
         this.log('pinned:')
         this.log(`  peer_id:                    ${pinned.peer_id}`)
@@ -84,6 +113,10 @@ public static flags = {
         this.log(`  last_seen_at:               ${pinned.last_seen_at}`)
         if (pinned.display_handle) {
           this.log(`  display_handle:             ${pinned.display_handle}`)
+        }
+
+        if (verified) {
+          this.log('verified: pin_state promoted to user-confirmed')
         }
       }
     } catch (error) {

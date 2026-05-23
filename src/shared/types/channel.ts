@@ -220,6 +220,11 @@ export const ChannelMemberRemotePeerSchema = z.object({
   remoteL2PubKey: z.string().min(1).optional(),
   displayName: z.string().optional(),
   status: RemotePeerStatusSchema,
+  // Phase 9.5.4 — addressability flag for auto-provisioned members.
+  // `bootstrap-only` signals that the multiaddr came from a one-time
+  // inbound dial and may be stale. `pinned` means the multiaddr was
+  // set via `brv channel invite` and is operator-verified.
+  addressability: z.enum(['bootstrap-only', 'pinned']).optional(),
 })
 export type ChannelMemberRemotePeer = z.infer<typeof ChannelMemberRemotePeerSchema>
 
@@ -440,6 +445,9 @@ export const ChannelSchema = z.object({
   members: z.array(ChannelMemberSummarySchema),
   memberCount: z.number().int().nonnegative(),
   settings: ChannelSettingsSchema.optional(),
+  // Phase 9.5.4 — provenance fields for auto-provisioned channels (optional).
+  autoProvisionedFrom: z.string().optional(),
+  autoProvisionedAt: z.string().datetime().optional(),
 })
 export type Channel = z.infer<typeof ChannelSchema>
 
@@ -457,6 +465,11 @@ export const ChannelMetaSchema = z.object({
   archivedAt: z.string().datetime().optional(),
   members: z.array(ChannelMemberSchema),
   settings: ChannelSettingsSchema.optional(),
+  // Phase 9.5.4 — provenance fields for auto-provisioned channels.
+  // Set by BridgeTranscriptService.ensureChannelMeta on auto-create.
+  // Exposed via `brv channel list --json` for operator audit.
+  autoProvisionedFrom: z.string().optional(),
+  autoProvisionedAt: z.string().datetime().optional(),
 })
 export type ChannelMeta = z.infer<typeof ChannelMetaSchema>
 

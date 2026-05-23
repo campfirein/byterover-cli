@@ -7,7 +7,7 @@ import {ParleyResponseError} from './parley-response-generator.js'
  * Bob-side parley dispatcher.
  *
  * Replaces the per-query subprocess spawn shipped in 9.4c
- * (`local-agent-response-generator.ts` TODO + kimi round-1 LOW-C). One
+ * (`AcpAdapter`, kimi round-1 LOW-C). One
  * `IAcpDriver` (i.e. one ACP subprocess) is kept warm per profile name
  * and reused across inbound parley queries. A hard cap on the number
  * of in-flight drivers per profile prevents resource exhaustion under

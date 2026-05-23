@@ -62,6 +62,7 @@ import {crashLog, processLog} from '../../utils/process-logger.js'
 import {DaemonTokenProvider} from '../auth/daemon-token-provider.js'
 import {allowlistFromEnv, makeOriginAllowlist} from '../auth/origin-allowlist.js'
 import {createBillingStateHandler} from '../billing/billing-state-endpoint.js'
+import {type AutoCreateQuota, createAutoCreateQuota} from '../channel/bridge/auto-create-quota.js'
 import {BridgeConfigStore, resolveBridgeRuntimeConfig} from '../channel/bridge/bridge-config-store.js'
 import {DEFAULT_BRIDGE_CONFIG} from '../channel/bridge/bridge-config.js'
 import {BridgeDriverPool} from '../channel/bridge/bridge-driver-pool.js'
@@ -69,8 +70,13 @@ import {BridgeTranscriptService} from '../channel/bridge/bridge-transcript-servi
 import {fetchAndPin, isL2CertExpired} from '../channel/bridge/identity-client.js'
 import {registerIdentityServer} from '../channel/bridge/identity-server.js'
 import {Libp2pHost} from '../channel/bridge/libp2p-host.js'
-import {createLocalAgentResponseGenerator} from '../channel/bridge/local-agent-response-generator.js'
+import {
+  createDefaultRegistry as createDefaultParleyRegistry,
+  ParleyAdapterNotFoundError,
+} from '../channel/bridge/parley-adapter-registry.js'
+import {createFileBackedSessionStore} from '../channel/bridge/parley-adapter-session-store.js'
 import {registerParleyServer} from '../channel/bridge/parley-server.js'
+import {createProfileConcurrencyGate} from '../channel/bridge/profile-concurrency-gate.js'
 import {RemoteMemberDriver} from '../channel/bridge/remote-member-driver.js'
 import {runChannelRecovery} from '../channel/channel-recovery.js'
 import {ChannelStore} from '../channel/channel-store.js'
@@ -129,6 +135,7 @@ import {
 } from '../webui/webui-state.js'
 import {AgentIdleTimeoutPolicy} from './agent-idle-timeout-policy.js'
 import {AgentPool} from './agent-pool.js'
+import {hasBridgePersistedState} from './bridge-startup-rebind.js'
 import {DaemonResilience} from './daemon-resilience.js'
 import {HeartbeatWriter} from './heartbeat.js'
 import {IdleTimeoutPolicy} from './idle-timeout-policy.js'
@@ -895,6 +902,11 @@ async function main(): Promise<void> {
     // BRV_BRIDGE_PARLEY_PROFILE is set; remains undefined for the
     // mock-echo path.
     let bridgeDriverPool: BridgeDriverPool | undefined
+    // Phase 9.5.4 deferral (§6) — shared quota instance used by BOTH
+    // BridgeTranscriptService (tryConsume on auto-create) and
+    // ChannelOrchestrator (reset on uninvite). Created once here so both
+    // share the same in-memory counter.
+    const bridgeAutoCreateQuota: AutoCreateQuota = createAutoCreateQuota({log})
     const ensureBridgeHost = async (): Promise<Libp2pHost> => {
       if (bridgeHostPromise === undefined) {
         bridgeHostPromise = (async () => {
@@ -959,22 +971,80 @@ async function main(): Promise<void> {
           // hook can call closeAll().
           bridgeDriverPool =
             parleyProfile === undefined ? undefined : new BridgeDriverPool({maxPerProfile: bridgeMaxConcurrent})
-          const responseGenerator =
-            parleyProfile === undefined
-              ? undefined
-              : createLocalAgentResponseGenerator({
-                  driverFactory: channelDriverFactory,
-                  pool: bridgeDriverPool,
-                  profileName: parleyProfile,
-                  profileStore: channelProfileStore,
-                })
-          if (responseGenerator === undefined) {
-            log('Bridge parley dispatcher: mock-echo (no BRV_BRIDGE_PARLEY_PROFILE set)')
+
+          // Phase 9.5.2 / 9.5.3 — build the adapter registry and pass it as
+          // a registry+profile pair so the parley-server can resolve the
+          // active adapter by name. Behaviour is identical to pre-refactor:
+          // ACP profile → local-agent adapter; unset → mock-echo.
+          //
+          // Phase 9.5.3: wire in session store + concurrency gate for the
+          // ClaudeCodeHeadlessAdapter (registered only when
+          // BRV_BRIDGE_CLAUDE_UNSAFE=1).
+          const parleyConcurrencyGate = createProfileConcurrencyGate({
+            maxConcurrent: bridgeMaxConcurrent,
+          })
+          const parleySessionStore = createFileBackedSessionStore({
+            filePath: `${join(getGlobalDataDir(), 'state')}/parley-adapter-sessions.json`,
+            log,
+          })
+          const parleyAdapterRegistry = createDefaultParleyRegistry({
+            bridgeDriverPool,
+            concurrencyGate: parleyConcurrencyGate,
+            driverFactory: channelDriverFactory,
+            env: process.env,
+            log,
+            profileName: parleyProfile,
+            profileStore: channelProfileStore,
+            sessionStore: parleySessionStore,
+          })
+
+          // Strict resolution (plan §2.3 / codex round-2 MUST-FIX):
+          //   - Unset profile → mock-echo (safe default for unattended hosts).
+          //   - Explicit profile that resolves → use it + log at INFO.
+          //   - Explicit profile that does NOT resolve → fail-fast at
+          //     startup so the operator sees a clear error immediately
+          //     rather than silently running an echo endpoint on a live
+          //     bridge. Missing profile = misconfiguration, not a
+          //     fall-back-to-mock-echo case.
+          if (parleyProfile === undefined) {
+            log('[Daemon] Parley adapter: mock-echo (kind=mock) — no BRV_BRIDGE_PARLEY_PROFILE set')
           } else {
+            const resolvedAdapter = parleyAdapterRegistry.resolve(parleyProfile)
+            if (resolvedAdapter === undefined) {
+              throw new ParleyAdapterNotFoundError(parleyProfile, parleyAdapterRegistry.list())
+            }
+
             log(
-              `Bridge parley dispatcher: local-agent profile="${parleyProfile}" ` +
+              `[Daemon] Parley adapter: ${resolvedAdapter.profile} (kind=${resolvedAdapter.kind}) ` +
                 `(pool cap=${bridgeMaxConcurrent} per profile)`,
             )
+
+            // Fix 9.5.3 (codex K79P0sTCkPTOaaZefPoh1 Fix 2a): call warm() at
+            // startup so the daemon fails fast when the required binary is
+            // missing, rather than surfacing the error on the first request.
+            // For the 'claude-code' profile (explicitly operator-configured):
+            //   warm() returns {available: false} → throw so the operator
+            //   learns immediately about the misconfiguration.
+            // For all other profiles: log a warning but continue.
+            if (resolvedAdapter.warm !== undefined) {
+              const warmResult = await resolvedAdapter.warm({log})
+              if (warmResult.available) {
+                log(`[Daemon] Parley adapter '${resolvedAdapter.profile}' warm() OK`)
+              } else {
+                if (resolvedAdapter.profile === 'claude-code') {
+                  throw new Error(
+                    `[Daemon] Parley adapter '${resolvedAdapter.profile}' is not available at startup: ` +
+                      `${warmResult.reason}. ` +
+                      `Ensure the 'claude' binary is on PATH before starting the daemon with BRV_BRIDGE_PARLEY_PROFILE=claude-code.`,
+                  )
+                }
+
+                log(
+                  `[Daemon] Warning: parley adapter '${resolvedAdapter.profile}' warm() returned ` +
+                    `available=false: ${warmResult.reason}`,
+                )
+              }
+            }
           }
 
           // Slice 9.4e — Bob-side transcript persistence + auto-
@@ -985,6 +1055,7 @@ async function main(): Promise<void> {
           const autoProvisionPolicy = bridgeRuntime.autoProvision
           const bridgeProjectRoot = bridgeRuntime.projectRoot
           const transcriptService = new BridgeTranscriptService({
+            autoCreateQuota: bridgeAutoCreateQuota,
             autoProvisionPolicy,
             channelStore,
             clock: () => new Date(),
@@ -1044,7 +1115,8 @@ async function main(): Promise<void> {
             acceptModes: ['peer-tree'],
             host,
             l2Identity: bridgeL2,
-            responseGenerator,
+            projectRoot: bridgeProjectRoot,
+            responseGenerator: {profile: parleyProfile, registry: parleyAdapterRegistry},
             tofuPolicy: 'auto',
             tofuStore: bridgeTofu,
             transcriptService,
@@ -1169,6 +1241,9 @@ async function main(): Promise<void> {
     }
 
     const channelOrchestrator = new ChannelOrchestrator({
+      // Phase 9.5.4 deferral (§6) — same quota instance shared with
+      // BridgeTranscriptService so uninvite resets the peer's counter.
+      autoCreateQuota: bridgeAutoCreateQuota,
       broadcaster: channelBroadcaster,
       cancelCoordinator: channelCancelCoordinator,
       clock: () => new Date(),
@@ -1301,6 +1376,20 @@ async function main(): Promise<void> {
     }
 
     process.once('beforeExit', releaseChannelResourcesOnExit)
+
+    // Phase 9.5.1 §3.1 — rebind bridge listener on daemon respawn.
+    // If the operator has ever configured a bridge (persisted listenAddrs,
+    // parleyProfile, etc.), eagerly call ensureBridgeHost() so the libp2p
+    // listener is bound before any client connects. Without this, a
+    // CLI-triggered auto-respawn would drop the bridge listener until the
+    // first `brv bridge whoami` / `brv channel invite`.
+    const bridgeConfigStore = new BridgeConfigStore({stateDir: join(getGlobalDataDir(), 'state')})
+    if (hasBridgePersistedState(bridgeConfigStore.load())) {
+      log('[Daemon] Persisted bridge state detected — starting bridge host eagerly (§3.1 rebind)')
+      ensureBridgeHost().catch((error: unknown) => {
+        log(`[Daemon] Bridge startup error (continuing): ${error instanceof Error ? error.message : String(error)}`)
+      })
+    }
 
     // Load auth token AFTER feature handlers are registered.
     // AuthHandler's onAuthChanged/onAuthExpired callbacks must be wired first

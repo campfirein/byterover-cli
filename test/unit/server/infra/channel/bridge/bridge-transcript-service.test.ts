@@ -135,10 +135,12 @@ const beginArgs = (overrides: Partial<{
 
 describe('BridgeTranscriptService (slice 9.4e — kimi round-1 LOW-11)', () => {
   describe('auto-provision policy gate', () => {
-    it('policy=auto accepts auto-tofu sender', async () => {
+    it('policy=auto declines auto-tofu sender when channel does not yet exist (9.5.4 auto-create trust gate)', async () => {
+      // Phase 9.5.4: auto-create of a NEW channel requires user-confirmed/ca-bound
+      // even under policy=auto. auto-tofu senders are declined on new-channel creation.
       const {service} = buildService({autoProvisionPolicy: 'auto'})
       const r = await service.beginTurn(beginArgs({senderPinState: 'auto-tofu'}))
-      expect(r.accepted).to.equal(true)
+      expect(r.accepted).to.equal(false)
     })
 
     it('policy=auto accepts user-confirmed sender', async () => {

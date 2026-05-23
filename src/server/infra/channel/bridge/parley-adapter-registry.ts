@@ -1,0 +1,170 @@
+import {type AgentDriverProfileInvocation} from '../../../../shared/types/channel.js'
+import {type IAcpDriver} from '../../../core/interfaces/channel/i-acp-driver.js'
+import {type IDriverProfileStore} from '../../../core/interfaces/channel/i-driver-profile-store.js'
+import {AcpAdapter} from './adapters/acp-adapter.js'
+import {ClaudeCodeHeadlessAdapter} from './adapters/claude-code-headless-adapter.js'
+import {MockEchoAdapter} from './adapters/mock-echo-adapter.js'
+import {type BridgeDriverPool} from './bridge-driver-pool.js'
+import {type ParleyAdapterSessionStore} from './parley-adapter-session-store.js'
+import {type ParleyAdapter} from './parley-adapter.js'
+import {type ProfileConcurrencyGate} from './profile-concurrency-gate.js'
+
+/**
+ * Phase 9.5.2 — registry contract + in-memory implementation.
+ *
+ * Adapters are keyed by `profile` name. The parley-server (and daemon
+ * startup) resolve the active adapter by profile name at runtime.
+ * Future adapters (`ClaudeCodeHeadlessAdapter`, `ShellTemplateAdapter`)
+ * drop in by registering themselves here without further plumbing changes.
+ */
+
+/**
+ * Thrown at daemon startup when `BRV_BRIDGE_PARLEY_PROFILE` is explicitly
+ * set but the named profile is not registered in the adapter registry.
+ *
+ * Silently falling back to mock-echo when an operator has explicitly
+ * configured a real profile masks misconfiguration: a live bridge
+ * would silently become an echo endpoint instead of failing visibly
+ * (codex round-2 MUST-FIX — plan §2.3).
+ */
+
+/**
+ * Profile-specific hint table. When the requested profile matches a key here,
+ * the hint is appended to the error message. This keeps the hint co-located
+ * with the error class (plan §2.5, codex K79P0sTCkPTOaaZefPoh1 Fix 3).
+ */
+const PROFILE_HINTS: Readonly<Record<string, string>> = {
+  'claude-code':
+    `The 'claude-code' adapter is registered only when BRV_BRIDGE_CLAUDE_UNSAFE=1 is set ` +
+    `in the daemon environment. See plan/bridge-smoothness/PLAN.md §2.5.`,
+}
+
+export class ParleyAdapterNotFoundError extends Error {
+  public readonly code = 'PARLEY_ADAPTER_NOT_FOUND'
+  public readonly profile: string
+
+  public constructor(
+    profile: string,
+    available: ReadonlyArray<Pick<ParleyAdapter, 'kind' | 'profile'>>,
+  ) {
+    const names = available.map((a) => `"${a.profile}"`).join(', ')
+    const hint = PROFILE_HINTS[profile]
+    const hintSuffix = hint === undefined ? '' : ` > ${hint}`
+    super(
+      `Parley adapter profile "${profile}" is not registered. ` +
+        `Available profiles: [${names || 'none'}]. ` +
+        `Check BRV_BRIDGE_PARLEY_PROFILE or register a matching adapter.${hintSuffix}`,
+    )
+    this.name = 'ParleyAdapterNotFoundError'
+    this.profile = profile
+  }
+}
+export interface ParleyAdapterRegistry {
+  list(): ReadonlyArray<Pick<ParleyAdapter, 'kind' | 'profile'>>
+  register(adapter: ParleyAdapter): void
+  resolve(profile: string): ParleyAdapter | undefined
+}
+
+export class InMemoryParleyAdapterRegistry implements ParleyAdapterRegistry {
+  private readonly adapters = new Map<string, ParleyAdapter>()
+
+  public list(): ReadonlyArray<Pick<ParleyAdapter, 'kind' | 'profile'>> {
+    return [...this.adapters.values()].map(({kind, profile}) => ({kind, profile}))
+  }
+
+  public register(adapter: ParleyAdapter): void {
+    this.adapters.set(adapter.profile, adapter)
+  }
+
+  public resolve(profile: string): ParleyAdapter | undefined {
+    return this.adapters.get(profile)
+  }
+}
+
+export interface CreateDefaultRegistryArgs {
+  /**
+   * When provided, the ACP adapter is registered and can serve profiles
+   * stored in `profileStore`. When absent, only MockEchoAdapter is
+   * registered (useful for integration tests that don't need real ACP).
+   */
+  readonly bridgeDriverPool?: BridgeDriverPool
+  /**
+   * Concurrency gate for spawn-per-turn adapters (e.g.
+   * `ClaudeCodeHeadlessAdapter`). Required when `env.BRV_BRIDGE_CLAUDE_UNSAFE`
+   * is `'1'`.
+   */
+  readonly concurrencyGate?: ProfileConcurrencyGate
+  readonly driverFactory?: (invocation: AgentDriverProfileInvocation, handle: string) => IAcpDriver
+  /**
+   * Daemon process environment. Used to gate unsafe adapters behind
+   * `BRV_BRIDGE_CLAUDE_UNSAFE=1`.
+   */
+  readonly env?: NodeJS.ProcessEnv
+  readonly log: (msg: string) => void
+  readonly profileName?: string
+  readonly profileStore?: IDriverProfileStore
+  /**
+   * Session store for adapters that persist per-turn state (e.g.
+   * `ClaudeCodeHeadlessAdapter`). Required when
+   * `env.BRV_BRIDGE_CLAUDE_UNSAFE` is `'1'`.
+   */
+  readonly sessionStore?: ParleyAdapterSessionStore
+}
+
+/**
+ * Build the default adapter registry used by the daemon.
+ *
+ * Always registers `MockEchoAdapter` (profile `'mock-echo'`).
+ * Registers `AcpAdapter` only when `bridgeDriverPool`, `driverFactory`,
+ * `profileStore`, and `profileName` are all supplied.
+ *
+ * Phase 9.5.3 — registers `ClaudeCodeHeadlessAdapter` ONLY when
+ * `env.BRV_BRIDGE_CLAUDE_UNSAFE === '1'`. Default-off per plan §2.5
+ * (codex round-1 BLOCKER #1): the adapter spawns
+ * `--dangerously-skip-permissions` and must not activate by accident.
+ */
+export function createDefaultRegistry(args: CreateDefaultRegistryArgs): ParleyAdapterRegistry {
+  const registry = new InMemoryParleyAdapterRegistry()
+  registry.register(new MockEchoAdapter())
+
+  if (
+    args.bridgeDriverPool !== undefined &&
+    args.driverFactory !== undefined &&
+    args.profileStore !== undefined &&
+    args.profileName !== undefined
+  ) {
+    registry.register(
+      new AcpAdapter({
+        driverFactory: args.driverFactory,
+        pool: args.bridgeDriverPool,
+        profileName: args.profileName,
+        profileStore: args.profileStore,
+      }),
+    )
+  } else if (args.profileName !== undefined) {
+    args.log(`[Daemon] Parley adapter registry: ACP adapter skipped — missing driverFactory or profileStore`)
+  }
+
+  // Phase 9.5.3 — ClaudeCodeHeadlessAdapter gated behind unsafe env flag.
+  // Registered only when BRV_BRIDGE_CLAUDE_UNSAFE=1 to prevent accidental
+  // activation of --dangerously-skip-permissions in production environments.
+  const env = args.env ?? {}
+  if (env.BRV_BRIDGE_CLAUDE_UNSAFE === '1') {
+    if (args.sessionStore !== undefined && args.concurrencyGate !== undefined) {
+      const adapter = new ClaudeCodeHeadlessAdapter({
+        concurrencyGate: args.concurrencyGate,
+        log: args.log,
+        sessionStore: args.sessionStore,
+      })
+      registry.register(adapter)
+      args.log('[Daemon] Parley adapter registered: claude-code (kind=sdk-headless, UNSAFE — no permission gate)')
+    } else {
+      args.log(
+        '[Daemon] BRV_BRIDGE_CLAUDE_UNSAFE=1 but sessionStore or concurrencyGate not provided; ' +
+          'claude-code adapter NOT registered',
+      )
+    }
+  }
+
+  return registry
+}

@@ -62,6 +62,7 @@ import {
   ChannelTurnNotFoundError,
 } from '../../core/domain/channel/errors.js'
 import {assertLegalTurnTransition} from '../../core/domain/channel/turn-state-machine.js'
+import {type AutoCreateQuota} from './bridge/auto-create-quota.js'
 import {type RestartLossRecord} from './channel-recovery.js'
 import {CancelCoordinator, type CancelDeliveryRef} from './drivers/cancel-coordinator.js'
 import {IPermissionBroker} from './drivers/permission-broker.js'
@@ -95,6 +96,13 @@ import {channelPaths} from './storage/paths.js'
  *     emit delivery_state_change + permission_decision events.
  */
 export type ChannelOrchestratorDeps = {
+  /**
+   * Phase 9.5.4 deferral (§6) — per-peer auto-create quota. When provided,
+   * `uninviteMember` calls `reset(peerId)` when the removed member is a
+   * `remote-peer`, clearing the peer's hourly counter so subsequent auto-
+   * creates from the same peer succeed.
+   */
+  readonly autoCreateQuota?: AutoCreateQuota
   readonly broadcaster: IChannelBroadcaster
   readonly cancelCoordinator: CancelCoordinator
   readonly clock: () => Date
@@ -244,6 +252,9 @@ const FAN_OUT_DEFAULT_MAX_PARALLEL = 4
 
 export class ChannelOrchestrator implements IChannelOrchestrator {
   private readonly activeTurns = new Map<string, ActiveTurn>()
+  // Phase 9.5.4 deferral (§6) — optional quota; when absent, uninvite
+  // skips the reset call (backwards-compatible with pre-9.5.4 installs).
+  private readonly autoCreateQuota: AutoCreateQuota | undefined
   private readonly broadcaster: IChannelBroadcaster
   private readonly cancelCoordinator: CancelCoordinator
   private readonly clock: () => Date
@@ -297,6 +308,7 @@ export class ChannelOrchestrator implements IChannelOrchestrator {
   private readonly warmInFlight = new Map<string, Promise<void>>()
 
   public constructor(deps: ChannelOrchestratorDeps) {
+    this.autoCreateQuota = deps.autoCreateQuota
     this.broadcaster = deps.broadcaster
     this.cancelCoordinator = deps.cancelCoordinator
     this.clock = deps.clock
@@ -1133,6 +1145,14 @@ export class ChannelOrchestrator implements IChannelOrchestrator {
       member: existing,
       op: 'removed',
     })
+
+    // Phase 9.5.4 deferral (§6) — reset the auto-create quota for the
+    // evicted peer so they can auto-create again after being uninvited.
+    // Only fires for `remote-peer` members (the quota only applies to
+    // remote-initiated auto-creates; local acp-agents are not throttled).
+    if (this.autoCreateQuota !== undefined && existing.memberKind === 'remote-peer') {
+      this.autoCreateQuota.reset(existing.peerId)
+    }
 
     return existing
   }

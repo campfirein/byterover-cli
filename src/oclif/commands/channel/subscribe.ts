@@ -72,6 +72,10 @@ public static flags = {
     'after-seq': Flags.integer({
       description: 'Skip events with seq <= this value within --turn (exclusive crash cursor)',
     }),
+    'all-kinds': Flags.boolean({
+      default: false,
+      description: 'Disable kind filtering — emit every event kind (diagnostics). When set, --kinds is ignored.',
+    }),
     // Phase 10 follow-up A3 (V6 evaluation) — auto-reconnect on
     // `io server disconnect` so a daemon hiccup mid-stream doesn't abort
     // the gather. Each retry replays from the last-seen seq under --turn,
@@ -137,8 +141,10 @@ public static flags = {
       this.exit(1)
     }
 
+    // Phase 9.5 §3.5 — `--all-kinds` disables kind filtering entirely.
+    // When set, `--kinds` is ignored and the router receives every event.
     const filter = {
-      kinds: parseCommaSet(flags.kinds),
+      kinds: flags['all-kinds'] ? undefined : parseCommaSet(flags.kinds),
       roles: parseCommaSet(flags.roles),
       turn: flags.turn,
     }

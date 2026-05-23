@@ -17,6 +17,37 @@ import {type Libp2pHost} from './libp2p-host.js'
 import {l2PubKeyFromBase64, sendParleyQuery} from './parley-client.js'
 
 /**
+ * Phase 9.5.4 — enrich a dial-failure error with a copy-paste-ready recovery
+ * hint when the cached multiaddr came from a one-time inbound dial
+ * (addressability='bootstrap-only').
+ *
+ * Exported for unit testing only.
+ */
+export function enrichDialFailureError(args: {
+  readonly addressability: 'bootstrap-only' | 'pinned' | undefined
+  readonly channelId: string
+  readonly multiaddr: string
+  readonly originalMessage: string
+}): Error {
+  if (args.addressability !== 'bootstrap-only') {
+    return new Error(args.originalMessage)
+  }
+
+  const hint = [
+    `BRIDGE_DIAL_FAILED: connection refused at ${args.multiaddr}`,
+    '',
+    "The cached multiaddr came from a one-time inbound (addressability='bootstrap-only').",
+    'The remote peer may have rebound on a new port.',
+    '',
+    'Recovery:',
+    `  brv bridge connect <fresh-multiaddr> --channel ${args.channelId}`,
+    '',
+    "Get the fresh multiaddr from the remote peer via 'brv bridge whoami'.",
+  ].join('\n')
+  return new Error(hint)
+}
+
+/**
  * Phase 9 / Slice 9.4 — `IAcpDriver` adapter for remote-peer channel
  * members.
  *

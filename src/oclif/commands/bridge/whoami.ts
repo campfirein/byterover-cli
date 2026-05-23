@@ -1,5 +1,6 @@
 import {Command, Flags} from '@oclif/core'
 
+import {classifyMultiaddr} from '../../../server/utils/multiaddr-classify.js'
 import {BridgeEvents, type BridgeWhoamiResponse} from '../../../shared/transport/events/bridge-events.js'
 import {formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
@@ -39,8 +40,22 @@ public static flags = {
     try {
       const response = await withDaemonRetry<BridgeWhoamiResponse>(async (client) => client.requestWithAck<BridgeWhoamiResponse>(BridgeEvents.WHOAMI), {projectPath: process.cwd()})
 
+      // Phase 9.5 §3.4 — annotate multiaddrs with interface kind.
+      const annotated = response.multiaddrs.map((addr) => {
+        const {iface, kind} = classifyMultiaddr(addr)
+        return {addr, iface, kind}
+      })
+
       if (flags.format === 'json') {
-        writeJsonResponse({command: 'bridge:whoami', data: response, success: true})
+        writeJsonResponse({
+          command: 'bridge:whoami',
+          data: {
+            ...response,
+            // Backwards-compatible: keep bare multiaddrs array, add annotated array.
+            multiaddrsAnnotated: annotated,
+          },
+          success: true,
+        })
         return
       }
 
@@ -48,8 +63,11 @@ public static flags = {
       this.log('')
       this.log(`  peer_id:     ${response.peerId}`)
       this.log('  multiaddrs:')
-      for (const ma of response.multiaddrs) {
-        this.log(`    ${ma}`)
+      for (const {addr, iface, kind} of annotated) {
+        const ifacePart = iface === undefined ? '' : `, ${iface}`
+        const annotation = kind === 'unknown' ? '' : `  (${kind}${ifacePart})`
+        const recommendation = kind === 'tailscale' ? '  ← recommended for cross-machine' : ''
+        this.log(`    ${addr}${annotation}${recommendation}`)
       }
 
       this.log(`  l2_pub_key:  ${response.l2PubKey}`)

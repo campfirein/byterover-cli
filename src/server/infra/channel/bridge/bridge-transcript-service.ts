@@ -1,4 +1,4 @@
- 
+
 // Wire fields mirror IMPLEMENTATION_PHASE_9 §5.1 + §7.3 + channel
 // transport schema; snake_case is intentional.
 
@@ -14,6 +14,8 @@ import type {IChannelStore} from '../../../core/interfaces/channel/i-channel-sto
 import type {ChannelEventsWriter} from '../storage/events-writer.js'
 
 import { type PinState} from '../../../../agent/core/trust/tofu-store.js'
+import {CHANNEL_ID_PATTERN_STRING, isValidChannelId} from '../channel-id-validator.js'
+import {type AutoCreateQuota, createAutoCreateQuota} from './auto-create-quota.js'
 
 /**
  * Phase 9 / Slice 9.4e — Bob-side transcript persistence + auto-
@@ -41,20 +43,48 @@ import { type PinState} from '../../../../agent/core/trust/tofu-store.js'
  *                     **Default.**
  *   - `deny`        — reject everything; Bob is read-only.
  *
- * Slice 9.4e does NOT yet implement `brv channel accept-remote-invite`
- * — operators must manually upgrade an `auto-tofu` peer to
- * `user-confirmed` (a future CLI surface) or set
- * `BRV_BRIDGE_AUTO_PROVISION=auto` to bypass.
+ * Phase 9.5.4 upgrades (§3.3):
+ *   - Trust gate: auto-create fires only for `user-confirmed` / `ca-bound`.
+ *   - Multiaddr + L2 cert stored on the auto-created member record.
+ *   - `addressability: 'bootstrap-only'` flag set on auto-created members.
+ *   - Per-peer auto-create quota (default 5/hour).
+ *   - ChannelId validation against ^[a-z0-9][a-z0-9-]{0,63}$.
+ *   - Provenance fields `autoProvisionedFrom` + `autoProvisionedAt`.
+ *   - `channel_auto_created` event emitted on successful auto-create.
  */
 
 export type AutoProvisionPolicy = 'auto' | 'deny' | 'pinned-only'
 
+/** Shape of the channel_auto_created event (phase 9.5.4 §3.3). */
+export interface ChannelAutoCreatedEvent {
+  readonly addressability: 'bootstrap-only'
+  readonly autoProvisionedAt: string
+  readonly autoProvisionedFrom: string
+  readonly channelId: string
+  readonly kind: 'channel_auto_created'
+  readonly multiaddr: string
+  readonly seq: number
+}
+
 export interface BridgeTranscriptServiceDeps {
+  /**
+   * Phase 9.5.4 — per-peer auto-create quota. When omitted, a default
+   * quota of 5/peer/hour is used.
+   */
+  readonly autoCreateQuota?: AutoCreateQuota
   readonly autoProvisionPolicy: AutoProvisionPolicy
   readonly channelStore: IChannelStore
   readonly clock: () => Date
   readonly eventsWriter: ChannelEventsWriter
   readonly idGenerator: () => string
+  /**
+   * Phase 9.5.4 — callback invoked when a channel is auto-created.
+   * The caller wires this to `broadcaster.broadcastToChannel` so
+   * `brv channel subscribe --kinds channel_auto_created` receives it.
+   * Optional — when absent, the event is not emitted but all other
+   * auto-create logic still runs.
+   */
+  readonly onAutoCreated?: (event: ChannelAutoCreatedEvent) => void
   /**
    * The project root under which bridge-inbound channels are
    * persisted (`<projectRoot>/.brv/context-tree/channel/<channelId>/`).
@@ -67,6 +97,20 @@ export interface BridgeTranscriptServiceDeps {
 export interface BeginTurnArgs {
   readonly channelId: string
   readonly prompt: readonly {readonly text: string; readonly type: 'text'}[]
+  /**
+   * Phase 9.5.4 — best-effort inbound multiaddr from the libp2p
+   * connection (`stream.connection.remoteAddr`). Stored on the
+   * auto-created member record so the receiver can attempt a
+   * reverse-dial. When absent or empty, the member record is created
+   * without a multiaddr (same as before 9.5.4).
+   */
+  readonly remoteAddr?: string
+  /**
+   * Phase 9.5.4 — the sender's L2 tree pubkey (base64). Stored on the
+   * auto-created member record so response signature verification
+   * works without a separate cert fetch.
+   */
+  readonly remoteL2PubKey?: string
   readonly senderDisplayHandle?: string
   readonly senderPeerId: string
   readonly senderPinState: PinState
@@ -77,7 +121,11 @@ export type BeginTurnResult =
   | {accepted: false; reason: string}
   | {accepted: true; deliveryId: string; mirrorHandle: string}
 
+
 export class BridgeTranscriptService {
+  private readonly autoCreateQuota: AutoCreateQuota
+  // Per-channel auto-create event seq counter (monotonic).
+  private readonly autoCreateSeq = new Map<string, number>()
   private readonly autoProvisionPolicy: AutoProvisionPolicy
   private readonly channelStore: IChannelStore
   private readonly clock: () => Date
@@ -95,6 +143,7 @@ export class BridgeTranscriptService {
       startedAt: string
     }
   >()
+  private readonly onAutoCreated?: (event: ChannelAutoCreatedEvent) => void
   private readonly projectRoot: string
   // Per-turn seq cursor. Mirrors the orchestrator's `seqAllocator`
   // pattern — strictly increasing seq within a turn, reset per turn.
@@ -102,10 +151,16 @@ export class BridgeTranscriptService {
 
   public constructor(deps: BridgeTranscriptServiceDeps) {
     this.autoProvisionPolicy = deps.autoProvisionPolicy
+    this.autoCreateQuota = deps.autoCreateQuota ?? createAutoCreateQuota({
+      log(msg: string) {
+        console.debug(msg)
+      },
+    })
     this.channelStore = deps.channelStore
     this.clock = deps.clock
     this.eventsWriter = deps.eventsWriter
     this.idGenerator = deps.idGenerator
+    this.onAutoCreated = deps.onAutoCreated
     this.projectRoot = deps.projectRoot
   }
 
@@ -117,6 +172,18 @@ export class BridgeTranscriptService {
    * the seq-0 message event.
    */
   public async beginTurn(args: BeginTurnArgs): Promise<BeginTurnResult> {
+    // Phase 9.5.4 §3.3 — channelId validation (before the policy gate so
+    // invalid IDs are rejected even for trusted peers with a clear code).
+    if (!isValidChannelId(args.channelId)) {
+      console.debug(
+        `[Bridge] auto-create REJECTED invalid channelId="${args.channelId}" from peerId=${args.senderPeerId}`,
+      )
+      return {
+        accepted: false,
+        reason: `PARLEY_INVALID_CHANNEL_ID: channelId "${args.channelId}" does not match ${CHANNEL_ID_PATTERN_STRING}`,
+      }
+    }
+
     if (!this.policyPermitsSender(args.senderPinState)) {
       // kimi round-2 MED — include the operator hint in the public
       // decline reason so Alice's CLI surfaces a clear remediation
@@ -133,6 +200,41 @@ export class BridgeTranscriptService {
       }
     }
 
+    // Phase 9.5.4 — auto-create trust gate: even under policy=auto, the
+    // channel-mirror auto-CREATE path requires user-confirmed or ca-bound.
+    // An auto-tofu peer can still send a parley call ONLY if the channel
+    // already exists (ensureChannelMeta idempotent path). Creating a new
+    // channel for an auto-tofu peer is declined to prevent a freshly-
+    // encountered peer from spawning arbitrary channelIds on Bob.
+    const existingMeta = await this.channelStore.readChannelMeta({
+      channelId: args.channelId,
+      projectRoot: this.projectRoot,
+    })
+
+    const isNewChannel = existingMeta === undefined
+    if (isNewChannel && !this.autoCreateTrustPermits(args.senderPinState)) {
+      console.debug(
+        `[Bridge] auto-create declined for channelId=${args.channelId}: sender pinState=${args.senderPinState} requires user-confirmed`,
+      )
+      return {
+        accepted: false,
+        reason: `auto-create declined: sender pinState=${args.senderPinState} requires user-confirmed; run brv bridge verify <peer>`,
+      }
+    }
+
+    // Phase 9.5.4 — quota gate: cap per-peer new-channel auto-creates
+    // to prevent a verified-but-bad peer from flooding Bob.
+    if (isNewChannel) {
+      const now = this.clock()
+      const under = this.autoCreateQuota.tryConsume({now, peerId: args.senderPeerId})
+      if (!under) {
+        return {
+          accepted: false,
+          reason: `PARLEY_AUTO_CREATE_RATE_LIMIT: auto-create cap reached for peer ${args.senderPeerId} in 1h window`,
+        }
+      }
+    }
+
     const mirrorHandle = this.mirrorHandleForPeer({
       displayHandle: args.senderDisplayHandle,
       peerId: args.senderPeerId,
@@ -141,7 +243,10 @@ export class BridgeTranscriptService {
     // Ensure the channel meta exists. Auto-create if missing.
     await this.ensureChannelMeta({
       channelId: args.channelId,
+      isNewChannel,
       mirrorHandle,
+      remoteAddr: args.remoteAddr,
+      remoteL2PubKey: args.remoteL2PubKey,
       senderDisplayHandle: args.senderDisplayHandle,
       senderPeerId: args.senderPeerId,
     })
@@ -344,38 +449,45 @@ export class BridgeTranscriptService {
     })
   }
 
+  /**
+   * Phase 9.5.4 — auto-create trust gate. Higher bar than the regular
+   * policy gate: even under policy=auto, a brand-new channel is only
+   * auto-created for peers that are user-confirmed or ca-bound. An
+   * auto-tofu peer may still interact on an EXISTING channel (the regular
+   * policy gate handles that), but cannot create new channelIds on Bob.
+   */
+  private autoCreateTrustPermits(pinState: PinState): boolean {
+    return pinState === 'user-confirmed' || pinState === 'ca-bound'
+  }
+
   private async ensureChannelMeta(args: {
     channelId: string
+    isNewChannel: boolean
     mirrorHandle: string
+    remoteAddr?: string
+    remoteL2PubKey?: string
     senderDisplayHandle?: string
     senderPeerId: string
   }): Promise<void> {
-    const existing = await this.channelStore.readChannelMeta({
-      channelId: args.channelId,
-      projectRoot: this.projectRoot,
-    })
-
-    if (existing === undefined) {
+    if (args.isNewChannel) {
       const now = this.clock().toISOString()
       const senderMember: ChannelMemberRemotePeer = {
         handle: args.mirrorHandle,
         joinedAt: now,
         memberKind: 'remote-peer',
-        // Mirror member is the SENDER as seen from Bob's side. Bob
-        // ONLY observes `peerId` reliably (from the libp2p remote
-        // address) + `displayName` from the install cert. He has not
-        // observed Alice's listen multiaddr and has not fetched her
-        // L2 tree pubkey — so we omit those fields entirely rather
-        // than seed with sentinel strings (kimi round-1 MED-5).
-        // Reverse-parley dial through this mirror member is gated by
-        // the orchestrator's `warmRemotePeerDriver` which skips
-        // partial records; operators must run `brv channel invite`
-        // with real values to enable it.
         peerId: args.senderPeerId,
         status: 'idle',
+        // Phase 9.5.4 — store multiaddr + L2 cert when available.
+        ...(args.remoteAddr !== undefined && args.remoteAddr !== '' ? {multiaddr: args.remoteAddr} : {}),
+        ...(args.remoteL2PubKey !== undefined && args.remoteL2PubKey !== '' ? {remoteL2PubKey: args.remoteL2PubKey} : {}),
+        // Bootstrap-only: multiaddr came from one-time inbound dial.
+        addressability: 'bootstrap-only',
         ...(args.senderDisplayHandle === undefined ? {} : {displayName: args.senderDisplayHandle}),
       }
+      const autoProvisionedAt = now
       const meta = {
+        autoProvisionedAt,
+        autoProvisionedFrom: args.senderPeerId,
         channelId: args.channelId,
         createdAt: now,
         members: [senderMember] as ChannelMember[],
@@ -385,11 +497,32 @@ export class BridgeTranscriptService {
         meta,
         projectRoot: this.projectRoot,
       })
+
+      // Phase 9.5.4 — emit channel_auto_created event.
+      if (this.onAutoCreated !== undefined) {
+        const seq = this.nextAutoCreateSeq(args.channelId)
+        this.onAutoCreated({
+          addressability: 'bootstrap-only',
+          autoProvisionedAt,
+          autoProvisionedFrom: args.senderPeerId,
+          channelId: args.channelId,
+          kind: 'channel_auto_created',
+          multiaddr: args.remoteAddr ?? '',
+          seq,
+        })
+      }
+
       return
     }
 
     // Channel exists — ensure the sender is a member, otherwise
     // add them. Idempotent: same handle does not duplicate.
+    const existing = await this.channelStore.readChannelMeta({
+      channelId: args.channelId,
+      projectRoot: this.projectRoot,
+    })
+    if (existing === undefined) return
+
     const alreadyMember = existing.members.some((m) => m.handle === args.mirrorHandle)
     if (alreadyMember) return
     await this.channelStore.updateChannelMeta({
@@ -421,6 +554,12 @@ export class BridgeTranscriptService {
    */
   private mirrorHandleForPeer(args: {displayHandle?: string; peerId: string}): string {
     return `@${args.peerId}`
+  }
+
+  private nextAutoCreateSeq(channelId: string): number {
+    const next = (this.autoCreateSeq.get(channelId) ?? 0) + 1
+    this.autoCreateSeq.set(channelId, next)
+    return next
   }
 
   private nextSeq(channelId: string, turnId: string): number {

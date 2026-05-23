@@ -12,12 +12,13 @@ import {signParleyHandshake, signRequestAuth} from '../../../../../../src/agent/
 import {TofuStore} from '../../../../../../src/agent/core/trust/tofu-store.js'
 import {ParleyResponseFrameSchema} from '../../../../../../src/server/core/domain/channel/parley-types.js'
 import {DEFAULT_BRIDGE_CONFIG} from '../../../../../../src/server/infra/channel/bridge/bridge-config.js'
-import {Libp2pHost} from '../../../../../../src/server/infra/channel/bridge/libp2p-host.js'
+import {Libp2pHost, type Libp2pStreamLike} from '../../../../../../src/server/infra/channel/bridge/libp2p-host.js'
 import {
   type ParleyResponseDataChunk,
   type ParleyResponseGenerator,
 } from '../../../../../../src/server/infra/channel/bridge/parley-response-generator.js'
 import {
+  dispatchResponseStream,
   PARLEY_QUERY_PROTOCOL,
   registerParleyServer,
 } from '../../../../../../src/server/infra/channel/bridge/parley-server.js'
@@ -328,5 +329,129 @@ describe('parley-server (Slice 9.3c-iv)', () => {
         await Promise.allSettled([hostA.stop(), hostB.stop()])
       }
     }).timeout(15_000)
+  })
+
+  // ── Fix 1: early abort on heartbeat / send failure ───────────────────────
+  //
+  // Codex K79P0sTCkPTOaaZefPoh1 Fix 1: when a heartbeat send OR a chunk
+  // sendFrame throws, requestAbortController.abort() fires BEFORE the
+  // generator finishes naturally, not only in the finally block.
+
+  describe('early abort on stream-write failure (Fix 1)', () => {
+    let installDir: string
+
+    beforeEach(async () => {
+      installDir = await mkdtemp(join(tmpdir(), 'brv-parley-abort-'))
+    })
+
+    afterEach(async () => {
+      await rm(installDir, {force: true, recursive: true})
+    })
+
+    // Tests the heartbeat-failure path: when a heartbeat send throws,
+    // requestAbortController.abort() fires promptly. An abort-aware
+    // generator can then terminate early (before its natural end).
+    it('abortSignal fires promptly when heartbeat send throws — before a slow abort-aware generator completes', async () => {
+      const idSvc = new InstallIdentityService({installDir})
+      await idSvc.loadOrGenerate()
+      const l2Svc = new PeerTreeIdentityService({install: idSvc})
+      const l2 = await l2Svc.loadOrGenerate()
+
+      const requestAbortController = new AbortController()
+      let abortFiredAt: number | undefined
+      requestAbortController.signal.addEventListener('abort', () => {
+        abortFiredAt = Date.now()
+      }, {once: true})
+
+      // An abort-aware generator: waits NATURAL_END_MS unless abortSignal
+      // fires, in which case it terminates immediately. This is the pattern
+      // ClaudeCodeHeadlessAdapter uses to terminate the subprocess.
+      const NATURAL_END_MS = 400
+      let generatorEndedNaturally = false
+
+      const abortAwareGen: ParleyResponseGenerator = async function* ({envelope: _env}) {
+        // Yield first chunk immediately (before the heartbeat fires).
+        yield {content: 'chunk-1', kind: 'agent_message_chunk' as const}
+        // Wait for abortSignal OR NATURAL_END_MS — whichever comes first.
+        await new Promise<void>((resolve) => {
+          const t = setTimeout(() => {
+            generatorEndedNaturally = true
+            resolve()
+          }, NATURAL_END_MS)
+          requestAbortController.signal.addEventListener('abort', () => {
+            clearTimeout(t)
+            resolve()
+          }, {once: true})
+        })
+        // Only yields chunk-2 if the natural timeout fired (not abort).
+        if (generatorEndedNaturally) {
+          yield {content: 'chunk-2', kind: 'agent_message_chunk' as const}
+        }
+      }
+
+      // Fake stream: first send (chunk-1) succeeds; all subsequent sends
+      // (including the heartbeat or error-terminal) throw.
+      let sendCallCount = 0
+      const fakeStream: Libp2pStreamLike = {
+        async close() {},
+        remotePeerId: 'fake-peer',
+        async send(_chunk: Uint8Array) {
+          sendCallCount++
+          if (sendCallCount >= 2) {
+            throw new Error('fake stream closed')
+          }
+        },
+        [Symbol.asyncIterator]() {
+          return (async function* (): AsyncIterable<{subarray: () => Uint8Array}> {})()[Symbol.asyncIterator]()
+        },
+      }
+
+      const fakeEnvelope = {
+        channel_id: 'ch-abort-test',
+        delivery_id: 'del-abort',
+        handshake: {
+          install_cert: {cert_kind: 'install', display_handle: '@test', expires_at: new Date(Date.now() + 3_600_000).toISOString(), issued_at: new Date().toISOString(), public_key: {alg: 'ed25519', pub: 'AAAA'}, signature: 'sig'},
+          nonce: 'nonce-abort',
+          sender_peer_id: 'fake-peer',
+          timestamp: new Date().toISOString(),
+          tree_cert: undefined,
+        },
+        prompt: [{text: 'hello', type: 'text' as const}],
+        protocol: 'query' as const,
+        turn_id: 'turn-abort-test',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any
+
+      const startMs = Date.now()
+
+      try {
+        await dispatchResponseStream({
+          envelope: fakeEnvelope,
+          generator: abortAwareGen,
+          // Short heartbeat so it fires while the generator is in its wait.
+          // chunk-1 emits first (send #1 succeeds). The heartbeat fires during
+          // the generator's wait, triggers send #2 → throws → aborts.
+          heartbeatIntervalMs: 30,
+          l2PrivateKey: l2.privateKey,
+          requestAbortController,
+          requestEnvelopeHash: 'aaaa',
+          stream: fakeStream,
+        })
+      } catch {
+        // Expected — terminal write may also fail on dead stream.
+      }
+
+      const totalMs = Date.now() - startMs
+
+      // Abort MUST have fired (heartbeat send #2 throws → abort is called early).
+      expect(abortFiredAt, 'abort must have fired').to.not.equal(undefined)
+
+      // The total time is well below NATURAL_END_MS — abort interrupted the
+      // generator before the natural 400ms timeout expired.
+      expect(totalMs, `should complete before ${NATURAL_END_MS}ms natural end (took ${totalMs}ms)`).to.be.lessThan(NATURAL_END_MS - 50)
+
+      // The generator did NOT reach its natural end because abort fired first.
+      expect(generatorEndedNaturally, 'generator natural end should NOT have fired').to.equal(false)
+    }).timeout(3000)
   })
 })
