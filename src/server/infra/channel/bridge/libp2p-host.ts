@@ -161,6 +161,18 @@ export class Libp2pHost {
    * the same raw async-iterable as `dialAndConsume`. Both sides share
    * one Yamux substream; libp2p handles the duplex framing.
    *
+   * Phase 9.5.7 §3.3 Layer C — when `signal` is provided:
+   *   1. Passed to `dialProtocol()` to interrupt the dial/protocol phase.
+   *   2. Wired to the established stream's `abort()` method so the stream
+   *      is torn down immediately when the signal fires, unblocking any
+   *      in-flight read in the body.
+   *   3. Passed into `body` as a second argument so the frame reader can
+   *      race each `iterator.next()` against the abort promise.
+   *
+   * The abort listener is removed in the `finally` block so it cannot leak.
+   * `signal.reason` is preserved verbatim: `stream.abort(signal.reason)`
+   * (not replaced with a generic PARLEY_ABORT_VIA_SIGNAL marker).
+   *
    * Slice 9.3 wire helper; Slice 9.4 replaces with `parley-client.ts`'s
    * higher-level API.
    *
@@ -170,16 +182,70 @@ export class Libp2pHost {
     multiaddrStr: string,
     protocol: string,
     payload: Uint8Array,
+    options: {
+      readonly body: (stream: AsyncIterable<{readonly subarray: () => Uint8Array}>, signal?: AbortSignal) => Promise<T>
+      /** Phase 9.5.7 §3.3 Layer C — optional AbortSignal. */
+      readonly signal?: AbortSignal
+    },
+  ): Promise<T>
+  /**
+   * Backwards-compat overload used by the parley-server tests (positional `body` arg,
+   * no signal). Callers that don't need signal can still pass a function as the 4th arg.
+   */
+  public async dialAndSendAndConsume<T>(
+    multiaddrStr: string,
+    protocol: string,
+    payload: Uint8Array,
     body: (stream: AsyncIterable<{readonly subarray: () => Uint8Array}>) => Promise<T>,
+  ): Promise<T>
+  public async dialAndSendAndConsume<T>(
+    multiaddrStr: string,
+    protocol: string,
+    payload: Uint8Array,
+    bodyOrOptions:
+      | ((stream: AsyncIterable<{readonly subarray: () => Uint8Array}>) => Promise<T>)
+      | {
+          readonly body: (stream: AsyncIterable<{readonly subarray: () => Uint8Array}>, signal?: AbortSignal) => Promise<T>
+          readonly signal?: AbortSignal
+        },
   ): Promise<T> {
+    const {body, signal} =
+      typeof bodyOrOptions === 'function'
+        ? {body: bodyOrOptions as (stream: AsyncIterable<{readonly subarray: () => Uint8Array}>, signal?: AbortSignal) => Promise<T>, signal: undefined}
+        : bodyOrOptions
+
     const node = this.ensureStarted()
     const {multiaddr} = await import('@multiformats/multiaddr')
     const ma = multiaddr(multiaddrStr)
-    const stream = await node.dialProtocol(ma, protocol)
+    // Pass signal to dialProtocol to abort the dial/protocol phase.
+    const stream = await node.dialProtocol(ma, protocol, signal === undefined ? undefined : {signal})
+
+    // §3.3 Layer C — wire the signal to the established stream so abort tears
+    // it down immediately after dial, unblocking in-flight reads in the body.
+    const onAbort = (): void => {
+      // Preserve signal.reason if the abort carried a custom error.
+      const reason = signal?.reason instanceof Error ? signal.reason : new Error('PARLEY_ABORT_VIA_SIGNAL')
+      // The libp2p Stream may or may not have a typed abort() method; use
+      // bracket access to avoid compile-time dependency on libp2p internals.
+      const streamWithAbort = stream as unknown as {abort?: (reason?: Error) => void}
+      streamWithAbort.abort?.(reason)
+    }
+
+    if (signal !== undefined) {
+      signal.addEventListener('abort', onAbort, {once: true})
+    }
+
     try {
       await stream.send(payload)
-      return await body(stream as unknown as AsyncIterable<{readonly subarray: () => Uint8Array}>)
+
+      return await body(stream as unknown as AsyncIterable<{readonly subarray: () => Uint8Array}>, signal)
     } finally {
+      // Remove listener unconditionally so it never leaks, even if signal
+      // never fired (codex round-3 constraint: remove in finally).
+      if (signal !== undefined) {
+        signal.removeEventListener('abort', onAbort)
+      }
+
       await stream.close().catch(() => {})
     }
   }

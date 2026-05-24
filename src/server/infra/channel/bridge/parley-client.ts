@@ -54,8 +54,30 @@ export interface SendParleyQueryArgs {
   readonly l2Identity: PeerTreeIdentityService
   readonly multiaddr: string
   readonly nonce?: Uint8Array
+  /**
+   * Phase 9.5.7 Issue 1 fix — called as soon as the libp2p dial +
+   * initial payload send complete, before the body callback reads any
+   * frames. The caller uses this to clear the dial-phase timeout so it
+   * cannot fire during the frame-read phase.
+   */
+  readonly onDialComplete?: () => void
+  /**
+   * Phase 9.5.7 Issue 2 fix — called for every parsed response frame
+   * (any kind: chunk, heartbeat, thought, tool_use, etc.) as it arrives.
+   * The caller uses this to reset the idle timer so the turn can
+   * proceed indefinitely as long as the responder keeps emitting frames.
+   */
+  readonly onFrameReceived?: (frame: {readonly kind: string; readonly seq: number}) => void
   readonly prompt: ReadonlyArray<{readonly text: string; readonly type: 'text'}>
   readonly remoteL2PubKey: KeyObject  // Bob's L2 public key for seal/terminal verify
+  /**
+   * Phase 9.5.7 §3.3 Layer C — optional AbortSignal. When provided:
+   *   - Passed to `dialProtocol()` so the dial phase can be interrupted.
+   *   - Wired to the established stream's `abort()` method for post-dial interruption.
+   *   - Passed into `readResponseFrames` so each .next() races against it.
+   * signal.reason is preserved verbatim as the thrown error.
+   */
+  readonly signal?: AbortSignal
   readonly turn_id: string
 }
 
@@ -70,7 +92,20 @@ export type SendParleyQueryResult =
       content: string
       endedState: 'cancelled' | 'completed'
       frames: ParleyResponseFrame[]
+      /**
+       * Phase 9.5.7 §3.2 Layer A — whether integrity was degraded.
+       * `true` when the seal was missing and the fallback to a signed stream_end
+       * was used. `false` on the normal explicit-seal path.
+       */
+      integrityDegraded: boolean
       ok: true
+      /**
+       * Phase 9.5.7 §3.2 Layer A — origin of the turn's seal.
+       * `'explicit'` — normal: a `transcript_seal` frame was received and verified.
+       * `'implicit-from-signed-terminal'` — degraded: seal was missing; turn was
+       * reconstructed from a verified `stream_end` terminal + unsigned chunks.
+       */
+      sealOrigin: 'explicit' | 'implicit-from-signed-terminal'
     }
 
 export async function sendParleyQuery(args: SendParleyQueryArgs): Promise<SendParleyQueryResult> {
@@ -83,7 +118,17 @@ export async function sendParleyQuery(args: SendParleyQueryArgs): Promise<SendPa
     args.multiaddr,
     PARLEY_QUERY_PROTOCOL,
     framed,
-    async (source) => readResponseFrames(source),
+    {
+      // §3.3 Layer C: pass signal into body so the frame reader can race reads.
+      // Issue 1: call onDialComplete at the start of body (after dial+send) so
+      //   the caller can clear the dial-phase timeout before frame reading starts.
+      // Issue 2: pass onFrameReceived so the caller can reset the idle timer per-frame.
+      async body(source, signal) {
+        args.onDialComplete?.()
+        return readResponseFrames(source, signal, args.onFrameReceived)
+      },
+      signal: args.signal,
+    },
   )
 
   return verifyResponseStream({
@@ -94,7 +139,7 @@ export async function sendParleyQuery(args: SendParleyQueryArgs): Promise<SendPa
     frames,
     protocol: 'query',
     remoteL2PubKey: args.remoteL2PubKey,
-  })
+  })  // await implicit — sendParleyQuery is async, verifyResponseStream is now async
 }
 
 // ─── envelope build ────────────────────────────────────────────────────────
@@ -150,12 +195,73 @@ function randomNonce(): Uint8Array {
 
 // ─── frame read + verify ──────────────────────────────────────────────────
 
-async function readResponseFrames(
+/**
+ * Phase 9.5.7 §3.3 Layer C — exported for unit testing only.
+ *
+ * Reads length-prefixed response frames from a libp2p-like stream, parsing
+ * each into a `ParleyResponseFrame`. When a signal is provided, each
+ * `iterator.next()` call is raced against the signal-abort promise so the
+ * loop can be interrupted without waiting for the next network chunk.
+ *
+ * signal.reason is preserved verbatim — if the reason is not an Error, a
+ * generic PARLEY_ABORT_VIA_SIGNAL error is thrown instead.
+ *
+ * @internal
+ * @yields {ParleyResponseFrame} Each parsed response frame from the stream.
+ */
+export async function* readResponseFramesForTest(
   source: AsyncIterable<{readonly subarray: () => Uint8Array}>,
-): Promise<ParleyResponseFrame[]> {
-  const out: ParleyResponseFrame[] = []
-  for await (const msg of lp.decode(source as AsyncIterable<Uint8Array>)) {
-    const bytes = msg.subarray() as Uint8Array
+  signal?: AbortSignal,
+  onFrameReceived?: (frame: {readonly kind: string; readonly seq: number}) => void,
+): AsyncIterable<ParleyResponseFrame> {
+  yield* readResponseFramesInternal(source, signal, onFrameReceived)
+}
+
+/** Resolve `signal.reason` to an Error, falling back to a generic marker. */
+function abortReasonAsError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('PARLEY_ABORT_VIA_SIGNAL')
+}
+
+/**
+ * Internal implementation for both the exported-for-test surface and the
+ * production `readResponseFrames` collector.
+ *
+ * @yields {ParleyResponseFrame} Each parsed response frame from the stream.
+ */
+async function* readResponseFramesInternal(
+  source: AsyncIterable<{readonly subarray: () => Uint8Array}>,
+  signal?: AbortSignal,
+  // Issue 2: per-frame callback so callers can reset idle timers.
+  onFrameReceived?: (frame: {readonly kind: string; readonly seq: number}) => void,
+): AsyncIterable<ParleyResponseFrame> {
+  // §3.3 Layer C: throw early if already aborted at function entry.
+  if (signal?.aborted === true) {
+    throw abortReasonAsError(signal)
+  }
+
+  // Promise that rejects when the signal aborts — used to race each read.
+  // Never resolves if no signal is provided.
+  const abortPromise: Promise<never> =
+    signal === undefined
+      ? new Promise<never>(() => {})
+      : new Promise<never>((_, reject) => {
+          signal.addEventListener(
+            'abort',
+            () => { reject(abortReasonAsError(signal)) },
+            {once: true},
+          )
+        })
+
+  // Use the iterator protocol explicitly so we can race .next() against abort.
+  const decoded = lp.decode(source as AsyncIterable<Uint8Array>)
+  const iterator = decoded[Symbol.asyncIterator]()
+  while (true) {
+    // Race: either the next length-prefixed chunk arrives, or the signal fires.
+    // eslint-disable-next-line no-await-in-loop
+    const next = await Promise.race([iterator.next(), abortPromise])
+    if (next.done) return
+
+    const bytes = next.value.subarray() as Uint8Array
     const json = new TextDecoder('utf8').decode(bytes)
     let raw: unknown
     try {
@@ -166,8 +272,21 @@ async function readResponseFrames(
 
     const parsed = ParleyResponseFrameSchema.safeParse(raw)
     if (!parsed.success) throw new Error('PARLEY_RESPONSE_FRAME_INVALID')
-    out.push(parsed.data)
-    if (parsed.data.kind === 'transcript_seal') break
+    // Issue 2: notify the caller of each received frame before yielding.
+    onFrameReceived?.({kind: parsed.data.kind, seq: parsed.data.seq})
+    yield parsed.data
+    if (parsed.data.kind === 'transcript_seal') return
+  }
+}
+
+async function readResponseFrames(
+  source: AsyncIterable<{readonly subarray: () => Uint8Array}>,
+  signal?: AbortSignal,
+  onFrameReceived?: (frame: {readonly kind: string; readonly seq: number}) => void,
+): Promise<ParleyResponseFrame[]> {
+  const out: ParleyResponseFrame[] = []
+  for await (const frame of readResponseFramesInternal(source, signal, onFrameReceived)) {
+    out.push(frame)
   }
 
   return out
@@ -183,7 +302,17 @@ interface VerifyResponseStreamArgs {
   readonly remoteL2PubKey: KeyObject
 }
 
-function verifyResponseStream(args: VerifyResponseStreamArgs): SendParleyQueryResult {
+/**
+ * Exported for unit testing only. The internal function is async
+ * (degraded-completion fallback needs to verify the stream_end signature
+ * before accepting it as the implicit seal).
+ * @internal
+ */
+export async function verifyResponseStreamForTest(args: VerifyResponseStreamArgs): Promise<SendParleyQueryResult> {
+  return verifyResponseStream(args)
+}
+
+async function verifyResponseStream(args: VerifyResponseStreamArgs): Promise<SendParleyQueryResult> {
   // Seq monotonicity check (kimi round-1 HIGH). All server-emitted
   // frames carry strictly increasing seq starting at 1, INCLUDING
   // heartbeats. A gap or regression means the stream was tampered or
@@ -200,6 +329,60 @@ function verifyResponseStream(args: VerifyResponseStreamArgs): SendParleyQueryRe
 
   const seal = args.frames.find((f) => f.kind === 'transcript_seal')
   if (!seal || seal.kind !== 'transcript_seal') {
+    // §3.2 Layer A — degraded-completion fallback.
+    //
+    // The seal is cryptographically signed over the response digest; if it's
+    // missing, we do NOT have the integrity binding it provides. However, if:
+    //   (a) there is a signed stream_end terminal frame that verifies against
+    //       the responder's L2 pub key using the SAME payload binding as the
+    //       normal verifyResponseTerminal path (channel_id, delivery_id,
+    //       protocol, request_envelope_hash, seq, turn_id, terminal_payload),
+    //   (b) stream_end is the LAST non-heartbeat frame (no chunks after it),
+    //   (c) at least one agent_message_chunk exists,
+    // then we can reconstruct the turn result as "completed but integrity-
+    // degraded" — the responder said it's done (via the signed terminal), and
+    // the chunks were transported under the same authenticated libp2p session.
+    //
+    // Strict enforcement: any of these pre-conditions missing → still throw.
+    // We never fall back on an unsigned or misbound terminal.
+    const streamEndFrame = args.frames.find((f) => f.kind === 'stream_end')
+    const chunks = args.frames.filter((f) => f.kind === 'agent_message_chunk')
+    // lastNonHeartbeat: stream_end must be the LAST non-heartbeat frame
+    const lastNonHeartbeat = [...args.frames].reverse().find((f) => f.kind !== 'heartbeat_ping')
+
+    if (
+      streamEndFrame !== undefined &&
+      streamEndFrame.kind === 'stream_end' &&
+      lastNonHeartbeat?.kind === 'stream_end' &&
+      chunks.length > 0
+    ) {
+      // Verify stream_end using the SAME payload binding as verifyResponseTerminal
+      // (codex round-3 constraint: must not under-bind the fallback check).
+      const terminalPayload = {
+        channel_id: args.expectedChannelId,
+        delivery_id: args.expectedDeliveryId,
+        protocol: args.protocol,
+        request_envelope_hash: args.expectedReHash,
+        seq: streamEndFrame.seq,
+        terminal_payload: {ended_state: streamEndFrame.ended_state, kind: 'stream_end' as const},
+        turn_id: args.expectedTurnId,
+      }
+      const signatureValid = verifyResponseTerminal(terminalPayload, streamEndFrame.signature, args.remoteL2PubKey)
+      if (signatureValid) {
+        const content = chunks
+          .map((f) => (f as {content: string}).content)
+          .join('')
+        return {
+          content,
+          endedState: streamEndFrame.ended_state,
+          frames: args.frames,
+          integrityDegraded: true,
+          ok: true,
+          sealOrigin: 'implicit-from-signed-terminal',
+        }
+      }
+    }
+
     throw new Error('TRANSCRIPT_TERMINAL_MISSING: no transcript_seal frame')
   }
 
@@ -304,7 +487,14 @@ function verifyResponseStream(args: VerifyResponseStreamArgs): SendParleyQueryRe
     .map((f) => (f as {content: string}).content)
     .join('')
 
-  return {content, endedState: terminal.ended_state, frames: args.frames, ok: true}
+  return {
+    content,
+    endedState: terminal.ended_state,
+    frames: args.frames,
+    integrityDegraded: false,
+    ok: true,
+    sealOrigin: 'explicit',
+  }
 }
 
 async function encodeLengthPrefixed(bytes: Uint8Array): Promise<Uint8Array> {

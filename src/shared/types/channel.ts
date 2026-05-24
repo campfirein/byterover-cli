@@ -302,6 +302,13 @@ export const TurnDeliverySchema = z.object({
   // field to recover an agent's full reply without manually replaying the
   // chunk stream.
   finalAnswer: z.string().optional(),
+  // Phase 9.5.7 §3.2 Layer A — degraded-completion tracking for remote-peer
+  // deliveries. `sealOrigin='explicit'` is the normal path; `'implicit-from-
+  // signed-terminal'` means the transcript_seal was missing and the turn was
+  // reconstructed from a signed stream_end. `integrityDegraded=true` when
+  // the fallback path was used. Both are absent on local-agent deliveries.
+  sealOrigin: z.enum(['explicit', 'implicit-from-signed-terminal']).optional(),
+  integrityDegraded: z.boolean().optional(),
 })
 export type TurnDelivery = z.infer<typeof TurnDeliverySchema>
 

@@ -11,6 +11,34 @@ import {ChannelClientError, connectChannelClient} from '../../lib/channel-client
 import {parseCommaSet} from '../../lib/channel-subscribe-helpers.js'
 import {ChannelSubscribeRouter} from '../../lib/channel-subscribe-router.js'
 
+/**
+ * Phase 9.5.7 §3.4 — resolve the replay cursor for a subscribe run.
+ *
+ * When `--turn` is set but `--after-seq` is not, default `afterSeq=0` so the
+ * existing replay path re-delivers all stored events for the turn. This closes
+ * the lost-wakeup race when subscribe connects AFTER the terminal event was
+ * broadcast (BUG_REPORT §2.4): without the default, `willReplay` is false and
+ * the already-recorded terminal event is never delivered.
+ *
+ * Preserves listener-before-replay ordering: the caller must register the live
+ * listener BEFORE invoking replay. This function only resolves the cursor
+ * values; it does not touch the listener registration order.
+ *
+ * Exported for unit testing.
+ */
+export function resolveReplayCursor(args: {
+  readonly afterSeq: number | undefined
+  readonly turn: string | undefined
+}): {readonly afterSeq: number | undefined; readonly turn: string | undefined} {
+  if (args.turn !== undefined && args.afterSeq === undefined) {
+    // Default --after-seq=0 triggers the existing replay path which deduplicates
+    // against live events via (turnId, seq), avoiding a fetch-vs-listener race.
+    return {afterSeq: 0, turn: args.turn}
+  }
+
+  return {afterSeq: args.afterSeq, turn: args.turn}
+}
+
 // Slice 8.9 — push-model pub/sub command. Host LLMs (Claude Code, Codex, kimi,
 // opencode, pi) spawn this as a long-lived subprocess; it streams filtered
 // TurnEvents as newline-delimited JSON to stdout and exits when a bounded
@@ -148,7 +176,13 @@ public static flags = {
       roles: parseCommaSet(flags.roles),
       turn: flags.turn,
     }
-    const afterSeq = flags['after-seq']
+    // Phase 9.5.7 §3.4 — default afterSeq=0 when --turn is set without an
+    // explicit --after-seq, so subscribe replays already-recorded events for
+    // the turn (closes lost-wakeup race for connect-after-terminal-broadcast).
+    const {afterSeq} = resolveReplayCursor({
+      afterSeq: flags['after-seq'],
+      turn: flags.turn,
+    })
     const willReplay = flags.turn !== undefined && afterSeq !== undefined
 
     // Router is shared across reconnects — Phase 10 follow-up A3 (V6 eval).

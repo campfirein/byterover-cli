@@ -14,7 +14,9 @@ import {
   type TurnEventPayload,
 } from '../../../core/interfaces/channel/i-acp-driver.js'
 import {type Libp2pHost} from './libp2p-host.js'
-import {l2PubKeyFromBase64, sendParleyQuery} from './parley-client.js'
+import {sendParleyQuery as defaultSendParleyQuery, l2PubKeyFromBase64, type SendParleyQueryArgs, type SendParleyQueryResult} from './parley-client.js'
+import {parseParleyTimeoutEnv} from './parley-timeout-config.js'
+import {PhaseStampedAbort} from './phase-stamped-abort.js'
 
 /**
  * Phase 9.5.4 — enrich a dial-failure error with a copy-paste-ready recovery
@@ -71,6 +73,13 @@ export function enrichDialFailureError(args: {
  * on any thrown error.
  */
 export interface RemoteMemberDriverDeps {
+  /**
+   * Injectable sendParleyQuery implementation — used for unit testing the
+   * timeout/abort behavior without ES-module stubbing. Defaults to the
+   * real `sendParleyQuery` from parley-client.ts.
+   * @internal
+   */
+  readonly _sendParleyQuery?: (args: SendParleyQueryArgs) => Promise<SendParleyQueryResult>
   readonly channelId: string
   readonly handle: string
   readonly host: Libp2pHost
@@ -93,6 +102,7 @@ export class RemoteMemberDriver implements IAcpDriver {
   private readonly multiaddr: string
   private readonly peerId: string
   private readonly remoteL2PubKey: KeyObject
+  private readonly sendParleyQueryFn: (args: SendParleyQueryArgs) => Promise<SendParleyQueryResult>
   private statusValue: AcpDriverStatus = 'stopped'
 
   public constructor(deps: RemoteMemberDriverDeps) {
@@ -104,6 +114,7 @@ export class RemoteMemberDriver implements IAcpDriver {
     this.multiaddr = deps.multiaddr
     this.peerId = deps.peerId
     this.remoteL2PubKey = l2PubKeyFromBase64(deps.remoteL2PubKey)
+    this.sendParleyQueryFn = deps._sendParleyQuery ?? defaultSendParleyQuery
   }
 
   /**
@@ -139,6 +150,79 @@ export class RemoteMemberDriver implements IAcpDriver {
   public async *prompt(args: AcpDriverPromptArgs): AsyncIterableIterator<TurnEventPayload> {
     this.statusValue = 'streaming'
 
+    // Phase 9.5.7 §3.3 Layer A — split timeouts.
+    // Parse from process.env at prompt() time so the driver respects live
+    // env changes between turns (matches bridge-config-store.ts precedence).
+    const {dialTimeoutMs, idleTimeoutMs} = parseParleyTimeoutEnv(process.env)
+
+    // Issue 1 fix: two separate AbortControllers — one for dial phase, one
+    // for idle/no-progress detection. The dial AbortController aborts as soon
+    // as dialTimeoutMs elapses WITHOUT a response from onDialComplete; if
+    // onDialComplete fires first the dial timer is cleared. The idle
+    // AbortController only becomes active AFTER onDialComplete fires.
+    const dialAbortController = new AbortController()
+    const idleAbortController = new AbortController()
+
+    // Frame-tracking state (Issue 2 + Issue 3): updated by onFrameReceived.
+    const turnStartedAt = Date.now()
+    let lastActivityAt = turnStartedAt
+    let frameCount = 0
+    let lastFrameKind: string | undefined
+    let lastFrameSeq: number | undefined
+
+    // Dial-phase timeout — covers dialProtocol + initial send ONLY.
+    // Cleared by onDialComplete when the dial succeeds.
+    // Issue 3: abort with PhaseStampedAbort(phase='dial').
+    const dialTimeoutHandle = setTimeout(() => {
+      dialAbortController.abort(
+        new PhaseStampedAbort({
+          elapsedMs: Date.now() - turnStartedAt,
+          frameCount: 0,
+          localTimeoutFired: true,
+          phase: 'dial',
+        }),
+      )
+    }, dialTimeoutMs)
+
+    // Idle check interval — only meaningful AFTER dial completes.
+    // Issue 2: checks elapsed since LAST FRAME (lastActivityAt), not since turn start.
+    // Issue 3: abort with PhaseStampedAbort(phase='frame_read').
+    let idleCheckHandle: ReturnType<typeof setInterval> | undefined
+    const startIdleCheck = (): void => {
+      idleCheckHandle = setInterval(() => {
+        const idleMs = Date.now() - lastActivityAt
+        if (idleMs > idleTimeoutMs) {
+          idleAbortController.abort(
+            new PhaseStampedAbort({
+              elapsedMs: Date.now() - turnStartedAt,
+              frameCount,
+              lastFrameKind,
+              lastFrameSeq,
+              localTimeoutFired: true,
+              phase: 'frame_read',
+            }),
+          )
+        }
+      }, Math.min(Math.floor(idleTimeoutMs / 10), 30_000))
+    }
+
+    // Combined signal: fires if EITHER the dial OR the idle controller aborts.
+    // We link idleAbortController's signal into sendParleyQuery because that
+    // is what guards the frame-read phase.
+    // The dial timer fires dialAbortController; that propagates here.
+    // We abort the combined signal when either fires.
+    const combinedAbortController = new AbortController()
+    const onDialAbort = (): void => {
+      combinedAbortController.abort(dialAbortController.signal.reason)
+    }
+
+    const onIdleAbort = (): void => {
+      combinedAbortController.abort(idleAbortController.signal.reason)
+    }
+
+    dialAbortController.signal.addEventListener('abort', onDialAbort, {once: true})
+    idleAbortController.signal.addEventListener('abort', onIdleAbort, {once: true})
+
     try {
       // Fail fast on non-text blocks rather than silently dropping
       // them (kimi round-1 MEDIUM). ACP may add `resource_link` /
@@ -162,15 +246,36 @@ export class RemoteMemberDriver implements IAcpDriver {
 
       const delivery_id = `remote-${args.turnId}`
 
-      const result = await sendParleyQuery({
+      const result = await this.sendParleyQueryFn({
         channel_id: this.channelId,
         delivery_id,
         host: this.host,
         install: this.install,
         l2Identity: this.l2Identity,
         multiaddr: this.multiaddr,
+        // Issue 1: onDialComplete clears the dial timer and starts the idle timer.
+        // Reset lastActivityAt to "now" so the idle window measures from
+        // post-dial, not turn start (codex round-2: with a short configured
+        // idle timeout and a slow-but-successful dial, the post-dial idle
+        // window would otherwise be shortened by the dial duration).
+        onDialComplete() {
+          clearTimeout(dialTimeoutHandle)
+          lastActivityAt = Date.now()
+          startIdleCheck()
+        },
+        // Issue 2: onFrameReceived resets lastActivityAt so the idle timer
+        // measures silence since last frame, not since turn start.
+        onFrameReceived(frame) {
+          lastActivityAt = Date.now()
+          frameCount += 1
+          lastFrameKind = frame.kind
+          lastFrameSeq = frame.seq
+        },
         prompt: promptBlocks,
         remoteL2PubKey: this.remoteL2PubKey,
+        // §3.3 Layer C — thread the combined AbortSignal through so either
+        // the dial timeout or the idle timeout can interrupt frame reading.
+        signal: combinedAbortController.signal,
         turn_id: args.turnId,
       })
 
@@ -202,6 +307,12 @@ export class RemoteMemberDriver implements IAcpDriver {
     } catch (error) {
       this.statusValue = 'errored'
       throw error
+    } finally {
+      // Always clean up timers to prevent leaks across turns.
+      clearTimeout(dialTimeoutHandle)
+      if (idleCheckHandle !== undefined) clearInterval(idleCheckHandle)
+      dialAbortController.signal.removeEventListener('abort', onDialAbort)
+      idleAbortController.signal.removeEventListener('abort', onIdleAbort)
     }
   }
 

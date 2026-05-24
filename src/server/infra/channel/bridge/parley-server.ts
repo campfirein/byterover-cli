@@ -536,16 +536,29 @@ export async function dispatchResponseStream(args: DispatchResponseStreamArgs): 
       })
       emittedFrames.push(errorFrame)
       await sendFrame(stream, errorFrame)
-      await sendFrame(
-        stream,
-        buildTranscriptSealFrame({
-          bound: contextFromEnvelope(envelope, requestEnvelopeHash),
-          endedState: 'errored',
-          frames: emittedFrames,
-          l2PrivateKey,
-          seq: nextSeq(),
-        }),
-      )
+      try {
+        await sendFrame(
+          stream,
+          buildTranscriptSealFrame({
+            bound: contextFromEnvelope(envelope, requestEnvelopeHash),
+            endedState: 'errored',
+            frames: emittedFrames,
+            l2PrivateKey,
+            seq: nextSeq(),
+          }),
+        )
+      } catch (error_) {
+        // §3.2 Layer B — diagnostic seal-send. Seal loss is logged but NOT
+        // re-thrown: work product is on disk; the dialer's implicit-seal
+        // fallback (Layer A) covers the wire-level failure.
+        console.warn(
+          `[parley-server] Failed to send transcript_seal frame (error path) for turn=${envelope.turn_id} ` +
+          `(channelId=${envelope.channel_id}): ` +
+          `${error_ instanceof Error ? error_.message : String(error_)}. ` +
+          `Stream likely torn down by dialer; work product is on disk.`,
+        )
+      }
+
       return
     }
 
@@ -561,16 +574,29 @@ export async function dispatchResponseStream(args: DispatchResponseStreamArgs): 
     emittedFrames.push(terminal)
     await sendFrame(stream, terminal)
 
-    await sendFrame(
-      stream,
-      buildTranscriptSealFrame({
-        bound: contextFromEnvelope(envelope, requestEnvelopeHash),
-        endedState: 'completed',
-        frames: emittedFrames,
-        l2PrivateKey,
-        seq: nextSeq(),
-      }),
-    )
+    try {
+      await sendFrame(
+        stream,
+        buildTranscriptSealFrame({
+          bound: contextFromEnvelope(envelope, requestEnvelopeHash),
+          endedState: 'completed',
+          frames: emittedFrames,
+          l2PrivateKey,
+          seq: nextSeq(),
+        }),
+      )
+    } catch (error) {
+      // §3.2 Layer B — diagnostic seal-send. Seal loss is logged but NOT
+      // re-thrown: work product is on disk; the dialer's implicit-seal
+      // fallback (Layer A) covers the wire-level failure.
+      console.warn(
+        `[parley-server] Failed to send transcript_seal frame (success path) for turn=${envelope.turn_id} ` +
+        `(channelId=${envelope.channel_id}): ` +
+        `${error instanceof Error ? error.message : String(error)}. ` +
+        `Stream likely torn down by dialer; work product is on disk.`,
+      )
+    }
+
     finalState = {endedState: 'completed'}
   } finally {
     if (heartbeatTimer !== undefined) {

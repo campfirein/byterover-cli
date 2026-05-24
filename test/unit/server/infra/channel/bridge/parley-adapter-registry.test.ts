@@ -8,6 +8,7 @@ import {stub} from 'sinon'
 import {AcpAdapter, type AcpAdapterArgs} from '../../../../../../src/server/infra/channel/bridge/adapters/acp-adapter.js'
 import {MockEchoAdapter} from '../../../../../../src/server/infra/channel/bridge/adapters/mock-echo-adapter.js'
 import {
+  BUILTIN_PARLEY_PROFILE_NAMES,
   createDefaultRegistry,
   InMemoryParleyAdapterRegistry,
   ParleyAdapterNotFoundError,
@@ -203,6 +204,106 @@ describe('Parley adapter registry (phase 9.5.2)', () => {
         // warm() will return available:true or available:false depending
         // on whether 'claude' is on PATH in CI — either is acceptable.
         expect(result).to.have.property('available')
+      } finally {
+        await rmDir(dir, {force: true, recursive: true})
+      }
+    })
+  })
+
+  // ── BUILTIN_PARLEY_PROFILE_NAMES + §3.1 reserved-name guard ─────────────
+
+  describe('BUILTIN_PARLEY_PROFILE_NAMES (phase 9.5.7 §3.1)', () => {
+    it('is a ReadonlySet<string>', () => {
+      expect(BUILTIN_PARLEY_PROFILE_NAMES).to.be.instanceOf(Set)
+    })
+
+    it('contains "mock-echo"', () => {
+      expect(BUILTIN_PARLEY_PROFILE_NAMES.has('mock-echo')).to.be.true
+    })
+
+    it('contains "claude-code"', () => {
+      expect(BUILTIN_PARLEY_PROFILE_NAMES.has('claude-code')).to.be.true
+    })
+
+    it('does NOT contain arbitrary names', () => {
+      expect(BUILTIN_PARLEY_PROFILE_NAMES.has('my-custom-agent')).to.be.false
+      expect(BUILTIN_PARLEY_PROFILE_NAMES.has('codex')).to.be.false
+    })
+  })
+
+  describe('createDefaultRegistry — reserved-name ACP guard (phase 9.5.7 §3.1)', () => {
+    const logs: string[] = []
+    const log = (msg: string): number => logs.push(msg)
+
+    beforeEach(() => {
+      logs.length = 0
+    })
+
+    it('does NOT register AcpAdapter under "claude-code" even when all ACP args are supplied', () => {
+      // This is the failure-#1 bug: previously AcpAdapter registered under
+      // 'claude-code', shadowing the built-in. Now it must be skipped.
+      const fakePool = {} as unknown as Parameters<typeof createDefaultRegistry>[0]['bridgeDriverPool']
+      const fakeStore = {
+        get: stub().resolves(),
+        list: stub().resolves([]),
+        remove: stub().resolves(false),
+        upsert: stub().resolves(),
+      }
+      const registry = createDefaultRegistry({
+        bridgeDriverPool: fakePool,
+        driverFactory: stub() as unknown as Parameters<typeof createDefaultRegistry>[0]['driverFactory'],
+        log,
+        profileName: 'claude-code',
+        profileStore: fakeStore,
+      })
+      // Must not register an ACP adapter under 'claude-code'
+      expect(registry.resolve('claude-code')).to.equal(undefined)
+      // A warning log must be emitted
+      expect(logs.some((l) => l.includes('claude-code'))).to.be.true
+    })
+
+    it('resolve("claude-code") returns undefined when only ACP args are supplied (no CLAUDE_UNSAFE)', () => {
+      const registry = createDefaultRegistry({
+        log,
+        profileName: 'claude-code',
+      })
+      expect(registry.resolve('claude-code')).to.equal(undefined)
+    })
+
+    it('ClaudeCodeHeadlessAdapter IS still registered when BRV_BRIDGE_CLAUDE_UNSAFE=1 and ACP name collides', async () => {
+      // This validates the non-return semantics: the ACP skip-block must NOT
+      // `return` — downstream ClaudeCodeHeadlessAdapter registration continues.
+      const {createProfileConcurrencyGate} = await import('../../../../../../src/server/infra/channel/bridge/profile-concurrency-gate.js')
+      const {createFileBackedSessionStore} = await import('../../../../../../src/server/infra/channel/bridge/parley-adapter-session-store.js')
+      const {mkdtemp: mkTemp, rm: rmDir} = await import('node:fs/promises')
+      const {tmpdir} = await import('node:os')
+      const {join} = await import('node:path')
+
+      const dir = await mkTemp(join(tmpdir(), 'brv-registry-931-'))
+      try {
+        const gate = createProfileConcurrencyGate({maxConcurrent: 1})
+        const store = createFileBackedSessionStore({filePath: join(dir, 'sessions.json'), log() {}})
+        const fakeAcpStore = {
+          get: stub().resolves(),
+          list: stub().resolves([]),
+          remove: stub().resolves(false),
+          upsert: stub().resolves(),
+        }
+        const fakePool = {} as unknown as Parameters<typeof createDefaultRegistry>[0]['bridgeDriverPool']
+        const registry = createDefaultRegistry({
+          bridgeDriverPool: fakePool,
+          concurrencyGate: gate,
+          driverFactory: stub() as unknown as Parameters<typeof createDefaultRegistry>[0]['driverFactory'],
+          env: {BRV_BRIDGE_CLAUDE_UNSAFE: '1'},
+          log,
+          profileName: 'claude-code',  // collision with built-in
+          profileStore: fakeAcpStore,
+          sessionStore: store,
+        })
+        // The ClaudeCodeHeadlessAdapter (kind=sdk-headless) must still register
+        const adapter = registry.resolve('claude-code')
+        expect(adapter, 'claude-code built-in must register despite ACP name collision').to.not.equal(undefined)
+        expect(adapter!.kind).to.equal('sdk-headless')
       } finally {
         await rmDir(dir, {force: true, recursive: true})
       }

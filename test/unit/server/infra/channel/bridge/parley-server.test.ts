@@ -454,4 +454,163 @@ describe('parley-server (Slice 9.3c-iv)', () => {
       expect(generatorEndedNaturally, 'generator natural end should NOT have fired').to.equal(false)
     }).timeout(3000)
   })
+
+  // ── §3.2 Layer B — diagnostic seal-send (phase 9.5.7) ───────────────────
+  //
+  // Seal sendFrame calls are wrapped in try/catch + diagnostic log so a torn-
+  // down dialer-side stream doesn't crash dispatchResponseStream or leave the
+  // operator without a log line to grep for the failure.
+
+  describe('§3.2 Layer B — seal-send failure is caught, logged, and does not crash (phase 9.5.7)', () => {
+    let installDir: string
+
+    beforeEach(async () => {
+      installDir = await mkdtemp(join(tmpdir(), 'brv-seal-send-'))
+    })
+
+    afterEach(async () => {
+      await rm(installDir, {force: true, recursive: true})
+    })
+
+    it('success-path seal-send failure is caught and logged, dispatchResponseStream resolves without throwing', async () => {
+      const idSvc = new InstallIdentityService({installDir})
+      await idSvc.loadOrGenerate()
+      const l2Svc = new PeerTreeIdentityService({install: idSvc})
+      const l2 = await l2Svc.loadOrGenerate()
+
+      const logs: string[] = []
+
+      // Stream that succeeds for the chunk + stream_end, but fails on the seal.
+      let sendCallCount = 0
+      const fakeStream: Libp2pStreamLike = {
+        async close() {},
+        remotePeerId: 'fake-peer',
+        async send(_chunk: Uint8Array) {
+          sendCallCount++
+          // Calls: 1=chunk, 2=stream_end, 3=seal → throw on seal
+          if (sendCallCount >= 3) {
+            throw new Error('stream torn down before seal')
+          }
+        },
+        [Symbol.asyncIterator]() {
+          return (async function* (): AsyncIterable<{subarray: () => Uint8Array}> {})()[Symbol.asyncIterator]()
+        },
+      }
+
+      const simpleGen: ParleyResponseGenerator = async function* () {
+        yield {content: 'result text', kind: 'agent_message_chunk' as const}
+      }
+
+      const fakeEnvelope = {
+        channel_id: 'ch-seal-test',
+        delivery_id: 'del-seal',
+        handshake: {
+          install_cert: {cert_kind: 'install', display_handle: '@test', expires_at: new Date(Date.now() + 3_600_000).toISOString(), issued_at: new Date().toISOString(), public_key: {alg: 'ed25519', pub: 'AAAA'}, signature: 'sig'},
+          nonce: 'nonce-seal',
+          sender_peer_id: 'fake-peer',
+          timestamp: new Date().toISOString(),
+          tree_cert: undefined,
+        },
+        prompt: [{text: 'hello', type: 'text' as const}],
+        protocol: 'query' as const,
+        turn_id: 'turn-seal-test',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any  // minimal stub — only fields read by dispatchResponseStream
+
+      // Capture console.warn output as the log medium
+      const originalWarn = console.warn
+      console.warn = (msg: string) => { logs.push(msg) }
+      try {
+        // Should NOT throw even though seal-send fails
+        await dispatchResponseStream({
+          envelope: fakeEnvelope,
+          generator: simpleGen,
+          heartbeatIntervalMs: 60_000,
+          l2PrivateKey: l2.privateKey,
+          requestEnvelopeHash: 'bbbb',
+          stream: fakeStream,
+        })
+      } finally {
+        console.warn = originalWarn
+      }
+
+      // A warning log line must mention transcript_seal + turnId
+      const sealLog = logs.find((l) => l.includes('transcript_seal') || l.includes('seal'))
+      expect(sealLog, 'seal-send failure must emit a log line').to.not.equal(undefined)
+      expect(sealLog).to.include('turn-seal-test')
+    })
+
+    it('error-path seal-send failure is caught and logged, dispatchResponseStream resolves without throwing', async () => {
+      const idSvc = new InstallIdentityService({installDir: installDir + '-err'})
+      await idSvc.loadOrGenerate()
+      const l2Svc = new PeerTreeIdentityService({install: idSvc})
+      const l2 = await l2Svc.loadOrGenerate()
+
+      const logs: string[] = []
+
+      // Stream that succeeds for the error terminal, but fails on the seal.
+      let sendCallCount = 0
+      const fakeStream: Libp2pStreamLike = {
+        async close() {},
+        remotePeerId: 'fake-peer',
+        async send(_chunk: Uint8Array) {
+          sendCallCount++
+          // Calls: 1=error frame, 2=seal → throw on seal
+          if (sendCallCount >= 2) {
+            throw new Error('stream torn down before error-path seal')
+          }
+        },
+        [Symbol.asyncIterator]() {
+          return (async function* (): AsyncIterable<{subarray: () => Uint8Array}> {})()[Symbol.asyncIterator]()
+        },
+      }
+
+      // Generator that throws immediately (error path).
+      // The async-generator wrapper is needed to satisfy ParleyResponseGenerator's type.
+      const {ParleyResponseError} = await import('../../../../../../src/server/infra/channel/bridge/parley-response-generator.js')
+      const throwingGen: ParleyResponseGenerator = async function* () {
+        // Throw before yielding — the generator body is entered when iterated.
+        const e = new ParleyResponseError('GENERATOR_TEST_ERROR', 'test error')
+        // Yield never runs; satisfies require-yield without unreachable-code.
+        if (Math.random() < 0) { yield {content: '', kind: 'agent_message_chunk' as const} }
+        throw e
+      }
+
+      const fakeEnvelope = {
+        channel_id: 'ch-seal-err-test',
+        delivery_id: 'del-seal-err',
+        handshake: {
+          install_cert: {cert_kind: 'install', display_handle: '@test', expires_at: new Date(Date.now() + 3_600_000).toISOString(), issued_at: new Date().toISOString(), public_key: {alg: 'ed25519', pub: 'AAAA'}, signature: 'sig'},
+          nonce: 'nonce-seal-err',
+          sender_peer_id: 'fake-peer',
+          timestamp: new Date().toISOString(),
+          tree_cert: undefined,
+        },
+        prompt: [{text: 'hello', type: 'text' as const}],
+        protocol: 'query' as const,
+        turn_id: 'turn-seal-err-test',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any
+
+      const originalWarn = console.warn
+      console.warn = (msg: string) => { logs.push(msg) }
+      try {
+        await dispatchResponseStream({
+          envelope: fakeEnvelope,
+          generator: throwingGen,
+          heartbeatIntervalMs: 60_000,
+          l2PrivateKey: l2.privateKey,
+          requestEnvelopeHash: 'cccc',
+          stream: fakeStream,
+        })
+      } finally {
+        console.warn = originalWarn
+      }
+
+      // A warning about seal send failure must be emitted
+      const sealLog = logs.find((l) => l.includes('transcript_seal') || l.includes('seal'))
+      expect(sealLog, 'error-path seal-send failure must emit a log line').to.not.equal(undefined)
+      expect(sealLog).to.include('turn-seal-err-test')
+    })
+  })
 })

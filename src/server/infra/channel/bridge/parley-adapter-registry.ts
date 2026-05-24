@@ -112,11 +112,26 @@ export interface CreateDefaultRegistryArgs {
 }
 
 /**
+ * The set of profile names owned by built-in adapters. AcpAdapter MUST
+ * never register under one of these, even when wired via
+ * BRV_BRIDGE_PARLEY_PROFILE. When the matching built-in is env-gated off
+ * (e.g. 'claude-code' without BRV_BRIDGE_CLAUDE_UNSAFE=1), the strict
+ * startup resolve should fail-fast with the hint table — NOT silently
+ * fall back to an AcpAdapter that will throw PARLEY_LOCAL_AGENT_PROFILE_MISSING
+ * at first turn.
+ *
+ * `ReadonlySet<string>` so membership is checked with `.has()` not `.includes()`.
+ * (codex round-2: original plan declared array — type bug fixed here.)
+ */
+export const BUILTIN_PARLEY_PROFILE_NAMES: ReadonlySet<string> = new Set(['claude-code', 'mock-echo'])
+
+/**
  * Build the default adapter registry used by the daemon.
  *
  * Always registers `MockEchoAdapter` (profile `'mock-echo'`).
  * Registers `AcpAdapter` only when `bridgeDriverPool`, `driverFactory`,
- * `profileStore`, and `profileName` are all supplied.
+ * `profileStore`, and `profileName` are all supplied AND the profile name
+ * does NOT collide with a built-in name (phase 9.5.7 §3.1).
  *
  * Phase 9.5.3 — registers `ClaudeCodeHeadlessAdapter` ONLY when
  * `env.BRV_BRIDGE_CLAUDE_UNSAFE === '1'`. Default-off per plan §2.5
@@ -131,8 +146,13 @@ export function createDefaultRegistry(args: CreateDefaultRegistryArgs): ParleyAd
     args.bridgeDriverPool !== undefined &&
     args.driverFactory !== undefined &&
     args.profileStore !== undefined &&
-    args.profileName !== undefined
+    args.profileName !== undefined &&
+    !BUILTIN_PARLEY_PROFILE_NAMES.has(args.profileName)
   ) {
+    // ACP adapter registration: only when all args are supplied AND the
+    // profile name does not collide with a built-in. The function MUST NOT
+    // return here — downstream ClaudeCodeHeadlessAdapter registration must
+    // still run (codex round-2: avoid early-return that skips built-in reg).
     registry.register(
       new AcpAdapter({
         driverFactory: args.driverFactory,
@@ -140,6 +160,15 @@ export function createDefaultRegistry(args: CreateDefaultRegistryArgs): ParleyAd
         profileName: args.profileName,
         profileStore: args.profileStore,
       }),
+    )
+  } else if (args.profileName !== undefined && BUILTIN_PARLEY_PROFILE_NAMES.has(args.profileName)) {
+    // Reserved name — do NOT register AcpAdapter, log a warning, and
+    // continue so downstream built-in registrations (e.g.
+    // ClaudeCodeHeadlessAdapter) still run.
+    args.log(
+      `[Daemon] Refusing AcpAdapter registration under reserved name "${args.profileName}"; ` +
+      `this name is owned by a built-in adapter. If you intended to use the built-in, ` +
+      `check the relevant env var (e.g. BRV_BRIDGE_CLAUDE_UNSAFE=1 for claude-code).`,
     )
   } else if (args.profileName !== undefined) {
     args.log(`[Daemon] Parley adapter registry: ACP adapter skipped — missing driverFactory or profileStore`)
