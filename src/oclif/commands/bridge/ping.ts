@@ -11,8 +11,35 @@ import {InstallIdentityService} from '../../../agent/core/trust/install-identity
 import {PeerTreeIdentityService} from '../../../agent/core/trust/peer-tree-identity-service.js'
 import {DEFAULT_BRIDGE_CONFIG} from '../../../server/infra/channel/bridge/bridge-config.js'
 import {Libp2pHost} from '../../../server/infra/channel/bridge/libp2p-host.js'
-import {l2PubKeyFromBase64, sendParleyQuery} from '../../../server/infra/channel/bridge/parley-client.js'
+import {l2PubKeyFromBase64, sendParleyQuery, type SendParleyQueryResult} from '../../../server/infra/channel/bridge/parley-client.js'
 import {getGlobalDataDir} from '../../../server/utils/global-data-path.js'
+
+/**
+ * §9.5.8 Blocker 2 — Format a successful parley result as human-readable
+ * text lines. Exported for unit testing.
+ *
+ * Returns an array of lines (without trailing newlines). The caller logs
+ * them one by one. Includes an operator-visible integrity warning when the
+ * result has integrityDegraded=true or terminalMissing=true so operators
+ * know the transcript_seal guarantee was not met.
+ */
+export function formatPingResult(result: Extract<SendParleyQueryResult, {ok: true}>): string[] {
+  const lines: string[] = [`endedState: ${result.endedState}`]
+
+  // §9.5.8 Blocker 2 — integrity-degraded warning. The seal is the
+  // cryptographic binding; when it's missing, operators must be informed.
+  if (result.integrityDegraded) {
+    lines.push(
+      '',
+      `⚠ integrity-degraded response: sealOrigin=${result.sealOrigin}, terminalMissing=${String(result.terminalMissing === true)}.`,
+      '   Work transported under authenticated session but no transcript_seal received.',
+      '   Operator should verify completion via the responder side.',
+    )
+  }
+
+  lines.push('', result.content)
+  return lines
+}
 
 /**
  * Phase 9 / Slice 9.3-prelude — `brv bridge ping <multiaddr> <prompt>`.
@@ -103,9 +130,9 @@ public static flags = {
       if (flags.format === 'json') {
         this.log(JSON.stringify(result, null, 2))
       } else if (result.ok) {
-        this.log(`endedState: ${result.endedState}`)
-        this.log('')
-        this.log(result.content)
+        for (const line of formatPingResult(result)) {
+          this.log(line)
+        }
       } else {
         this.error(`server rejected: ${result.code} — ${result.message}`, {exit: 1})
       }

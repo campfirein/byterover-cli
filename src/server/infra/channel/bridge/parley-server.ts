@@ -535,29 +535,23 @@ export async function dispatchResponseStream(args: DispatchResponseStreamArgs): 
         seq: nextSeq(),
       })
       emittedFrames.push(errorFrame)
-      await sendFrame(stream, errorFrame)
-      try {
-        await sendFrame(
-          stream,
-          buildTranscriptSealFrame({
-            bound: contextFromEnvelope(envelope, requestEnvelopeHash),
-            endedState: 'errored',
-            frames: emittedFrames,
-            l2PrivateKey,
-            seq: nextSeq(),
-          }),
-        )
-      } catch (error_) {
-        // §3.2 Layer B — diagnostic seal-send. Seal loss is logged but NOT
-        // re-thrown: work product is on disk; the dialer's implicit-seal
-        // fallback (Layer A) covers the wire-level failure.
-        console.warn(
-          `[parley-server] Failed to send transcript_seal frame (error path) for turn=${envelope.turn_id} ` +
-          `(channelId=${envelope.channel_id}): ` +
-          `${error_ instanceof Error ? error_.message : String(error_)}. ` +
-          `Stream likely torn down by dialer; work product is on disk.`,
-        )
-      }
+      // §9.5.8 Fix A — error terminal + §3.2 Layer B seal both use
+      // sendFrameDiagnostic so a torn-down stream at this point doesn't
+      // crash dispatchResponseStream. Work product is on disk.
+      await sendFrameDiagnostic({channelId: envelope.channel_id, frame: errorFrame, label: 'error terminal frame', stream, turnId: envelope.turn_id})
+      await sendFrameDiagnostic({
+        channelId: envelope.channel_id,
+        frame: buildTranscriptSealFrame({
+          bound: contextFromEnvelope(envelope, requestEnvelopeHash),
+          endedState: 'errored',
+          frames: emittedFrames,
+          l2PrivateKey,
+          seq: nextSeq(),
+        }),
+        label: 'transcript_seal frame (error path)',
+        stream,
+        turnId: envelope.turn_id,
+      })
 
       return
     }
@@ -572,30 +566,23 @@ export async function dispatchResponseStream(args: DispatchResponseStreamArgs): 
       seq: nextSeq(),
     })
     emittedFrames.push(terminal)
-    await sendFrame(stream, terminal)
-
-    try {
-      await sendFrame(
-        stream,
-        buildTranscriptSealFrame({
-          bound: contextFromEnvelope(envelope, requestEnvelopeHash),
-          endedState: 'completed',
-          frames: emittedFrames,
-          l2PrivateKey,
-          seq: nextSeq(),
-        }),
-      )
-    } catch (error) {
-      // §3.2 Layer B — diagnostic seal-send. Seal loss is logged but NOT
-      // re-thrown: work product is on disk; the dialer's implicit-seal
-      // fallback (Layer A) covers the wire-level failure.
-      console.warn(
-        `[parley-server] Failed to send transcript_seal frame (success path) for turn=${envelope.turn_id} ` +
-        `(channelId=${envelope.channel_id}): ` +
-        `${error instanceof Error ? error.message : String(error)}. ` +
-        `Stream likely torn down by dialer; work product is on disk.`,
-      )
-    }
+    // §9.5.8 Fix A — stream_end terminal + §3.2 Layer B seal both use
+    // sendFrameDiagnostic so a torn-down stream at this point doesn't
+    // crash dispatchResponseStream. Work product is on disk.
+    await sendFrameDiagnostic({channelId: envelope.channel_id, frame: terminal, label: 'stream_end terminal frame', stream, turnId: envelope.turn_id})
+    await sendFrameDiagnostic({
+      channelId: envelope.channel_id,
+      frame: buildTranscriptSealFrame({
+        bound: contextFromEnvelope(envelope, requestEnvelopeHash),
+        endedState: 'completed',
+        frames: emittedFrames,
+        l2PrivateKey,
+        seq: nextSeq(),
+      }),
+      label: 'transcript_seal frame (success path)',
+      stream,
+      turnId: envelope.turn_id,
+    })
 
     finalState = {endedState: 'completed'}
   } finally {
@@ -759,6 +746,34 @@ async function sendFrame(stream: Libp2pStreamLike, frame: ParleyResponseFrame): 
   const bytes = new TextEncoder().encode(json)
   const framed = await encodeLengthPrefixed(bytes)
   await stream.send(framed)
+}
+
+interface SendFrameDiagnosticArgs {
+  readonly channelId: string
+  readonly frame: ParleyResponseFrame
+  readonly label: string
+  readonly stream: Libp2pStreamLike
+  readonly turnId: string
+}
+
+/**
+ * §9.5.8 Fix A — send a frame with a try/catch diagnostic wrapper.
+ * On failure: logs with channelId + turnId + error message, does NOT re-throw.
+ * Use for terminal and seal sends where stream tear-down is expected and
+ * the work product is already on disk.
+ */
+async function sendFrameDiagnostic(args: SendFrameDiagnosticArgs): Promise<void> {
+  const {channelId, frame, label, stream, turnId} = args
+  try {
+    await sendFrame(stream, frame)
+  } catch (error) {
+    console.warn(
+      `[parley-server] Failed to send ${label} for turn=${turnId} ` +
+      `(channelId=${channelId}): ` +
+      `${error instanceof Error ? error.message : String(error)}. ` +
+      `Stream likely torn down by dialer; work product is on disk.`,
+    )
+  }
 }
 
 async function encodeLengthPrefixed(bytes: Uint8Array): Promise<Uint8Array> {

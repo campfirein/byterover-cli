@@ -455,6 +455,159 @@ describe('parley-server (Slice 9.3c-iv)', () => {
     }).timeout(3000)
   })
 
+  // ── §9.5.8 Fix A — diagnostic terminal-send (phase 9.5.8) ──────────────
+  //
+  // The success-path stream_end and the error-path error terminal sends are
+  // wrapped in try/catch + diagnostic log so a torn-down dialer-side stream
+  // at the terminal moment doesn't crash dispatchResponseStream.
+
+  describe('§9.5.8 Fix A — terminal-send failure is caught, logged, and does not crash', () => {
+    let installDir: string
+
+    beforeEach(async () => {
+      installDir = await mkdtemp(join(tmpdir(), 'brv-terminal-send-'))
+    })
+
+    afterEach(async () => {
+      await rm(installDir, {force: true, recursive: true})
+    })
+
+    it('success-path stream_end send failure is caught and logged, dispatchResponseStream resolves without throwing', async () => {
+      const idSvc = new InstallIdentityService({installDir})
+      await idSvc.loadOrGenerate()
+      const l2Svc = new PeerTreeIdentityService({install: idSvc})
+      const l2 = await l2Svc.loadOrGenerate()
+
+      const logs: string[] = []
+
+      // Stream that succeeds for chunks but throws on stream_end (the terminal).
+      // Send call order: 1=chunk, 2=stream_end → throw.
+      let sendCallCount = 0
+      const fakeStream: Libp2pStreamLike = {
+        async close() {},
+        remotePeerId: 'fake-peer',
+        async send(_chunk: Uint8Array) {
+          sendCallCount++
+          if (sendCallCount >= 2) {
+            throw new Error('stream torn down before terminal')
+          }
+        },
+        [Symbol.asyncIterator]() {
+          return (async function* (): AsyncIterable<{subarray: () => Uint8Array}> {})()[Symbol.asyncIterator]()
+        },
+      }
+
+      const simpleGen: ParleyResponseGenerator = async function* () {
+        yield {content: 'result', kind: 'agent_message_chunk' as const}
+      }
+
+      const fakeEnvelope = {
+        channel_id: 'ch-terminal-test',
+        delivery_id: 'del-terminal',
+        handshake: {
+          install_cert: {cert_kind: 'install', display_handle: '@test', expires_at: new Date(Date.now() + 3_600_000).toISOString(), issued_at: new Date().toISOString(), public_key: {alg: 'ed25519', pub: 'AAAA'}, signature: 'sig'},
+          nonce: 'nonce-terminal',
+          sender_peer_id: 'fake-peer',
+          timestamp: new Date().toISOString(),
+          tree_cert: undefined,
+        },
+        prompt: [{text: 'hello', type: 'text' as const}],
+        protocol: 'query' as const,
+        turn_id: 'turn-terminal-test',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any
+
+      const originalWarn = console.warn
+      console.warn = (msg: string) => { logs.push(msg) }
+      try {
+        // Must NOT throw even though stream_end send fails
+        await dispatchResponseStream({
+          envelope: fakeEnvelope,
+          generator: simpleGen,
+          heartbeatIntervalMs: 60_000,
+          l2PrivateKey: l2.privateKey,
+          requestEnvelopeHash: 'dddd',
+          stream: fakeStream,
+        })
+      } finally {
+        console.warn = originalWarn
+      }
+
+      // A warning log line must mention stream_end failure with channelId/turnId
+      const terminalLog = logs.find((l) => l.includes('stream_end') || l.includes('terminal'))
+      expect(terminalLog, 'stream_end send failure must emit a log line').to.not.equal(undefined)
+      expect(terminalLog).to.include('turn-terminal-test')
+      expect(terminalLog).to.include('ch-terminal-test')
+    })
+
+    it('error-path error-terminal send failure is caught and logged, dispatchResponseStream resolves without throwing', async () => {
+      const idSvc = new InstallIdentityService({installDir: installDir + '-errterm'})
+      await idSvc.loadOrGenerate()
+      const l2Svc = new PeerTreeIdentityService({install: idSvc})
+      const l2 = await l2Svc.loadOrGenerate()
+
+      const logs: string[] = []
+
+      // Stream that throws on the very first send (the error terminal frame).
+      const fakeStream: Libp2pStreamLike = {
+        async close() {},
+        remotePeerId: 'fake-peer',
+        async send(_chunk: Uint8Array) {
+          throw new Error('stream torn down before error terminal')
+        },
+        [Symbol.asyncIterator]() {
+          return (async function* (): AsyncIterable<{subarray: () => Uint8Array}> {})()[Symbol.asyncIterator]()
+        },
+      }
+
+      const {ParleyResponseError} = await import('../../../../../../src/server/infra/channel/bridge/parley-response-generator.js')
+      const throwingGen: ParleyResponseGenerator = async function* () {
+        const e = new ParleyResponseError('GENERATOR_ERR_TERM', 'test error terminal')
+        if (Math.random() < 0) { yield {content: '', kind: 'agent_message_chunk' as const} }
+        throw e
+      }
+
+      const fakeEnvelope = {
+        channel_id: 'ch-errterm-test',
+        delivery_id: 'del-errterm',
+        handshake: {
+          install_cert: {cert_kind: 'install', display_handle: '@test', expires_at: new Date(Date.now() + 3_600_000).toISOString(), issued_at: new Date().toISOString(), public_key: {alg: 'ed25519', pub: 'AAAA'}, signature: 'sig'},
+          nonce: 'nonce-errterm',
+          sender_peer_id: 'fake-peer',
+          timestamp: new Date().toISOString(),
+          tree_cert: undefined,
+        },
+        prompt: [{text: 'hello', type: 'text' as const}],
+        protocol: 'query' as const,
+        turn_id: 'turn-errterm-test',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any
+
+      const originalWarn = console.warn
+      console.warn = (msg: string) => { logs.push(msg) }
+      try {
+        // Must NOT throw even though error-terminal send fails
+        await dispatchResponseStream({
+          envelope: fakeEnvelope,
+          generator: throwingGen,
+          heartbeatIntervalMs: 60_000,
+          l2PrivateKey: l2.privateKey,
+          requestEnvelopeHash: 'eeee',
+          stream: fakeStream,
+        })
+      } finally {
+        console.warn = originalWarn
+      }
+
+      // A warning log line must mention the error terminal failure with channelId/turnId.
+      // Use [parley-server] prefix to distinguish from the generator-failed log.
+      const terminalLog = logs.find((l) => l.includes('[parley-server]') && l.includes('error terminal'))
+      expect(terminalLog, 'error-terminal send failure must emit a [parley-server] log line').to.not.equal(undefined)
+      expect(terminalLog).to.include('turn-errterm-test')
+      expect(terminalLog).to.include('ch-errterm-test')
+    })
+  })
+
   // ── §3.2 Layer B — diagnostic seal-send (phase 9.5.7) ───────────────────
   //
   // Seal sendFrame calls are wrapped in try/catch + diagnostic log so a torn-

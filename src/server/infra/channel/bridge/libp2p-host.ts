@@ -99,6 +99,8 @@ class Libp2pStreamAdapter implements Libp2pStreamLike {
 
 export class Libp2pHost {
   private readonly config: BridgeConfig
+  // §9.5.8 Fix C — connection-state heartbeat timer handle for cleanup in stop().
+  private connectionHeartbeatTimer: ReturnType<typeof setInterval> | undefined
   private readonly identity: InstallIdentityService
   private node: Libp2p | undefined
   private startPromise: Promise<void> | undefined
@@ -352,6 +354,12 @@ export class Libp2pHost {
     if (!this.node) return
     const {node} = this
     this.node = undefined
+    // §9.5.8 Fix C — clean up the connection-state heartbeat timer.
+    if (this.connectionHeartbeatTimer !== undefined) {
+      clearInterval(this.connectionHeartbeatTimer)
+      this.connectionHeartbeatTimer = undefined
+    }
+
     await node.stop()
   }
 
@@ -376,6 +384,55 @@ export class Libp2pHost {
     })
 
     await this.node.start()
+
+    // §9.5.8 Fix C — instrument connection/stream lifecycle events so the
+    // next retest produces actionable data about the 17-minute abort.
+    // Output goes to console.warn (daemon stderr → server-*.log).
+
+    this.node.addEventListener('connection:open', (event) => {
+      const conn = event.detail
+      const remoteAddr = conn.remoteAddr?.toString() ?? 'unknown'
+      const remotePeer = conn.remotePeer.toString()
+      console.warn(`[libp2p] connection:open peer=${remotePeer} addr=${remoteAddr}`)
+    })
+
+    this.node.addEventListener('connection:close', (event) => {
+      const conn = event.detail
+      const remoteAddr = conn.remoteAddr?.toString() ?? 'unknown'
+      const remotePeer = conn.remotePeer.toString()
+      const {direction, status} = conn
+      console.warn(
+        `[libp2p] connection:close peer=${remotePeer} addr=${remoteAddr} ` +
+        `direction=${direction} status=${status}`,
+      )
+    })
+
+    this.node.addEventListener('peer:connect', (event) => {
+      const peerId = event.detail.toString()
+      console.warn(`[libp2p] peer:connect peer=${peerId}`)
+    })
+
+    this.node.addEventListener('peer:disconnect', (event) => {
+      const peerId = event.detail.toString()
+      console.warn(`[libp2p] peer:disconnect peer=${peerId}`)
+    })
+
+    // Periodic connection heartbeat every 30 s — logs all open connections
+    // so post-mortem analysis can reconstruct the connection timeline.
+    const {node} = this
+    this.connectionHeartbeatTimer = setInterval(() => {
+      const conns = node.getConnections()
+      if (conns.length === 0) return
+      for (const conn of conns) {
+        const age = Date.now() - conn.timeline.open
+        console.warn(
+          `[libp2p] heartbeat peer=${conn.remotePeer.toString()} ` +
+          `age=${age}ms ` +
+          `status=${conn.status} ` +
+          `direction=${conn.direction}`,
+        )
+      }
+    }, 30_000)
   }
 
   private ensureStarted(): Libp2p {

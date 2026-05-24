@@ -1516,6 +1516,31 @@ export class ChannelOrchestrator implements IChannelOrchestrator {
       }
     }
 
+    // §9.5.8 Blocker 2 — propagate integrity-degraded markers from the
+    // remote-member driver into the delivery record so they are persisted
+    // to disk and visible in `brv channel show <turnId> --json`.
+    // The driver emits an `agent_meta` event with subKind='parley_integrity'
+    // immediately after yielding chunks when sealOrigin !== 'explicit'.
+    if (
+      payload.kind === 'agent_meta' &&
+      payload.subKind === 'parley_integrity' &&
+      typeof payload.payload === 'object' &&
+      payload.payload !== null
+    ) {
+      const markers = payload.payload as Record<string, unknown>
+      if (typeof markers.sealOrigin === 'string') {
+        delivery.sealOrigin = markers.sealOrigin as typeof delivery.sealOrigin
+      }
+
+      if (typeof markers.integrityDegraded === 'boolean') {
+        delivery.integrityDegraded = markers.integrityDegraded
+      }
+
+      if (markers.terminalMissing === true) {
+        delivery.terminalMissing = true
+      }
+    }
+
     // Wrap the payload with TurnEventBase + seq.
     const wrapped = this.wrapPayload({channelId, delivery, memberHandle: member.handle, payload, turnId})
     await this.persistAndBroadcast(channelId, projectRoot, turnId, wrapped)

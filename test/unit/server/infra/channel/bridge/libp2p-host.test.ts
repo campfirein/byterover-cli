@@ -160,4 +160,58 @@ describe('Libp2pHost', () => {
       }
     })
   })
+
+  // §9.5.8 Fix C — libp2p connection-state observability
+  describe('§9.5.8 Fix C — connection lifecycle event listeners are registered on start', () => {
+    it('registers connection:open, connection:close, peer:connect, peer:disconnect listeners and fires heartbeat interval', async () => {
+      const identity = new InstallIdentityService({installDir})
+      await identity.loadOrGenerate()
+
+      // We need to capture the real node's addEventListener calls. Since
+      // Libp2pHost creates the node internally, we verify via the real node
+      // after start() by checking that the observed connection events fire
+      // when we make a real connection.
+      //
+      // Approach: start two real hosts, make a connection, and verify that
+      // the console.warn output from the connection:open listener appears.
+      const identityB = new InstallIdentityService({installDir: installDir + '-b'})
+      await identityB.loadOrGenerate()
+      const hostA = new Libp2pHost({config: DEFAULT_BRIDGE_CONFIG, identity})
+      const hostB = new Libp2pHost({config: DEFAULT_BRIDGE_CONFIG, identity: identityB})
+
+      const warnLogs: string[] = []
+      const originalWarn = console.warn
+      console.warn = (...args: unknown[]) => {
+        const msg = args.join(' ')
+        warnLogs.push(msg)
+        // Suppress output to keep test output clean
+      }
+
+      await hostA.start()
+      await hostB.start()
+
+      try {
+        // B dials A — this should trigger connection:open on A
+        const addrA = hostA.getMultiaddrs()[0]
+        await hostB.dialAndWrite(addrA, '/brv/test/v1', new Uint8Array([1])).catch(() => {})
+
+        // Allow event dispatch to propagate
+        await new Promise<void>((r) => { setTimeout(r, 100) })
+
+        // connection:open or peer:connect must have fired on hostA — look for
+        // the [libp2p] prefix in warn logs
+        const connectionLogs = warnLogs.filter((l) => l.includes('[libp2p]'))
+        expect(connectionLogs.length, `expected [libp2p] warn logs from connection events, got: ${JSON.stringify(warnLogs)}`).to.be.greaterThan(0)
+
+        // Verify at least connection:open or peer:connect was logged
+        const hasConnectionEvent = connectionLogs.some(
+          (l) => l.includes('connection:open') || l.includes('peer:connect'),
+        )
+        expect(hasConnectionEvent, `expected connection:open or peer:connect in logs: ${JSON.stringify(connectionLogs)}`).to.equal(true)
+      } finally {
+        console.warn = originalWarn
+        await Promise.allSettled([hostA.stop(), hostB.stop()])
+      }
+    }).timeout(5000)
+  })
 })

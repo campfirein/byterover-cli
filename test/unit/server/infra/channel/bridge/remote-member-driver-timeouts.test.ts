@@ -466,4 +466,194 @@ describe('RemoteMemberDriver — Phase 9.5.7 timeout regression tests', () => {
       }
     })
   })
+
+  // ─── §9.5.8 Blocker 2 — integrity markers propagated from parley result ───
+
+  describe('§9.5.8 Blocker 2: integrity marker propagation', () => {
+  // When sendParleyQuery returns with integrityDegraded=true (any non-explicit sealOrigin),
+  // the driver MUST yield an agent_meta event with subKind='parley_integrity' carrying
+  // the three markers (sealOrigin, integrityDegraded, terminalMissing).
+
+  it('yields agent_meta parley_integrity event when sealOrigin=implicit-from-signed-terminal', async () => {
+    const degradedResult: SendParleyQueryResult = {
+      content: 'partial output',
+      endedState: 'completed',
+      frames: [],
+      integrityDegraded: true,
+      ok: true,
+      sealOrigin: 'implicit-from-signed-terminal',
+    }
+
+    const fake = makeFakeSendParleyQuery()
+    const driver = buildDriver({_sendParleyQuery: fake.fn})
+    await driver.start()
+
+    const promptPromise = drainPrompt(driver)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    fake.resolveWith(degradedResult)
+
+    const events = await promptPromise
+
+    // Must include an agent_meta event with subKind='parley_integrity'
+    const integrityEvent = events.find(
+      (e) => e.kind === 'agent_meta' && (e as {subKind?: string}).subKind === 'parley_integrity',
+    )
+    expect(integrityEvent).to.not.be.undefined
+    if (integrityEvent === undefined) return
+
+    const {payload} = integrityEvent as {payload?: Record<string, unknown>}
+    expect(payload).to.deep.include({
+      integrityDegraded: true,
+      sealOrigin: 'implicit-from-signed-terminal',
+    })
+    // terminalMissing should be absent (undefined) on implicit-from-signed-terminal path
+    expect(payload?.terminalMissing).to.equal(undefined)
+  })
+
+  it('yields agent_meta parley_integrity event when sealOrigin=implicit-from-stream-eof (terminalMissing=true)', async () => {
+    const degradedResult: SendParleyQueryResult = {
+      content: 'partial',
+      endedState: 'completed',
+      frames: [],
+      integrityDegraded: true,
+      ok: true,
+      sealOrigin: 'implicit-from-stream-eof',
+      terminalMissing: true,
+    }
+
+    const fake = makeFakeSendParleyQuery()
+    const driver = buildDriver({_sendParleyQuery: fake.fn})
+    await driver.start()
+
+    const promptPromise = drainPrompt(driver)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    fake.resolveWith(degradedResult)
+
+    const events = await promptPromise
+
+    const integrityEvent = events.find(
+      (e) => e.kind === 'agent_meta' && (e as {subKind?: string}).subKind === 'parley_integrity',
+    )
+    expect(integrityEvent).to.not.be.undefined
+    if (integrityEvent === undefined) return
+
+    const {payload} = integrityEvent as {payload?: Record<string, unknown>}
+    expect(payload).to.deep.include({
+      integrityDegraded: true,
+      sealOrigin: 'implicit-from-stream-eof',
+      terminalMissing: true,
+    })
+  })
+
+  it('yields chunk + parley_integrity event BEFORE throwing on chunks+signed_error+no_seal (codex round-2)', async () => {
+    // Codex round-2 caught: the previous remote-driver-implementation threw
+    // on error frames BEFORE yielding chunks + the parley_integrity meta.
+    // For the chunks+signed_error+no_seal case (parley-client returns
+    // endedState='errored' with markers), the orchestrator never received
+    // the markers because the throw happened first.
+    //
+    // Post-fix: yield order is chunks → parley_integrity meta → throw.
+    // The orchestrator persists the integrity record into TurnDelivery
+    // BEFORE the delivery transitions to errored.
+
+    const erroredDegradedResult: SendParleyQueryResult = {
+      content: 'partial output before the error',
+      endedState: 'errored',
+      errorCode: 'AGENT_INTERNAL_ERROR',
+      errorMessage: 'Something failed mid-stream',
+      // Real frame shape: a chunk followed by a signed error terminal.
+      frames: [
+        {content: 'partial output before the error', kind: 'agent_message_chunk', seq: 1, signature: 'fakesig'} as never,
+        {code: 'AGENT_INTERNAL_ERROR', kind: 'error', message: 'Something failed mid-stream', seq: 2, signature: 'fakesig'} as never,
+      ],
+      integrityDegraded: true,
+      ok: true,
+      sealOrigin: 'implicit-from-signed-terminal',
+    }
+
+    const fake = makeFakeSendParleyQuery()
+    const driver = buildDriver({_sendParleyQuery: fake.fn})
+    await driver.start()
+
+    // Drain the prompt, collecting events up until the throw.
+    const events: import('../../../../../../src/server/core/interfaces/channel/i-acp-driver.js').TurnEventPayload[] = []
+    let caught: unknown
+    const consumePromise = (async (): Promise<void> => {
+      try {
+        for await (const ev of driver.prompt(minimalPromptArgs())) {
+          events.push(ev)
+        }
+      } catch (error) {
+        caught = error
+      }
+    })()
+
+    await Promise.resolve()
+    await Promise.resolve()
+    fake.resolveWith(erroredDegradedResult)
+    await consumePromise
+
+    // The driver MUST have thrown (signed error frame surfaced).
+    expect(caught).to.be.instanceOf(Error)
+    expect((caught as Error).message).to.include('PARLEY_STREAM_ERROR')
+    expect((caught as Error).message).to.include('AGENT_INTERNAL_ERROR')
+
+    // CRITICAL: chunk and parley_integrity were yielded BEFORE the throw.
+    expect(events.length, 'should have at least chunk + meta before throw').to.be.greaterThanOrEqual(2)
+
+    const chunkEvent = events.find((e) => e.kind === 'agent_message_chunk')
+    expect(chunkEvent, 'chunk event must be yielded before throw').to.not.be.undefined
+    expect((chunkEvent as {content: string}).content).to.include('partial output')
+
+    const integrityEvent = events.find(
+      (e) => e.kind === 'agent_meta' && (e as {subKind?: string}).subKind === 'parley_integrity',
+    )
+    expect(integrityEvent, 'parley_integrity meta must be yielded before throw').to.not.be.undefined
+    const {payload} = integrityEvent as {payload?: Record<string, unknown>}
+    expect(payload).to.deep.include({
+      integrityDegraded: true,
+      sealOrigin: 'implicit-from-signed-terminal',
+    })
+
+    // Order assertion: chunk + meta MUST come before any error indication.
+    const chunkIndex = events.findIndex((e) => e.kind === 'agent_message_chunk')
+    const metaIndex = events.findIndex(
+      (e) => e.kind === 'agent_meta' && (e as {subKind?: string}).subKind === 'parley_integrity',
+    )
+    expect(chunkIndex).to.be.lessThan(metaIndex)
+  })
+
+  it('does NOT yield agent_meta parley_integrity event on explicit seal (normal path)', async () => {
+    const normalResult: SendParleyQueryResult = {
+      content: 'full output',
+      endedState: 'completed',
+      frames: [],
+      integrityDegraded: false,
+      ok: true,
+      sealOrigin: 'explicit',
+    }
+
+    const fake = makeFakeSendParleyQuery()
+    const driver = buildDriver({_sendParleyQuery: fake.fn})
+    await driver.start()
+
+    const promptPromise = drainPrompt(driver)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    fake.resolveWith(normalResult)
+
+    const events = await promptPromise
+
+    const integrityEvent = events.find(
+      (e) => e.kind === 'agent_meta' && (e as {subKind?: string}).subKind === 'parley_integrity',
+    )
+    // On the normal path, NO parley_integrity event should be emitted
+    expect(integrityEvent).to.equal(undefined)
+  })
+  })  // end describe §9.5.8 Blocker 2
 })

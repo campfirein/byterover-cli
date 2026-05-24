@@ -307,8 +307,13 @@ export const TurnDeliverySchema = z.object({
   // signed-terminal'` means the transcript_seal was missing and the turn was
   // reconstructed from a signed stream_end. `integrityDegraded=true` when
   // the fallback path was used. Both are absent on local-agent deliveries.
-  sealOrigin: z.enum(['explicit', 'implicit-from-signed-terminal']).optional(),
+  // Phase 9.5.8 Fix B: adds `'implicit-from-stream-eof'` — the second-tier
+  // fallback when NEITHER seal NOR stream_end arrived (stream torn down before
+  // any terminal frame). `terminalMissing=true` signals the weakest integrity
+  // guarantee (only authenticated libp2p session, no responder-signed terminal).
+  sealOrigin: z.enum(['explicit', 'implicit-from-signed-terminal', 'implicit-from-stream-eof']).optional(),
   integrityDegraded: z.boolean().optional(),
+  terminalMissing: z.boolean().optional(),
 })
 export type TurnDelivery = z.infer<typeof TurnDeliverySchema>
 

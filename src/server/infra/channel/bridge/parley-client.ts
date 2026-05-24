@@ -90,7 +90,14 @@ export type SendParleyQueryResult =
     }
   | {
       content: string
-      endedState: 'cancelled' | 'completed'
+      endedState: 'cancelled' | 'completed' | 'errored'
+      /**
+       * §9.5.8 Fix B — `errorCode` and `errorMessage` are populated when
+       * `endedState='errored'` AND the seal was missing (signed-error-no-seal
+       * path). On the normal explicit-seal errored path the result is `ok:false`.
+       */
+      errorCode?: string
+      errorMessage?: string
       frames: ParleyResponseFrame[]
       /**
        * Phase 9.5.7 §3.2 Layer A — whether integrity was degraded.
@@ -104,8 +111,21 @@ export type SendParleyQueryResult =
        * `'explicit'` — normal: a `transcript_seal` frame was received and verified.
        * `'implicit-from-signed-terminal'` — degraded: seal was missing; turn was
        * reconstructed from a verified `stream_end` terminal + unsigned chunks.
+       * Phase 9.5.8 Fix B:
+       * `'implicit-from-stream-eof'` — second-tier fallback: neither seal NOR
+       * stream_end arrived; chunks arrived under an authenticated libp2p session
+       * but there is NO responder-signed terminal. `terminalMissing=true` when
+       * this path is taken — callers MUST surface this clearly in their UX.
        */
-      sealOrigin: 'explicit' | 'implicit-from-signed-terminal'
+      sealOrigin: 'explicit' | 'implicit-from-signed-terminal' | 'implicit-from-stream-eof'
+      /**
+       * Phase 9.5.8 Fix B — `true` when sealOrigin='implicit-from-stream-eof'.
+       * Signals that the integrity guarantee is the weakest possible: chunks
+       * were transported under an authenticated libp2p session, but the
+       * responder never emitted a signed terminal frame. Absent on all other
+       * paths.
+       */
+      terminalMissing?: true
     }
 
 export async function sendParleyQuery(args: SendParleyQueryArgs): Promise<SendParleyQueryResult> {
@@ -137,6 +157,7 @@ export async function sendParleyQuery(args: SendParleyQueryArgs): Promise<SendPa
     expectedReHash,
     expectedTurnId: args.turn_id,
     frames,
+    log: console.warn,
     protocol: 'query',
     remoteL2PubKey: args.remoteL2PubKey,
   })  // await implicit — sendParleyQuery is async, verifyResponseStream is now async
@@ -298,6 +319,8 @@ interface VerifyResponseStreamArgs {
   readonly expectedReHash: string
   readonly expectedTurnId: string
   readonly frames: ParleyResponseFrame[]
+  /** Optional logger for diagnostic messages (defaults to console.warn). */
+  readonly log?: (message: string) => void
   readonly protocol: 'delegate' | 'query'
   readonly remoteL2PubKey: KeyObject
 }
@@ -310,6 +333,150 @@ interface VerifyResponseStreamArgs {
  */
 export async function verifyResponseStreamForTest(args: VerifyResponseStreamArgs): Promise<SendParleyQueryResult> {
   return verifyResponseStream(args)
+}
+
+/**
+ * §3.2 Layer A + §9.5.8 Fix B — fallback logic when no transcript_seal is present.
+ * Extracted to keep verifyResponseStream under the complexity budget.
+ */
+async function verifyNoSealFallback(args: VerifyResponseStreamArgs): Promise<SendParleyQueryResult> {
+  // §3.2 Layer A — degraded-completion fallback.
+  //
+  // The seal is cryptographically signed over the response digest; if it's
+  // missing, we do NOT have the integrity binding it provides. However, if:
+  //   (a) there is a signed stream_end terminal frame that verifies against
+  //       the responder's L2 pub key using the SAME payload binding as the
+  //       normal verifyResponseTerminal path (channel_id, delivery_id,
+  //       protocol, request_envelope_hash, seq, turn_id, terminal_payload),
+  //   (b) stream_end is the LAST non-heartbeat frame (no chunks after it),
+  //   (c) at least one agent_message_chunk exists,
+  // then we can reconstruct the turn result as "completed but integrity-
+  // degraded" — the responder said it's done (via the signed terminal), and
+  // the chunks were transported under the same authenticated libp2p session.
+  //
+  // Strict enforcement: any of these pre-conditions missing → still throw.
+  // We never fall back on an unsigned or misbound terminal.
+  const streamEndFrame = args.frames.find((f) => f.kind === 'stream_end')
+  const chunks = args.frames.filter((f) => f.kind === 'agent_message_chunk')
+  // lastNonHeartbeat: stream_end must be the LAST non-heartbeat frame
+  const lastNonHeartbeat = [...args.frames].reverse().find((f) => f.kind !== 'heartbeat_ping')
+
+  if (
+    streamEndFrame !== undefined &&
+    streamEndFrame.kind === 'stream_end' &&
+    lastNonHeartbeat?.kind === 'stream_end' &&
+    chunks.length > 0
+  ) {
+    // Verify stream_end using the SAME payload binding as verifyResponseTerminal
+    // (codex round-3 constraint: must not under-bind the fallback check).
+    const terminalPayload = {
+      channel_id: args.expectedChannelId,
+      delivery_id: args.expectedDeliveryId,
+      protocol: args.protocol,
+      request_envelope_hash: args.expectedReHash,
+      seq: streamEndFrame.seq,
+      terminal_payload: {ended_state: streamEndFrame.ended_state, kind: 'stream_end' as const},
+      turn_id: args.expectedTurnId,
+    }
+    const signatureValid = verifyResponseTerminal(terminalPayload, streamEndFrame.signature, args.remoteL2PubKey)
+    if (signatureValid) {
+      const content = chunks
+        .map((f) => (f as {content: string}).content)
+        .join('')
+      return {
+        content,
+        endedState: streamEndFrame.ended_state,
+        frames: args.frames,
+        integrityDegraded: true,
+        ok: true,
+        sealOrigin: 'implicit-from-signed-terminal',
+      }
+    }
+  }
+
+  // §9.5.8 Fix B — signed error + no seal.
+  //
+  // If a signed `error` frame arrived but the seal was lost, treat it as
+  // an integrity-degraded errored turn. The signed error terminal provides
+  // responder-authenticated evidence that the turn ended in error; the
+  // missing seal means we lack the digest-binding the seal would provide,
+  // but the terminal itself is cryptographically verified. We verify using
+  // the SAME payload binding as the normal verifyResponseError path.
+  const errorFrame = args.frames.find((f) => f.kind === 'error')
+  if (errorFrame !== undefined && errorFrame.kind === 'error' && chunks.length > 0) {
+    const errorPayload = {
+      channel_id: args.expectedChannelId,
+      delivery_id: args.expectedDeliveryId,
+      protocol: args.protocol,
+      request_envelope_hash: args.expectedReHash,
+      seq: errorFrame.seq,
+      terminal_payload: {code: errorFrame.code, kind: 'error' as const, message: errorFrame.message},
+      turn_id: args.expectedTurnId,
+    }
+    const errorSignatureValid = verifyResponseError(errorPayload, errorFrame.signature, args.remoteL2PubKey)
+    if (errorSignatureValid) {
+      const content = chunks.map((f) => (f as {content: string}).content).join('')
+      args.log?.(
+        `[parley-client] No transcript_seal received for turn=${args.expectedTurnId} ` +
+        `(channelId=${args.expectedChannelId}), but found a signed error frame ` +
+        `(code=${errorFrame.code}). Returning integrity-degraded errored result ` +
+        `(sealOrigin=implicit-from-signed-terminal, integrityDegraded=true). ` +
+        `Work product is partial; the responder signalled an error.`,
+      )
+      return {
+        content,
+        endedState: 'errored' as const,
+        errorCode: errorFrame.code,
+        errorMessage: errorFrame.message,
+        frames: args.frames,
+        integrityDegraded: true,
+        ok: true,
+        sealOrigin: 'implicit-from-signed-terminal',
+      }
+    }
+
+    // Signed error verification failed — throw rather than treat as valid.
+    throw new Error('TRANSCRIPT_TERMINAL_MISSING: error frame signature did not verify, no seal')
+  }
+
+  // §9.5.8 Fix B — second-tier "no terminal at all" fallback.
+  //
+  // If we couldn't even fall back to the signed-stream_end path because no
+  // stream_end arrived, AND no signed error arrived, this is the "stream torn
+  // down before any terminal" case (bug-report failure #2 — the most common
+  // manifestation). We have NO signed assertion from the responder that the
+  // turn completed. But the chunks ARE under the same authenticated libp2p
+  // session — they're not forgeable by a third party, just not individually
+  // signed.
+  //
+  // Return a soft "completed with no terminal" — operator-visible as
+  // terminalMissing=true so they know the integrity guarantee is even
+  // weaker than the implicit-from-signed-terminal path.
+  //
+  // PRECONDITION: this path only engages when there is NO terminal of ANY kind
+  // (no stream_end, no error). If either terminal was present, the earlier
+  // branches handle it (or throw for forged signatures).
+  if (chunks.length > 0 && streamEndFrame === undefined && errorFrame === undefined) {
+    args.log?.(
+      `[parley-client] No transcript_seal AND no stream_end AND no error frame received for turn=${args.expectedTurnId} ` +
+      `(channelId=${args.expectedChannelId}). ${chunks.length} chunk(s) salvaged under the ` +
+      `authenticated libp2p session. Returning soft completion (sealOrigin=implicit-from-stream-eof, ` +
+      `terminalMissing=true, integrityDegraded=true). Likely cause: dialer libp2p connection ` +
+      `torn down before responder could emit terminal frame.`,
+    )
+    const content = chunks.map((f) => (f as {content: string}).content).join('')
+    return {
+      content,
+      endedState: 'completed' as const,
+      frames: args.frames,
+      integrityDegraded: true,
+      ok: true,
+      sealOrigin: 'implicit-from-stream-eof',
+      terminalMissing: true,
+    }
+  }
+
+  throw new Error('TRANSCRIPT_TERMINAL_MISSING: no transcript_seal frame')
 }
 
 async function verifyResponseStream(args: VerifyResponseStreamArgs): Promise<SendParleyQueryResult> {
@@ -329,61 +496,7 @@ async function verifyResponseStream(args: VerifyResponseStreamArgs): Promise<Sen
 
   const seal = args.frames.find((f) => f.kind === 'transcript_seal')
   if (!seal || seal.kind !== 'transcript_seal') {
-    // §3.2 Layer A — degraded-completion fallback.
-    //
-    // The seal is cryptographically signed over the response digest; if it's
-    // missing, we do NOT have the integrity binding it provides. However, if:
-    //   (a) there is a signed stream_end terminal frame that verifies against
-    //       the responder's L2 pub key using the SAME payload binding as the
-    //       normal verifyResponseTerminal path (channel_id, delivery_id,
-    //       protocol, request_envelope_hash, seq, turn_id, terminal_payload),
-    //   (b) stream_end is the LAST non-heartbeat frame (no chunks after it),
-    //   (c) at least one agent_message_chunk exists,
-    // then we can reconstruct the turn result as "completed but integrity-
-    // degraded" — the responder said it's done (via the signed terminal), and
-    // the chunks were transported under the same authenticated libp2p session.
-    //
-    // Strict enforcement: any of these pre-conditions missing → still throw.
-    // We never fall back on an unsigned or misbound terminal.
-    const streamEndFrame = args.frames.find((f) => f.kind === 'stream_end')
-    const chunks = args.frames.filter((f) => f.kind === 'agent_message_chunk')
-    // lastNonHeartbeat: stream_end must be the LAST non-heartbeat frame
-    const lastNonHeartbeat = [...args.frames].reverse().find((f) => f.kind !== 'heartbeat_ping')
-
-    if (
-      streamEndFrame !== undefined &&
-      streamEndFrame.kind === 'stream_end' &&
-      lastNonHeartbeat?.kind === 'stream_end' &&
-      chunks.length > 0
-    ) {
-      // Verify stream_end using the SAME payload binding as verifyResponseTerminal
-      // (codex round-3 constraint: must not under-bind the fallback check).
-      const terminalPayload = {
-        channel_id: args.expectedChannelId,
-        delivery_id: args.expectedDeliveryId,
-        protocol: args.protocol,
-        request_envelope_hash: args.expectedReHash,
-        seq: streamEndFrame.seq,
-        terminal_payload: {ended_state: streamEndFrame.ended_state, kind: 'stream_end' as const},
-        turn_id: args.expectedTurnId,
-      }
-      const signatureValid = verifyResponseTerminal(terminalPayload, streamEndFrame.signature, args.remoteL2PubKey)
-      if (signatureValid) {
-        const content = chunks
-          .map((f) => (f as {content: string}).content)
-          .join('')
-        return {
-          content,
-          endedState: streamEndFrame.ended_state,
-          frames: args.frames,
-          integrityDegraded: true,
-          ok: true,
-          sealOrigin: 'implicit-from-signed-terminal',
-        }
-      }
-    }
-
-    throw new Error('TRANSCRIPT_TERMINAL_MISSING: no transcript_seal frame')
+    return verifyNoSealFallback(args)
   }
 
   // Locate the terminal frame (stream_end OR error) immediately before

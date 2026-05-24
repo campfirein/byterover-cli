@@ -605,4 +605,83 @@ describe('ChannelOrchestrator (Phase 2)', () => {
   it('keeps nextDriverConfig in scope for future tests', () => {
     expect(typeof nextDriverConfig).to.equal('undefined')
   })
+
+  // ─── §9.5.8 Blocker 2 — delivery-record integrity marker persistence ──────
+
+  describe('§9.5.8 Blocker 2: integrity markers persisted in TurnDelivery when agent_meta parley_integrity emitted', () => {
+    it('sealOrigin and integrityDegraded are stored on the delivery when driver emits parley_integrity agent_meta', async () => {
+      await createChannel()
+
+      // Use a driver that emits an agent_meta parley_integrity event (simulating
+      // what RemoteMemberDriver yields on the implicit-from-signed-terminal path).
+      nextDriver = new MockAcpDriver({
+        events: [
+          {content: 'hello result', kind: 'agent_message_chunk'},
+          {
+            kind: 'agent_meta',
+            payload: {
+              integrityDegraded: true,
+              sealOrigin: 'implicit-from-signed-terminal',
+            },
+            subKind: 'parley_integrity',
+          },
+        ],
+        handle: '@mock',
+      })
+
+      await invite('@mock')
+
+      const {turn} = await orchestrator.dispatchMention({channelId, projectRoot, prompt: '@mock hello'})
+
+      // Wait for the background delivery to complete
+      await new Promise((r) => {
+        setTimeout(r, 150)
+      })
+
+      // Read deliveries from disk — they must have the integrity markers set
+      const deliveries = await store.readDeliveries({channelId, projectRoot, turnId: turn.turnId})
+
+      expect(deliveries).to.have.lengthOf(1)
+      const delivery = deliveries[0]
+      expect(delivery.sealOrigin).to.equal('implicit-from-signed-terminal')
+      expect(delivery.integrityDegraded).to.equal(true)
+      expect(delivery.terminalMissing).to.equal(undefined)
+    })
+
+    it('terminalMissing is stored when driver emits parley_integrity with terminalMissing=true', async () => {
+      await createChannel()
+
+      nextDriver = new MockAcpDriver({
+        events: [
+          {content: 'partial', kind: 'agent_message_chunk'},
+          {
+            kind: 'agent_meta',
+            payload: {
+              integrityDegraded: true,
+              sealOrigin: 'implicit-from-stream-eof',
+              terminalMissing: true,
+            },
+            subKind: 'parley_integrity',
+          },
+        ],
+        handle: '@mock',
+      })
+
+      await invite('@mock')
+
+      const {turn} = await orchestrator.dispatchMention({channelId, projectRoot, prompt: '@mock ping'})
+
+      await new Promise((r) => {
+        setTimeout(r, 150)
+      })
+
+      const deliveries = await store.readDeliveries({channelId, projectRoot, turnId: turn.turnId})
+
+      expect(deliveries).to.have.lengthOf(1)
+      const delivery = deliveries[0]
+      expect(delivery.sealOrigin).to.equal('implicit-from-stream-eof')
+      expect(delivery.integrityDegraded).to.equal(true)
+      expect(delivery.terminalMissing).to.equal(true)
+    })
+  })
 })

@@ -283,16 +283,12 @@ export class RemoteMemberDriver implements IAcpDriver {
         throw new Error(`PARLEY_REJECTED [${result.code}]: ${result.message}`)
       }
 
-      // Surface ANY server-emitted error frame on the response stream
-      // (kimi round-1 MEDIUM — previously silently swallowed because the
-      // loop only handled `agent_message_chunk`). The seal-verify path
-      // in `sendParleyQuery` already enforces signature integrity, so
-      // an error frame here is authoritative.
-      for (const frame of result.frames) {
-        if (frame.kind === 'error') {
-          throw new Error(`PARLEY_STREAM_ERROR [${frame.code}]: ${frame.message}`)
-        }
-      }
+      // §9.5.8 codex round-2 fix: yield chunks + parley_integrity meta
+      // BEFORE surfacing any error frame, so the orchestrator persists
+      // both the streamed content AND the integrity markers before the
+      // turn transitions to errored. Previously the error-frame scan ran
+      // first and threw, dropping the chunks + integrity meta on the
+      // floor for the chunks+signed_error+no_seal case.
 
       // Project agent_message_chunk frames as the corresponding
       // TurnEventPayload. Slice 9.4 only handles text; tool calls /
@@ -300,6 +296,37 @@ export class RemoteMemberDriver implements IAcpDriver {
       for (const frame of result.frames) {
         if (frame.kind === 'agent_message_chunk') {
           yield {content: frame.content, kind: 'agent_message_chunk'}
+        }
+      }
+
+      // Surface integrity-degraded markers as an agent_meta event so the
+      // orchestrator can persist them into the delivery record and
+      // `brv channel show` can display them. Only emitted when
+      // sealOrigin !== 'explicit' (i.e. the fallback paths were taken).
+      // Normal explicit-seal turns produce no event.
+      if (result.sealOrigin !== 'explicit') {
+        const integrityPayload: Record<string, unknown> = {
+          integrityDegraded: result.integrityDegraded,
+          sealOrigin: result.sealOrigin,
+        }
+        if (result.terminalMissing === true) {
+          integrityPayload.terminalMissing = true
+        }
+
+        yield {
+          kind: 'agent_meta',
+          payload: integrityPayload,
+          subKind: 'parley_integrity',
+        }
+      }
+
+      // Now surface ANY server-emitted error frame on the response stream
+      // (kimi round-1 MEDIUM — previously silently swallowed). Runs AFTER
+      // chunk/meta yield so the orchestrator captures the integrity record
+      // before transitioning the delivery to errored.
+      for (const frame of result.frames) {
+        if (frame.kind === 'error') {
+          throw new Error(`PARLEY_STREAM_ERROR [${frame.code}]: ${frame.message}`)
         }
       }
 
