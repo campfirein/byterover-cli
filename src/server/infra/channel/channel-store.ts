@@ -55,6 +55,12 @@ export type ChannelStoreDeps = {
    * when omitted, list-turns falls back to the per-turn NDJSON scan.
    */
   readonly indexStore?: ChannelTurnIndexStore
+  /**
+   * Phase 9.5.9 §2.4 — optional logger for `listChannels` skip-not-fail.
+   * When supplied, malformed metas are logged and skipped rather than
+   * causing the whole list to fail. Defaults to a silent no-op.
+   */
+  readonly log?: (msg: string) => void
   readonly snapshotWriter: ChannelSnapshotWriter
   /**
    * Slice 9.4 — periodic transcript GC. Optional; when omitted,
@@ -107,6 +113,7 @@ const tryReadMeta = async (path: string): Promise<ChannelMeta | undefined> => {
 export class ChannelStore implements IChannelStore {
   private readonly eventsWriter: ChannelEventsWriter
   private readonly indexStore?: ChannelTurnIndexStore
+  private readonly log: (msg: string) => void
   private readonly snapshotWriter: ChannelSnapshotWriter
   private readonly transcriptGc?: ChannelTranscriptGc
   private readonly treeReader: ChannelTreeReader
@@ -115,6 +122,7 @@ export class ChannelStore implements IChannelStore {
   public constructor(deps: ChannelStoreDeps) {
     this.eventsWriter = deps.eventsWriter
     this.indexStore = deps.indexStore
+    this.log = deps.log ?? (() => { /* no-op */ })
     this.snapshotWriter = deps.snapshotWriter
     this.transcriptGc = deps.transcriptGc
     this.treeReader = deps.treeReader
@@ -175,11 +183,25 @@ export class ChannelStore implements IChannelStore {
       throw error
     }
 
-    const metas = await Promise.all(
+    // Phase 9.5.9 §2.4 — skip-not-fail: use Promise.allSettled so a single
+    // malformed or schema-invalid meta.json does not cause the entire list
+    // to fail. Rejected entries are logged and skipped; valid channels are
+    // returned. Mirrors the runProjectWarm pattern in orchestrator.ts.
+    const results = await Promise.allSettled(
       entries.map((id) => tryReadMeta(channelPaths.metaFile(args.projectRoot, id))),
     )
     const channels: Channel[] = []
-    for (const meta of metas) {
+    for (const [i, result] of results.entries()) {
+      if (result.status === 'rejected') {
+        this.log(
+          `[channel-store] listChannels skipping malformed meta ${entries[i]}: ${
+            result.reason instanceof Error ? result.reason.message : String(result.reason)
+          }`,
+        )
+        continue
+      }
+
+      const meta = result.value
       if (meta === undefined) continue
       if (!args.includeArchived && meta.archivedAt !== undefined) continue
       channels.push(toChannelProjection(meta))

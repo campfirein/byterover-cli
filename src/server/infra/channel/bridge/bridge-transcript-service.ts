@@ -57,7 +57,8 @@ export type AutoProvisionPolicy = 'auto' | 'deny' | 'pinned-only'
 
 /** Shape of the channel_auto_created event (phase 9.5.4 §3.3). */
 export interface ChannelAutoCreatedEvent {
-  readonly addressability: 'bootstrap-only'
+  /** Phase 9.5.9 §2.5 — expanded to include inbound-only. */
+  readonly addressability: 'bootstrap-only' | 'inbound-only'
   readonly autoProvisionedAt: string
   readonly autoProvisionedFrom: string
   readonly channelId: string
@@ -471,6 +472,12 @@ export class BridgeTranscriptService {
   }): Promise<void> {
     if (args.isNewChannel) {
       const now = this.clock().toISOString()
+      // Phase 9.5.9 §2.5 — if either multiaddr or L2 pubkey is missing,
+      // mark the member as `inbound-only` so outbound mentions fail fast
+      // instead of silently producing undiagnosable dial failures.
+      const hasAddr = args.remoteAddr !== undefined && args.remoteAddr !== ''
+      const hasL2 = args.remoteL2PubKey !== undefined && args.remoteL2PubKey !== ''
+      const addressability = hasAddr && hasL2 ? 'bootstrap-only' : 'inbound-only'
       const senderMember: ChannelMemberRemotePeer = {
         handle: args.mirrorHandle,
         joinedAt: now,
@@ -478,10 +485,9 @@ export class BridgeTranscriptService {
         peerId: args.senderPeerId,
         status: 'idle',
         // Phase 9.5.4 — store multiaddr + L2 cert when available.
-        ...(args.remoteAddr !== undefined && args.remoteAddr !== '' ? {multiaddr: args.remoteAddr} : {}),
-        ...(args.remoteL2PubKey !== undefined && args.remoteL2PubKey !== '' ? {remoteL2PubKey: args.remoteL2PubKey} : {}),
-        // Bootstrap-only: multiaddr came from one-time inbound dial.
-        addressability: 'bootstrap-only',
+        ...(hasAddr ? {multiaddr: args.remoteAddr} : {}),
+        ...(hasL2 ? {remoteL2PubKey: args.remoteL2PubKey} : {}),
+        addressability,
         ...(args.senderDisplayHandle === undefined ? {} : {displayName: args.senderDisplayHandle}),
       }
       const autoProvisionedAt = now
@@ -502,7 +508,7 @@ export class BridgeTranscriptService {
       if (this.onAutoCreated !== undefined) {
         const seq = this.nextAutoCreateSeq(args.channelId)
         this.onAutoCreated({
-          addressability: 'bootstrap-only',
+          addressability,
           autoProvisionedAt,
           autoProvisionedFrom: args.senderPeerId,
           channelId: args.channelId,

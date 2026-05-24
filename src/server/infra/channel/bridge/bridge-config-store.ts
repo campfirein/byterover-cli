@@ -26,7 +26,18 @@ import {z} from 'zod'
 
 export const BridgePersistedConfigSchema = z
   .object({
+    /**
+     * Phase 9.5.9 §2.7 — persist BRV_BRIDGE_AUTO_CREATE_QUOTA so daemon
+     * respawns without env inherit the operator-configured quota.
+     */
+    autoCreateQuota: z.number().int().positive().optional(),
     autoProvision: z.enum(['auto', 'pinned-only', 'deny']).optional(),
+    /**
+     * Phase 9.5.9 §2.7 — persist BRV_BRIDGE_CLAUDE_UNSAFE so a daemon
+     * respawn without BRV_BRIDGE_CLAUDE_UNSAFE in env does not silently
+     * fall back and fail Claude Code adapter registration.
+     */
+    claudeUnsafe: z.boolean().optional(),
     delegatePolicy: z.enum(['auto', 'prompt', 'deny']).optional(),
     // libp2p listen multiaddrs the daemon-integrated bridge binds.
     // DEFAULT_BRIDGE_CONFIG.listen_addrs is `['/ip4/127.0.0.1/tcp/0']`
@@ -36,7 +47,21 @@ export const BridgePersistedConfigSchema = z
     // `/ip4/0.0.0.0/tcp/60001,/ip4/100.x.x.x/tcp/60001`.
     listenAddrs: z.array(z.string().min(1)).min(1).optional(),
     maxConcurrentPerProfile: z.number().int().positive().optional(),
+    /**
+     * Phase 9.5.9 §2.7 — persist BRV_BRIDGE_PARLEY_DIAL_TIMEOUT_MS
+     * (Phase 9.5.7 split-timeout config) so respawns inherit it.
+     */
+    parleyDialTimeoutMs: z.number().int().positive().optional(),
+    /**
+     * Phase 9.5.9 §2.7 — for future use (Phase 9.5.7 hard-cap timeout).
+     */
+    parleyHardTimeoutMs: z.number().int().positive().optional(),
     parleyProfile: z.string().min(1).optional(),
+    /**
+     * Phase 9.5.9 §2.7 — persist BRV_BRIDGE_PARLEY_TURN_IDLE_TIMEOUT_MS
+     * (Phase 9.5.7 split-timeout config) so respawns inherit it.
+     */
+    parleyTurnIdleTimeoutMs: z.number().int().positive().optional(),
     projectRoot: z.string().min(1).optional(),
   })
   .strict()
@@ -85,7 +110,11 @@ export class BridgeConfigStore {
  * operators see what the daemon ended up using (see `brv-server.ts`).
  */
 export interface ResolvedBridgeRuntimeConfig {
+  /** Phase 9.5.9 §2.7 — per-peer auto-create quota (default undefined = library default). */
+  readonly autoCreateQuota: number | undefined
   readonly autoProvision: 'auto' | 'deny' | 'pinned-only'
+  /** Phase 9.5.9 §2.7 — Claude-unsafe adapter flag. */
+  readonly claudeUnsafe: boolean
   readonly delegatePolicy: 'auto' | 'deny' | 'prompt'
   /**
    * Listen multiaddrs the daemon-integrated bridge will bind. When env or
@@ -95,7 +124,11 @@ export interface ResolvedBridgeRuntimeConfig {
    */
   readonly listenAddrs: readonly string[] | undefined
   readonly maxConcurrentPerProfile: number
+  /** Phase 9.5.9 §2.7 — parley dial timeout in ms. */
+  readonly parleyDialTimeoutMs: number | undefined
   readonly parleyProfile: string | undefined
+  /** Phase 9.5.9 §2.7 — parley turn idle timeout in ms. */
+  readonly parleyTurnIdleTimeoutMs: number | undefined
   readonly projectRoot: string
 }
 
@@ -128,6 +161,18 @@ export function resolveBridgeRuntimeConfig(args: ResolveBridgeRuntimeConfigArgs)
   // Comma-separated for multi-interface binding.
   const envListenAddrs = readCommaListEnv(env.BRV_BRIDGE_LISTEN_ADDRS)
 
+  // Phase 9.5.9 §2.7 — new env vars that are also persisted to file
+  const envClaudeUnsafe = readBoolEnv(env.BRV_BRIDGE_CLAUDE_UNSAFE)
+  const envParleyDialTimeoutMs = readPositiveIntEnv(env.BRV_BRIDGE_PARLEY_DIAL_TIMEOUT_MS, (raw) =>
+    args.log(`[Daemon] invalid BRV_BRIDGE_PARLEY_DIAL_TIMEOUT_MS="${raw}"; expected positive integer`),
+  )
+  const envParleyTurnIdleTimeoutMs = readPositiveIntEnv(env.BRV_BRIDGE_PARLEY_TURN_IDLE_TIMEOUT_MS, (raw) =>
+    args.log(`[Daemon] invalid BRV_BRIDGE_PARLEY_TURN_IDLE_TIMEOUT_MS="${raw}"; expected positive integer`),
+  )
+  const envAutoCreateQuota = readPositiveIntEnv(env.BRV_BRIDGE_AUTO_CREATE_QUOTA, (raw) =>
+    args.log(`[Daemon] invalid BRV_BRIDGE_AUTO_CREATE_QUOTA="${raw}"; expected positive integer`),
+  )
+
   // env > file > default
   const resolvedParleyProfile = envParleyProfile ?? fileCfg.parleyProfile
   const resolvedAutoProvision = envAutoProvision ?? fileCfg.autoProvision ?? 'pinned-only'
@@ -135,6 +180,10 @@ export function resolveBridgeRuntimeConfig(args: ResolveBridgeRuntimeConfigArgs)
   const resolvedMaxConcurrent = envMaxConcurrent ?? fileCfg.maxConcurrentPerProfile ?? 1
   const resolvedProjectRoot = envProjectRoot ?? fileCfg.projectRoot ?? cwdFn()
   const resolvedListenAddrs = envListenAddrs ?? fileCfg.listenAddrs
+  const resolvedClaudeUnsafe = envClaudeUnsafe ?? fileCfg.claudeUnsafe ?? false
+  const resolvedParleyDialTimeoutMs = envParleyDialTimeoutMs ?? fileCfg.parleyDialTimeoutMs
+  const resolvedParleyTurnIdleTimeoutMs = envParleyTurnIdleTimeoutMs ?? fileCfg.parleyTurnIdleTimeoutMs
+  const resolvedAutoCreateQuota = envAutoCreateQuota ?? fileCfg.autoCreateQuota
 
   // Persist env-supplied values (and any settled defaults that env
   // promoted) so a future daemon respawn without env vars sees the
@@ -142,11 +191,15 @@ export function resolveBridgeRuntimeConfig(args: ResolveBridgeRuntimeConfigArgs)
   // from what's already on disk; pure file-only or pure-default runs
   // are no-ops.
   const envSnapshot = {
+    autoCreateQuota: envAutoCreateQuota,
     autoProvision: envAutoProvision,
+    claudeUnsafe: envClaudeUnsafe,
     delegatePolicy: envDelegatePolicy,
     listenAddrs: envListenAddrs,
     maxConcurrentPerProfile: envMaxConcurrent,
+    parleyDialTimeoutMs: envParleyDialTimeoutMs,
     parleyProfile: envParleyProfile,
+    parleyTurnIdleTimeoutMs: envParleyTurnIdleTimeoutMs,
     projectRoot: envProjectRoot,
   }
   if (anyDefined(envSnapshot)) {
@@ -159,21 +212,29 @@ export function resolveBridgeRuntimeConfig(args: ResolveBridgeRuntimeConfigArgs)
   }
 
   return {
+    autoCreateQuota: resolvedAutoCreateQuota,
     autoProvision: resolvedAutoProvision,
+    claudeUnsafe: resolvedClaudeUnsafe,
     delegatePolicy: resolvedDelegatePolicy,
     listenAddrs: resolvedListenAddrs,
     maxConcurrentPerProfile: resolvedMaxConcurrent,
+    parleyDialTimeoutMs: resolvedParleyDialTimeoutMs,
     parleyProfile: resolvedParleyProfile,
+    parleyTurnIdleTimeoutMs: resolvedParleyTurnIdleTimeoutMs,
     projectRoot: resolvedProjectRoot,
   }
 }
 
 interface EnvSnapshot {
+  readonly autoCreateQuota: number | undefined
   readonly autoProvision: 'auto' | 'deny' | 'pinned-only' | undefined
+  readonly claudeUnsafe: boolean | undefined
   readonly delegatePolicy: 'auto' | 'deny' | 'prompt' | undefined
   readonly listenAddrs: readonly string[] | undefined
   readonly maxConcurrentPerProfile: number | undefined
+  readonly parleyDialTimeoutMs: number | undefined
   readonly parleyProfile: string | undefined
+  readonly parleyTurnIdleTimeoutMs: number | undefined
   readonly projectRoot: string | undefined
 }
 
@@ -181,9 +242,13 @@ function anyDefined(env: EnvSnapshot): boolean {
   return (
     env.parleyProfile !== undefined ||
     env.autoProvision !== undefined ||
+    env.claudeUnsafe !== undefined ||
     env.delegatePolicy !== undefined ||
     env.listenAddrs !== undefined ||
     env.maxConcurrentPerProfile !== undefined ||
+    env.parleyDialTimeoutMs !== undefined ||
+    env.parleyTurnIdleTimeoutMs !== undefined ||
+    env.autoCreateQuota !== undefined ||
     env.projectRoot !== undefined
   )
 }
@@ -204,9 +269,13 @@ function persistConfigIfChanged(args: {
   const overlay: BridgePersistedConfig = {...args.fileCfg}
   if (args.env.parleyProfile !== undefined) overlay.parleyProfile = args.env.parleyProfile
   if (args.env.autoProvision !== undefined) overlay.autoProvision = args.env.autoProvision
+  if (args.env.claudeUnsafe !== undefined) overlay.claudeUnsafe = args.env.claudeUnsafe
   if (args.env.delegatePolicy !== undefined) overlay.delegatePolicy = args.env.delegatePolicy
   if (args.env.listenAddrs !== undefined) overlay.listenAddrs = [...args.env.listenAddrs]
   if (args.env.maxConcurrentPerProfile !== undefined) overlay.maxConcurrentPerProfile = args.env.maxConcurrentPerProfile
+  if (args.env.parleyDialTimeoutMs !== undefined) overlay.parleyDialTimeoutMs = args.env.parleyDialTimeoutMs
+  if (args.env.parleyTurnIdleTimeoutMs !== undefined) overlay.parleyTurnIdleTimeoutMs = args.env.parleyTurnIdleTimeoutMs
+  if (args.env.autoCreateQuota !== undefined) overlay.autoCreateQuota = args.env.autoCreateQuota
   if (args.env.projectRoot !== undefined) overlay.projectRoot = args.env.projectRoot
 
   if (configsEqual(args.fileCfg, overlay)) return
@@ -249,6 +318,17 @@ function readCommaListEnv(raw: string | undefined): readonly string[] | undefine
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
   return parts.length === 0 ? undefined : parts
+}
+
+/**
+ * Phase 9.5.9 §2.7 — parse a boolean env var.
+ * Truthy values: '1', 'true', 'yes'. All else (or absent) → false/undefined.
+ * Returns `undefined` when absent (so we can distinguish "not set" from "set to false").
+ */
+function readBoolEnv(raw: string | undefined): boolean | undefined {
+  const value = readStringEnv(raw)
+  if (value === undefined) return undefined
+  return value === '1' || value.toLowerCase() === 'true' || value.toLowerCase() === 'yes'
 }
 
 function readPositiveIntEnv(raw: string | undefined, onInvalid: (raw: string) => void): number | undefined {

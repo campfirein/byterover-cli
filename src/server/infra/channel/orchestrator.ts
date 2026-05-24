@@ -46,6 +46,7 @@ import {ChannelEvents} from '../../../shared/transport/events/channel-events.js'
 import {
   AcpPromptFailedError,
   AgentDriverProfileNotFoundError,
+  BridgeInboundOnlyMemberError,
   CHANNEL_ERROR_CODE,
   ChannelAlreadyExistsError,
   ChannelArchivedError,
@@ -505,6 +506,22 @@ export class ChannelOrchestrator implements IChannelOrchestrator {
     }
 
     const members = resolveMentions(meta, allHandles)
+
+    // Phase 9.5.9 §2.5 — fail-fast when an outbound mention targets an
+    // `inbound-only` member. We have their verified peerId but not a
+    // routable multiaddr or L2 key, so dial is impossible. Surface a
+    // copy-paste-ready recovery hint instead of a confusing dial error.
+    for (const member of members) {
+      if (member.memberKind === 'remote-peer' && member.addressability === 'inbound-only') {
+        // Issue 2 fix: throw BridgeInboundOnlyMemberError so the top-level
+        // .code is 'BRIDGE_INBOUND_ONLY_MEMBER', not buried in .details.code.
+        throw new BridgeInboundOnlyMemberError({
+          channelId: args.channelId,
+          memberHandle: member.handle,
+          recoveryHint: `brv bridge connect <fresh-multiaddr> --channel ${args.channelId}`,
+        })
+      }
+    }
 
     // Phase-3 fan-out: cap from channel settings (default 4). Surplus
     // members queue FIFO behind the in-flight slots. Phase 4+ may
@@ -2304,11 +2321,17 @@ export class ChannelOrchestrator implements IChannelOrchestrator {
     // provisioned mirror members on the RECEIVING side carry only
     // `peerId` (the sender's libp2p identity). They have no observed
     // `multiaddr` and no fetched L2 pubkey until the operator runs
-    // `brv channel invite` with real values. Skip the driver warm —
-    // any mention against such a member will surface
-    // `CHANNEL_DRIVER_NOT_REGISTERED`, prompting the operator to
-    // upgrade the member record.
+    // `brv channel invite` with real values. Skip the driver warm.
+    // Phase 9.5.9 §2.5: members with addressability='inbound-only' are
+    // now explicitly marked; outbound-mention path fails fast with
+    // BRIDGE_INBOUND_ONLY_MEMBER + recovery hint.
     if (member.multiaddr === undefined || member.remoteL2PubKey === undefined) {
+      // Phase 9.5.9 §2.5 — tighten log message; member may have addressability='inbound-only'.
+      console.warn(
+        `[orch] remote-peer ${member.handle} is inbound-only ` +
+          `(missing ${member.multiaddr === undefined ? 'multiaddr' : 'L2 key'}) ` +
+          `— reverse-dial impossible until brv bridge connect`,
+      )
       return
     }
 

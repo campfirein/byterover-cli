@@ -37,6 +37,7 @@ import type {IChannelBroadcaster} from '../../core/interfaces/channel/i-channel-
 import {InstallIdentityService} from '../../../agent/core/trust/install-identity-service.js'
 import {PeerTreeIdentityService} from '../../../agent/core/trust/peer-tree-identity-service.js'
 import {TofuStore} from '../../../agent/core/trust/tofu-store.js'
+import {type BuildInfoResponse, readBuildInfoSync} from '../../../shared/build-info-check.js'
 import {BridgeEvents, type BridgeWhoamiResponse} from '../../../shared/transport/events/bridge-events.js'
 import {ChannelEvents} from '../../../shared/transport/events/channel-events.js'
 import {ReviewEvents} from '../../../shared/transport/events/review-events.js'
@@ -136,6 +137,7 @@ import {
 import {AgentIdleTimeoutPolicy} from './agent-idle-timeout-policy.js'
 import {AgentPool} from './agent-pool.js'
 import {hasBridgePersistedState} from './bridge-startup-rebind.js'
+import {runChannelProjectStartup} from './channel-project-startup.js'
 import {DaemonResilience} from './daemon-resilience.js'
 import {HeartbeatWriter} from './heartbeat.js'
 import {IdleTimeoutPolicy} from './idle-timeout-policy.js'
@@ -225,6 +227,37 @@ function cleanupOldLogs(logsDir: string, keep: number): void {
     // Best-effort — don't block daemon startup
   }
 }
+
+/**
+ * Phase 9.5.9 Issue 5 — read dist/build-info.json once at daemon startup.
+ * Stored in a module-level constant so the system:build-info transport
+ * handler can return it without re-reading the file on every request.
+ * The daemon's answer is intentionally the BOOT-TIME value — it does not
+ * change during the daemon's lifetime (proving the in-memory module cache
+ * is fixed at boot).
+ */
+function readDaemonBuildInfo(): BuildInfoResponse | undefined {
+  try {
+    const daemonDir = dirname(fileURLToPath(import.meta.url))
+    // dist/server/infra/daemon/ → dist/ is 3 levels up
+    // (daemon → infra → server → dist). Previous version had 4 segments which
+    // resolved to repo-root/build-info.json, returning undefined silently.
+    // codex impl r2 caught this: turnId fdWMmuTOxDzYSdZRxw7JA.
+    const buildInfoPath = join(daemonDir, '..', '..', '..', 'build-info.json')
+    const info = readBuildInfoSync(buildInfoPath)
+    return info === undefined ? undefined : {
+      buildAtIso: info.buildAtIso,
+      buildId: info.buildId,
+      gitDirty: info.gitDirty,
+      gitSha: info.gitSha,
+      packageVersion: info.packageVersion,
+    }
+  } catch {
+    return undefined
+  }
+}
+
+const DAEMON_BOOT_BUILD_INFO: BuildInfoResponse | undefined = readDaemonBuildInfo()
 
 async function main(): Promise<void> {
   // 1. Setup daemon logging at <global-data-dir>/logs/server-<timestamp>.log
@@ -762,6 +795,13 @@ async function main(): Promise<void> {
       return {port: newPort, success: true}
     })
 
+    // Phase 9.5.9 Issue 5 — build-info endpoint for client-side mismatch detection.
+    // Returns the build-info captured at daemon BOOT time (not re-read from disk)
+    // so comparing it to the CLI's current on-disk build-info.json reveals staleness.
+    transportServer.onRequest<void, BuildInfoResponse | undefined>('system:build-info', () =>
+      DAEMON_BOOT_BUILD_INFO,
+    )
+
     // Debug endpoint — exposes daemon internal state for `brv debug` command
     transportServer.onRequest<void, unknown>('daemon:getState', () => ({
       agentIdleStatus: agentIdleTimeoutPolicy.getIdleStatus(),
@@ -906,7 +946,20 @@ async function main(): Promise<void> {
     // BridgeTranscriptService (tryConsume on auto-create) and
     // ChannelOrchestrator (reset on uninvite). Created once here so both
     // share the same in-memory counter.
-    const bridgeAutoCreateQuota: AutoCreateQuota = createAutoCreateQuota({log})
+    //
+    // Issue 3c fix: read the persisted autoCreateQuota from bridge-config.json
+    // so a daemon respawn without BRV_BRIDGE_AUTO_CREATE_QUOTA in env still
+    // respects the operator-configured quota.
+    // Precedence: env > persisted > default (5). The env path is already handled
+    // inside createAutoCreateQuota; we supply maxPerHour from the persisted store
+    // only when the env var is absent.
+    const _bridgeQuotaStore = new BridgeConfigStore({stateDir: join(getGlobalDataDir(), 'state')})
+    const _persistedAutoCreateQuota = _bridgeQuotaStore.load().autoCreateQuota
+    const _envAutoCreateQuota =
+      process.env.BRV_BRIDGE_AUTO_CREATE_QUOTA !== undefined && process.env.BRV_BRIDGE_AUTO_CREATE_QUOTA.trim() !== ''
+        ? undefined  // env present — createAutoCreateQuota reads it directly
+        : _persistedAutoCreateQuota  // env absent — supply persisted value as maxPerHour
+    const bridgeAutoCreateQuota: AutoCreateQuota = createAutoCreateQuota({log, maxPerHour: _envAutoCreateQuota})
     const ensureBridgeHost = async (): Promise<Libp2pHost> => {
       if (bridgeHostPromise === undefined) {
         bridgeHostPromise = (async () => {
@@ -987,12 +1040,18 @@ async function main(): Promise<void> {
             filePath: `${join(getGlobalDataDir(), 'state')}/parley-adapter-sessions.json`,
             log,
           })
+          // Issue 3a fix: pass persistedClaudeUnsafe so a daemon respawn
+          // without BRV_BRIDGE_CLAUDE_UNSAFE in env still registers the
+          // claude-code adapter if the value was previously persisted.
+          // Precedence (enforced inside createDefaultParleyRegistry):
+          //   env.BRV_BRIDGE_CLAUDE_UNSAFE === '1' > persistedClaudeUnsafe > false
           const parleyAdapterRegistry = createDefaultParleyRegistry({
             bridgeDriverPool,
             concurrencyGate: parleyConcurrencyGate,
             driverFactory: channelDriverFactory,
             env: process.env,
             log,
+            persistedClaudeUnsafe: bridgeRuntime.claudeUnsafe,
             profileName: parleyProfile,
             profileStore: channelProfileStore,
             sessionStore: parleySessionStore,
@@ -1173,6 +1232,15 @@ async function main(): Promise<void> {
       // member. The host is lazy-initialized on first invite so installs
       // that never use cross-host channels skip the libp2p startup cost.
       const host = await ensureBridgeHost()
+      // Issue 3b fix: pass persistedTimeouts so a daemon respawn without
+      // BRV_BRIDGE_PARLEY_*_MS in env still respects the persisted values.
+      // Precedence (enforced inside RemoteMemberDriver.prompt()):
+      //   env > persistedTimeouts > default
+      const _bridgeRuntimeForDriver = resolveBridgeRuntimeConfig({
+        env: process.env,
+        log,
+        store: new BridgeConfigStore({stateDir: join(getGlobalDataDir(), 'state')}),
+      })
       return new RemoteMemberDriver({
         channelId: args.channelId,
         handle: args.handle,
@@ -1181,6 +1249,10 @@ async function main(): Promise<void> {
         l2Identity: bridgeL2,
         multiaddr: args.multiaddr,
         peerId: args.peerId,
+        persistedTimeouts: {
+          dialTimeoutMs: _bridgeRuntimeForDriver.parleyDialTimeoutMs,
+          idleTimeoutMs: _bridgeRuntimeForDriver.parleyTurnIdleTimeoutMs,
+        },
         remoteL2PubKey: args.remoteL2PubKey,
       })
     }
@@ -1321,7 +1393,13 @@ async function main(): Promise<void> {
       // Fire-and-forget — Layer 1 (CHANNEL_DRIVER_NOT_REGISTERED) catches the
       // race window where a mention arrives before spawn completes.
       // V3 super-mario reproducer (2026-05-16 §"Driver reinvite needed").
+      //
+      // Issue 1 fix: also run per-project startup utilities on first connection
+      // so reconstructMissingMetas, runMarkInboundOnlyMigration, and
+      // BrvDirWatcher all fire before the channel registry warm.
       const warmedProjects = new Set<string>()
+      // Keep per-project watcher handles so we can stop them on shutdown.
+      const projectWatchers = new Map<string, import('./channel-project-startup.js').ChannelProjectStartupResult>()
       transportServer.onConnection((_clientId, metadata) => {
         const rawCwd = metadata.cwd
         if (rawCwd === undefined || rawCwd === '') return
@@ -1331,10 +1409,33 @@ async function main(): Promise<void> {
         const cwd = resolve(rawCwd)
         if (warmedProjects.has(cwd)) return
         warmedProjects.add(cwd)
-        channelOrchestrator.warmDriversForProject(cwd).catch((error: unknown) => {
-          log(`channel-warm error for ${cwd} (continuing): ${error instanceof Error ? error.message : String(error)}`)
+
+        // Issue 1 §order: reconstruction + migration BEFORE warm so any
+        // newly reconstructed metas are visible to warmDriversForProject.
+        runChannelProjectStartup({
+          channelStore,
+          log,
+          projectRoot: cwd,
+          warn: (msg: string) => log(msg),
         })
+          .then((startupResult) => {
+            projectWatchers.set(cwd, startupResult)
+            return channelOrchestrator.warmDriversForProject(cwd)
+          })
+          .catch((error: unknown) => {
+            log(`channel-startup error for ${cwd} (continuing): ${error instanceof Error ? error.message : String(error)}`)
+          })
       })
+
+      // Stop all project watchers on process exit (belt-and-suspenders after
+      // the SIGTERM/SIGINT handlers have already called releaseChannelResourcesOnExit).
+      const stopProjectWatchers = (): void => {
+        for (const result of projectWatchers.values()) {
+          try { result.watcher.stop() } catch { /* ignore */ }
+        }
+      }
+
+      process.once('beforeExit', stopProjectWatchers)
     }
 
     // Slice 3.5b: gate the FULL handler registration on

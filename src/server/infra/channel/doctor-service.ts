@@ -140,6 +140,24 @@ export class ChannelDoctorService implements IChannelDoctorService {
         (args.memberHandle === undefined || m.handle === args.memberHandle),
     )
     if (remotePeers.length > 0) {
+      // Phase 9.5.9 §2.5 — surface DOCTOR_INBOUND_ONLY for members whose
+      // addressability='inbound-only' regardless of TOFU wiring. These
+      // members accepted an inbound parley but lack the multiaddr or L2 key
+      // required for reverse-dial. Emit the warning before any TOFU check so
+      // it always surfaces, even on non-bridge daemons.
+      for (const member of remotePeers) {
+        if (member.addressability === 'inbound-only') {
+          args.diagnostics.push({
+            code: 'DOCTOR_INBOUND_ONLY',
+            details: {handle: member.handle, peerId: member.peerId},
+            message: `Remote-peer member ${member.handle} (peerId=${member.peerId}) is inbound-only — ` +
+              `reverse-dial is impossible until you share a routable multiaddr. Recovery: ` +
+              `brv bridge connect <fresh-multiaddr> --channel ${args.channelId}`,
+            severity: 'warning',
+          })
+        }
+      }
+
       if (this.deps.tofu === undefined) {
         // kimi round-1 MED — explicit info diagnostic so operators
         // can see that remote-peer health is unknown rather than

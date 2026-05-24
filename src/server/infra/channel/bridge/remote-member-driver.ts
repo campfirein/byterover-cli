@@ -26,7 +26,7 @@ import {PhaseStampedAbort} from './phase-stamped-abort.js'
  * Exported for unit testing only.
  */
 export function enrichDialFailureError(args: {
-  readonly addressability: 'bootstrap-only' | 'pinned' | undefined
+  readonly addressability: 'bootstrap-only' | 'inbound-only' | 'pinned' | undefined
   readonly channelId: string
   readonly multiaddr: string
   readonly originalMessage: string
@@ -87,6 +87,17 @@ export interface RemoteMemberDriverDeps {
   readonly l2Identity: PeerTreeIdentityService
   readonly multiaddr: string
   readonly peerId: string
+  /**
+   * Phase 9.5.9 Issue 3b — persisted timeout values from bridge-config.json.
+   * Precedence at prompt() time: env > persisted > default.
+   * Pass `bridgeRuntime.parleyDialTimeoutMs` / `parleyTurnIdleTimeoutMs`
+   * from the daemon startup so a respawn without BRV_BRIDGE_PARLEY_*_MS
+   * in env still respects the persisted values.
+   */
+  readonly persistedTimeouts?: {
+    readonly dialTimeoutMs?: number
+    readonly idleTimeoutMs?: number
+  }
   readonly remoteL2PubKey: string
 }
 
@@ -101,6 +112,7 @@ export class RemoteMemberDriver implements IAcpDriver {
   private readonly l2Identity: PeerTreeIdentityService
   private readonly multiaddr: string
   private readonly peerId: string
+  private readonly persistedTimeouts: {readonly dialTimeoutMs?: number; readonly idleTimeoutMs?: number}
   private readonly remoteL2PubKey: KeyObject
   private readonly sendParleyQueryFn: (args: SendParleyQueryArgs) => Promise<SendParleyQueryResult>
   private statusValue: AcpDriverStatus = 'stopped'
@@ -113,6 +125,7 @@ export class RemoteMemberDriver implements IAcpDriver {
     this.l2Identity = deps.l2Identity
     this.multiaddr = deps.multiaddr
     this.peerId = deps.peerId
+    this.persistedTimeouts = deps.persistedTimeouts ?? {}
     this.remoteL2PubKey = l2PubKeyFromBase64(deps.remoteL2PubKey)
     this.sendParleyQueryFn = deps._sendParleyQuery ?? defaultSendParleyQuery
   }
@@ -151,9 +164,22 @@ export class RemoteMemberDriver implements IAcpDriver {
     this.statusValue = 'streaming'
 
     // Phase 9.5.7 §3.3 Layer A — split timeouts.
-    // Parse from process.env at prompt() time so the driver respects live
-    // env changes between turns (matches bridge-config-store.ts precedence).
-    const {dialTimeoutMs, idleTimeoutMs} = parseParleyTimeoutEnv(process.env)
+    // Issue 3b fix: precedence is env > persisted > default.
+    // Parse env at prompt() time so live env changes between turns are
+    // respected (matches bridge-config-store.ts precedence pattern).
+    const envTimeouts = parseParleyTimeoutEnv(process.env)
+    // env values from parseParleyTimeoutEnv already fall back to defaults
+    // internally, so we must check the raw env to distinguish "env set" from
+    // "env absent, default applied".  Use the persisted value only when the
+    // raw env var is unset.
+    const dialTimeoutMs =
+      process.env.BRV_BRIDGE_PARLEY_DIAL_TIMEOUT_MS !== undefined && process.env.BRV_BRIDGE_PARLEY_DIAL_TIMEOUT_MS.trim() !== ''
+        ? envTimeouts.dialTimeoutMs                  // env wins
+        : (this.persistedTimeouts.dialTimeoutMs ?? envTimeouts.dialTimeoutMs)  // persisted > default
+    const idleTimeoutMs =
+      process.env.BRV_BRIDGE_PARLEY_TURN_IDLE_TIMEOUT_MS !== undefined && process.env.BRV_BRIDGE_PARLEY_TURN_IDLE_TIMEOUT_MS.trim() !== ''
+        ? envTimeouts.idleTimeoutMs                  // env wins
+        : (this.persistedTimeouts.idleTimeoutMs ?? envTimeouts.idleTimeoutMs)  // persisted > default
 
     // Issue 1 fix: two separate AbortControllers — one for dial phase, one
     // for idle/no-progress detection. The dial AbortController aborts as soon

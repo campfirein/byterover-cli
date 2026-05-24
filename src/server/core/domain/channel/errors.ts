@@ -30,6 +30,11 @@ export const CHANNEL_ERROR_CODE = {
   AGENT_DRIVER_PROFILE_NOT_FOUND: 'AGENT_DRIVER_PROFILE_NOT_FOUND',
   ALREADY_EXISTS: 'CHANNEL_ALREADY_EXISTS',
   ARCHIVED: 'CHANNEL_ARCHIVED',
+  // Phase 9.5.9 §2.5 — outbound mention targets an inbound-only member:
+  // we have the peer's identity but not a routable address or L2 key.
+  // Recovery: run `brv bridge connect <fresh-multiaddr>` to upgrade the
+  // member record.
+  BRIDGE_INBOUND_ONLY_MEMBER: 'BRIDGE_INBOUND_ONLY_MEMBER',
   // Phase 8 / Slice 8.0 — sync-mode lifecycle codes. Surfaced via the
   // `{success: false, code}` ack envelope when a sync mention can't return
   // an assembled answer (timeout, byte-budget overflow, externally
@@ -540,6 +545,35 @@ export class ChannelDaemonShutdownError extends ChannelError {
   public constructor() {
     super('Daemon is shutting down; sync mention cannot complete', CHANNEL_ERROR_CODE.DAEMON_SHUTDOWN)
     this.name = 'ChannelDaemonShutdownError'
+  }
+}
+
+/**
+ * Phase 9.5.9 Issue 2 — outbound mention targets an inbound-only member.
+ *
+ * Carries `.code === 'BRIDGE_INBOUND_ONLY_MEMBER'` at the TOP LEVEL of the
+ * error so operators and tools grepping for this code find it immediately,
+ * without needing to inspect `.details.code` on a generic
+ * `ChannelInvalidRequestError`.
+ *
+ * Thrown from the orchestrator's outbound-mention guard (see orchestrator.ts)
+ * when a `remote-peer` member's `addressability === 'inbound-only'`: we have
+ * the peer's verified identity but no routable multiaddr or L2 key for
+ * reverse-dial. Recovery: run `brv bridge connect <fresh-multiaddr>`.
+ */
+// codex impl r2 fix: extend ChannelError so `instanceof ChannelError` paths
+// throughout the codebase recognize this error class. Previously extended
+// plain Error, which drifted from the channel error hierarchy. The `.code`
+// behavior is preserved via the ChannelError constructor.
+export class BridgeInboundOnlyMemberError extends ChannelError {
+  public constructor(args: {readonly channelId: string; readonly memberHandle: string; readonly recoveryHint: string}) {
+    super(
+      `Member ${args.memberHandle} on channel ${args.channelId} is inbound-only and cannot be ` +
+        `reverse-dialed. Recovery: ${args.recoveryHint}`,
+      CHANNEL_ERROR_CODE.BRIDGE_INBOUND_ONLY_MEMBER,
+      {channelId: args.channelId, memberHandle: args.memberHandle, recoveryHint: args.recoveryHint},
+    )
+    this.name = 'BridgeInboundOnlyMemberError'
   }
 }
 

@@ -98,9 +98,22 @@ export interface CreateDefaultRegistryArgs {
   /**
    * Daemon process environment. Used to gate unsafe adapters behind
    * `BRV_BRIDGE_CLAUDE_UNSAFE=1`.
+   *
+   * Precedence for claude-code registration:
+   *   env.BRV_BRIDGE_CLAUDE_UNSAFE === '1'  → register (env wins)
+   *   persistedClaudeUnsafe === true          → register (persisted fallback)
+   *   otherwise                               → skip (default-off)
    */
   readonly env?: NodeJS.ProcessEnv
   readonly log: (msg: string) => void
+  /**
+   * Phase 9.5.9 Issue 3 — persisted claudeUnsafe value from bridge-config.json.
+   * Precedence: env > persisted > false.
+   * Set this to `bridgeRuntime.claudeUnsafe` when constructing the registry
+   * at daemon startup so a respawn without BRV_BRIDGE_CLAUDE_UNSAFE in env
+   * still registers the claude-code adapter if it was persisted.
+   */
+  readonly persistedClaudeUnsafe?: boolean
   readonly profileName?: string
   readonly profileStore?: IDriverProfileStore
   /**
@@ -175,10 +188,16 @@ export function createDefaultRegistry(args: CreateDefaultRegistryArgs): ParleyAd
   }
 
   // Phase 9.5.3 — ClaudeCodeHeadlessAdapter gated behind unsafe env flag.
-  // Registered only when BRV_BRIDGE_CLAUDE_UNSAFE=1 to prevent accidental
+  // Registered only when the unsafe flag is set to prevent accidental
   // activation of --dangerously-skip-permissions in production environments.
+  //
+  // Issue 3a fix: precedence is env > persisted > false.
+  //   env.BRV_BRIDGE_CLAUDE_UNSAFE === '1'  → register (env wins)
+  //   args.persistedClaudeUnsafe === true    → register (persisted fallback)
+  //   otherwise                              → skip (safe default)
   const env = args.env ?? {}
-  if (env.BRV_BRIDGE_CLAUDE_UNSAFE === '1') {
+  const claudeUnsafeActive = env.BRV_BRIDGE_CLAUDE_UNSAFE === '1' || args.persistedClaudeUnsafe === true
+  if (claudeUnsafeActive) {
     if (args.sessionStore !== undefined && args.concurrencyGate !== undefined) {
       const adapter = new ClaudeCodeHeadlessAdapter({
         concurrencyGate: args.concurrencyGate,

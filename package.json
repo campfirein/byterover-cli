@@ -217,7 +217,10 @@
   },
   "repository": "campfirein/byterover-cli",
   "scripts": {
-    "build": "shx rm -rf dist && tsc -b && shx cp -r src/server/templates dist/server/templates && shx cp -r src/agent/resources dist/agent/resources && npm run build:ui",
+    "build": "shx rm -rf dist && tsx scripts/generate-build-info.ts && tsc -b && shx cp -r src/server/templates dist/server/templates && shx cp -r src/agent/resources dist/agent/resources && npm run build:ui",
+    "postbuild": "tsx scripts/check-daemon-staleness.ts",
+    "build:dev": "npm run build && npm run dev:kill",
+    "rebuild": "npm run build:dev",
     "build:ui": "vite build src/webui --mode package",
     "build:ui:submodule": "node scripts/prepare-ui-submodule-links.mjs && vite build src/webui --mode submodule",
     "dev": "node bin/kill-daemon.js && npm run build && ./bin/dev.js",

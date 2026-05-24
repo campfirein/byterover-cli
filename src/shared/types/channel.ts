@@ -224,7 +224,12 @@ export const ChannelMemberRemotePeerSchema = z.object({
   // `bootstrap-only` signals that the multiaddr came from a one-time
   // inbound dial and may be stale. `pinned` means the multiaddr was
   // set via `brv channel invite` and is operator-verified.
-  addressability: z.enum(['bootstrap-only', 'pinned']).optional(),
+  // Phase 9.5.9 §2.5 — `inbound-only` means the remote peer reached us
+  // (we have their verified peerId) but we lack the multiaddr or L2 key
+  // needed to reverse-dial them. The member record is kept so turn history
+  // is complete; outbound mentions fail fast with BRIDGE_INBOUND_ONLY_MEMBER
+  // until the operator runs `brv bridge connect <fresh-multiaddr>`.
+  addressability: z.enum(['bootstrap-only', 'inbound-only', 'pinned']).optional(),
 })
 export type ChannelMemberRemotePeer = z.infer<typeof ChannelMemberRemotePeerSchema>
 

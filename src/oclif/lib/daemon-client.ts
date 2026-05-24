@@ -9,6 +9,8 @@ import {
   TransportRequestError,
   TransportRequestTimeoutError,
 } from '@campfirein/brv-transport-client'
+import {dirname, join} from 'node:path'
+import {fileURLToPath} from 'node:url'
 
 import {TaskErrorCode} from '../../server/core/domain/errors/task-error.js'
 import {resolveProject} from '../../server/infra/project/resolve-project.js'
@@ -18,7 +20,47 @@ import {
   isSandboxEnvironment,
   isSandboxNetworkError,
 } from '../../server/utils/sandbox-detector.js'
+import {assertBuildVersionMatch, type BuildInfoResponse} from '../../shared/build-info-check.js'
 import {VcErrorCode} from '../../shared/transport/events/vc-events.js'
+
+/** Guard: only check build version once per CLI process. */
+let buildVersionChecked = false
+
+/**
+ * Phase 9.5.9 Issue 5 — fire-and-forget build-version mismatch check.
+ *
+ * Called once per CLI process after the first successful daemon connection.
+ * Calls `system:build-info`, compares against the CLI's own
+ * `dist/build-info.json`, and prints a staleness warning to stderr if they
+ * differ. Errors are swallowed (best-effort observability, not blocking).
+ */
+function checkBuildVersionOnce(client: ITransportClient): void {
+  if (buildVersionChecked) return
+  buildVersionChecked = true
+
+  // Wrap the callback-ack request in a Promise.
+  const checkPromise = new Promise<void>((resolve) => {
+    try {
+      client.request<BuildInfoResponse | undefined>('system:build-info', undefined, (daemonBuildInfo) => {
+        const cliDir = dirname(fileURLToPath(import.meta.url))
+        // dist/oclif/lib/ → dist/ is 3 levels up
+        const buildInfoPath = join(cliDir, '..', '..', 'build-info.json')
+        assertBuildVersionMatch({
+          buildInfoPath,
+          daemonBuildInfo,
+          printWarning: (msg) => process.stderr.write(msg + '\n'),
+        })
+          .catch(() => { /* swallow */ })
+          .finally(resolve)
+      })
+    } catch {
+      resolve()
+    }
+  })
+
+  // Fire-and-forget — don't block the calling code path.
+  checkPromise.catch(() => { /* swallow */ })
+}
 
 /** Max retry attempts. 10 × 1s = 9s budget covers cold-start ECONNREFUSED incl. slow OIDC. */
 const MAX_RETRIES = 10
@@ -125,6 +167,10 @@ export async function withDaemonRetry<T>(
     try {
       const {client: connectedClient, projectRoot} = await connector(undefined, resolvedProjectPath)
       client = connectedClient
+
+      // Issue 5: fire-and-forget build-version check on first successful
+      // connection per CLI process. Does not block or affect the result.
+      checkBuildVersionOnce(client)
 
       const value = await fn(client, projectRoot ?? resolvedProjectPath, resolvedWorkspaceRoot)
 
