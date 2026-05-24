@@ -6,17 +6,20 @@ import {z} from 'zod'
  * `<bv-topic>` carries the topic file's frontmatter as attributes. The
  * markdown writer maps these directly to YAML frontmatter on disk.
  *
- * Notably absent: `importance`, `maturity`, `recency`, `updatedat`,
- * `createdAt`. Per the runtime-signals migration, ranking signals are
- * sidecar* state — per-user, per-machine — not file content.
- * Including them as attributes here would re-introduce the
- * noise-from-implicit-state problem the migration solved. The system
- * writes timestamps; the LLM does not.
+ * Reserved attributes — `importance`, `maturity`, `recency`,
+ * `createdat`, `updatedat` — are explicitly rejected by the schema so
+ * the model gets a structured `attribute-validation` error instead of
+ * silently passing them through to the writer's regex overlay. Per the
+ * runtime-signals migration, ranking signals are sidecar state
+ * (per-user, per-machine), not file content, and the system writes
+ * timestamps — the LLM does not.
  *
- * `passthrough` is intentional: light validation is permissive on
- * unknown attributes (parse-and-skip — no warning is emitted). Strict
- * validation per ADR-007 §13 is future work.
+ * `passthrough` remains for non-reserved unknown attributes: light
+ * validation is permissive (parse-and-skip — no warning emitted).
+ * Strict validation per ADR-007 §13 is future work.
  */
+const RESERVED_TOPIC_ATTRIBUTES = ['importance', 'maturity', 'recency', 'createdat', 'updatedat'] as const
+
 export const BvTopicAttributesSchema = z.object({
   // Comma-separated lists are the natural HTML-attribute encoding for
   // arrays. The writer splits on `,` and trims; empty list is `""`.
@@ -26,4 +29,14 @@ export const BvTopicAttributesSchema = z.object({
   summary: z.string().optional(),
   tags: z.string().optional(),
   title: z.string().min(1, {message: 'title is required and must be non-empty'}),
-}).passthrough()
+}).passthrough().superRefine((attrs, ctx) => {
+  for (const key of RESERVED_TOPIC_ATTRIBUTES) {
+    if (key in attrs) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `\`${key}\` is system-managed and must not be set on <bv-topic>`,
+        path: [key],
+      })
+    }
+  }
+})

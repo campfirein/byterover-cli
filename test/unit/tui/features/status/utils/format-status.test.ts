@@ -24,18 +24,18 @@ describe('formatStatus – pending review display', () => {
   it('should display pending review count and URL when present', () => {
     const status = makeStatus({
       pendingReviewCount: 3,
-      reviewUrl: 'http://127.0.0.1:54321/review?project=abc',
+      reviewUrl: 'http://localhost:54321/changes',
     })
 
     const output = stripAnsi(formatStatus(status))
     expect(output).to.include('Pending Reviews: 3 files need review')
-    expect(output).to.include('http://127.0.0.1:54321/review?project=abc')
+    expect(output).to.include('http://localhost:54321/changes')
   })
 
   it('should use singular "file" for count of 1', () => {
     const status = makeStatus({
       pendingReviewCount: 1,
-      reviewUrl: 'http://127.0.0.1:54321/review?project=abc',
+      reviewUrl: 'http://localhost:54321/changes',
     })
 
     const output = stripAnsi(formatStatus(status))

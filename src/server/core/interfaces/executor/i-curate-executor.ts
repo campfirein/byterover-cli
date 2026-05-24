@@ -1,4 +1,5 @@
 import type {ICipherAgent} from '../../../../agent/core/interfaces/i-cipher-agent.js'
+import type {HtmlWriteError} from '../../../infra/render/writer/html-writer.js'
 import type {CurateUsageRecord} from '../../domain/entities/curate-log-entry.js'
 import type {IUsageAggregator} from '../telemetry/i-usage-aggregator.js'
 
@@ -57,3 +58,26 @@ export interface ICurateExecutor {
    */
   executeWithAgent(agent: ICipherAgent, options: CurateExecuteOptions): Promise<string>
 }
+
+/**
+ * Wire envelope returned by the `curate-html-direct` daemon task type.
+ *
+ * Single-shot: the calling agent (typically over MCP) supplies a fully
+ * authored `<bv-topic>` HTML document; the daemon validates via
+ * `validateHtmlTopic` and writes via `writeHtmlTopic`. No LLM, no
+ * provider, no session.
+ *
+ * - `status: 'ok'` — write succeeded. `topicPath` is the bv-topic path
+ *   attribute (e.g. `security/auth`); `filePath` is the relative path
+ *   under `.brv/context-tree/` including the `.html` extension;
+ *   `overwrote` is true iff the topic existed before the write and
+ *   `confirmOverwrite` was set.
+ * - `status: 'validation-failed'` — write was refused. `errors[]`
+ *   carries the writer's structured errors (including the
+ *   `existingContent` on `path-exists` so the calling agent can merge).
+ *
+ * Renaming any field is a breaking change for MCP consumers.
+ */
+export type CurateHtmlDirectResult =
+  | {errors: readonly HtmlWriteError[]; status: 'validation-failed'}
+  | {filePath: string; overwrote: boolean; status: 'ok'; topicPath: string; warnings?: readonly string[]}

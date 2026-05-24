@@ -14,7 +14,7 @@ import {LogOut, User} from 'lucide-react'
 import {useEffect, useState} from 'react'
 
 import {initials} from '../../../utils/initials'
-import {getAuthStateQueryOptions} from '../api/get-auth-state'
+import {AUTH_STATE_QUERY_ROOT} from '../api/get-auth-state'
 import {useLogout} from '../api/logout'
 import {useAuthStore} from '../stores/auth-store'
 import {LoginDialog} from './login-dialog'
@@ -44,7 +44,7 @@ function AuthorizedMenu() {
 
   useEffect(() => {
     if (user) return
-    queryClient.invalidateQueries({queryKey: getAuthStateQueryOptions().queryKey}).catch(() => {})
+    queryClient.invalidateQueries({queryKey: AUTH_STATE_QUERY_ROOT}).catch(() => {})
   }, [queryClient, user])
 
   if (!user) {

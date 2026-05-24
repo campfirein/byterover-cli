@@ -1,5 +1,8 @@
 import type {ReactNode} from 'react'
 
+import {Button} from '@campfirein/byterover-packages/components/button'
+import {AlertCircle, RotateCw} from 'lucide-react'
+
 import {formatError} from '../../../lib/error-messages'
 
 type Props = {
@@ -25,7 +28,7 @@ export function SettingsSection({
 }: Props) {
   const cardClass = compact
     ? 'bg-card flex flex-col gap-3 rounded-xl border px-4.5 py-3.5'
-    : 'bg-card flex flex-col gap-4 rounded-xl border px-5 py-4'
+    : 'bg-card flex flex-col gap-4 rounded-xl border p-5'
 
   return (
     <div className="flex w-full flex-col gap-3.5">
@@ -38,17 +41,18 @@ export function SettingsSection({
       </div>
 
       {error ? (
-        <p className="text-destructive text-sm">
-          ✗ {formatError(error, errorFallback)}
+        <div className="border-destructive/30 bg-destructive/5 flex items-center justify-between gap-3 rounded-xl border px-5 py-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <AlertCircle className="text-destructive size-4 shrink-0" />
+            <p className="text-foreground text-sm">{formatError(error, errorFallback)}</p>
+          </div>
           {onRetry && (
-            <>
-              {' · '}
-              <button className="underline underline-offset-2" onClick={onRetry} type="button">
-                retry
-              </button>
-            </>
+            <Button className="shrink-0" onClick={onRetry} size="sm" variant="secondary">
+              <RotateCw className="size-3.5" />
+              Retry
+            </Button>
           )}
-        </p>
+        </div>
       ) : (
         children && <div className={cardClass}>{children}</div>
       )}

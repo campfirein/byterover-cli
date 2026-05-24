@@ -111,6 +111,17 @@ export type SearchKnowledgeElementHint =
  * Options for searchKnowledge operation in ToolsSDK.
  */
 export interface SearchKnowledgeOptions {
+  /**
+   * Multi-word query combination strategy. Default `'auto'` (or undefined)
+   * preserves the long-standing AND-first-with-OR-fallback behavior so
+   * single-keyword searches stay concentrated. Pass `'OR'` to skip the
+   * AND-first attempt entirely — useful for callers that want any-term
+   * recall over multi-word precision (e.g. dream pair-discovery, where
+   * the source title is used verbatim as the query and AND-first
+   * collapses cross-pair matches to self-only). Pass `'AND'` to require
+   * every term and disable the OR fallback.
+   */
+  combineWith?: 'AND' | 'auto' | 'OR'
   /** Pre-filter candidate set by `<bv-*>` element shape before BM25 ranking. */
   elementHint?: SearchKnowledgeElementHint
   /** Maximum number of results to return (default: 10) */
@@ -158,6 +169,14 @@ export interface SearchKnowledgeResult {
  * Allows injection of knowledge search capability into ToolsSDK.
  */
 export interface ISearchKnowledgeService {
+  /**
+   * Force the next `search()` call to rebuild the index from disk
+   * regardless of TTL cache state. Required for callers that have just
+   * mutated the context tree (e.g. dream-scan after `loadToolModeTopics`)
+   * and need the BM25 ranking to reflect the new on-disk state rather
+   * than a 5-second-stale cached index. No-op when nothing is cached.
+   */
+  refreshIndex(): Promise<void>
   search(query: string, options?: SearchKnowledgeOptions): Promise<SearchKnowledgeResult>
 }
 

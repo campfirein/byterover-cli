@@ -14,7 +14,7 @@ import {useEffect, useState} from 'react'
 import {toast} from 'sonner'
 
 import {useTransportStore} from '../../../stores/transport-store'
-import {getAuthStateQueryOptions} from '../api/get-auth-state'
+import {AUTH_STATE_QUERY_ROOT, getAuthStateQueryOptions} from '../api/get-auth-state'
 import {login, subscribeToLoginCompleted} from '../api/login'
 import {useAuthStore} from '../stores/auth-store'
 import {isSafeHttpUrl} from '../utils/is-safe-http-url'
@@ -37,6 +37,7 @@ export function LoginDialog({onOpenChange, open}: LoginDialogProps) {
   const isLoggingIn = useAuthStore((s) => s.isLoggingIn)
   const setLoggingIn = useAuthStore((s) => s.setLoggingIn)
   const connectionState = useTransportStore((s) => s.connectionState)
+  const selectedProject = useTransportStore((s) => s.selectedProject)
   const [state, setState] = useState<DialogState>({type: 'idle'})
 
   useEffect(() => {
@@ -52,7 +53,7 @@ export function LoginDialog({onOpenChange, open}: LoginDialogProps) {
     const unsubscribe = subscribeToLoginCompleted((data) => {
       if (data.success && data.user) {
         toast.success(`Logged in as ${data.user.email}`)
-        queryClient.invalidateQueries({queryKey: getAuthStateQueryOptions().queryKey})
+        queryClient.invalidateQueries({queryKey: AUTH_STATE_QUERY_ROOT})
         onOpenChange(false)
       } else {
         setState({message: data.error ?? 'Authentication failed', type: 'error'})
@@ -62,7 +63,7 @@ export function LoginDialog({onOpenChange, open}: LoginDialogProps) {
     })
 
     return unsubscribe
-  }, [onOpenChange, queryClient, setLoggingIn, state.type])
+  }, [onOpenChange, queryClient, selectedProject, setLoggingIn, state.type])
 
   // Fallback path: poll the daemon while waiting in case the LOGIN_COMPLETED
   // broadcast was missed (tab backgrounded, transient socket drop, etc).
@@ -73,7 +74,7 @@ export function LoginDialog({onOpenChange, open}: LoginDialogProps) {
 
     async function poll() {
       try {
-        const result = await queryClient.fetchQuery(getAuthStateQueryOptions())
+        const result = await queryClient.fetchQuery(getAuthStateQueryOptions(selectedProject))
         if (cancelled) return
         if (result.isAuthorized && result.user) {
           toast.success(`Logged in as ${result.user.email}`)

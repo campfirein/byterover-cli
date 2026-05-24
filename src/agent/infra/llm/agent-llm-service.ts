@@ -24,6 +24,7 @@ import type {ToolManager} from '../tools/tool-manager.js'
 import type {CompactionService} from './context/compaction/compaction-service.js'
 import type {ICompressionStrategy} from './context/compression/types.js'
 
+import {AGENT_LLM_ITERATION_BUDGET_MS} from '../../../server/constants.js'
 import {getErrorMessage} from '../../../server/utils/error-helpers.js'
 import {AgentStateMachine} from '../../core/domain/agent/agent-state-machine.js'
 import {AgentState, TerminationReason} from '../../core/domain/agent/agent-state.js'
@@ -350,7 +351,7 @@ export class AgentLLMService implements ILLMService {
 
     // Create state machine with configured limits (per-invocation overrides via ExecutionContext)
     const effectiveMaxIterations = executionContext?.maxIterations ?? this.config.maxIterations
-    const maxTimeMs = this.config.timeout ?? 600_000 // 10 min default
+    const maxTimeMs = this.config.timeout ?? AGENT_LLM_ITERATION_BUDGET_MS
     const stateMachine = new AgentStateMachine(effectiveMaxIterations, maxTimeMs)
     stateMachine.transition(AgentState.EXECUTING)
 

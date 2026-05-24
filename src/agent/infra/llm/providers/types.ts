@@ -39,11 +39,18 @@ export interface GeneratorFactoryConfig {
   readonly maxTokens: number
   /** Model identifier */
   readonly model: string
+  /**
+   * Per-request abort timeout in ms for direct AI SDK providers.
+   * Sourced from `llm.requestTimeoutMs`. Flows to AiSdkContentGenerator's
+   * AbortSignal helper; ignored by ByteRover (which has its own
+   * transport-layer timeout).
+   */
+  readonly requestTimeoutMs?: number
   /** Site name (for OpenRouter) */
   readonly siteName?: string
   /** Temperature for randomness */
   readonly temperature: number
-  /** Request timeout in milliseconds */
+  /** Request timeout in milliseconds (legacy: used only by the ByteRover transport-layer timeout) */
   readonly timeout?: number
 }
 

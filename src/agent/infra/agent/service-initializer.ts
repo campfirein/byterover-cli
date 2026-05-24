@@ -99,8 +99,21 @@ export interface SessionLLMConfig {
   providerBaseUrl?: string
   /** Custom headers for the provider */
   providerHeaders?: Record<string, string>
+  /**
+   * Optional per-request abort timeout, in milliseconds. Sourced from
+   * the agent-side settings snapshot (`llm.requestTimeoutMs`). Flows to
+   * AiSdkContentGenerator via the provider registry; absent → no per-
+   * request abort.
+   */
+  requestTimeoutMs?: number
   siteName?: string
   temperature?: number
+  /**
+   * Optional wall-clock budget for the agentic loop, in milliseconds.
+   * Sourced from the agent-side settings snapshot (`llm.iterationBudgetMs`).
+   * Falls back to AgentLLMService's internal default when undefined.
+   */
+  timeout?: number
   verbose?: boolean
 }
 
@@ -434,6 +447,7 @@ export function createSessionServices(
         model: llmConfig.model ?? 'gemini-3-flash-preview',
         provider,
         temperature: llmConfig.temperature ?? 0.7,
+        timeout: llmConfig.timeout,
         verbose: llmConfig.verbose ?? false,
       },
       {
@@ -465,6 +479,7 @@ export function createSessionServices(
     httpReferer: llmConfig.httpReferer,
     maxTokens: llmConfig.maxTokens ?? 8192,
     model: llmConfig.model,
+    requestTimeoutMs: llmConfig.requestTimeoutMs,
     siteName: llmConfig.siteName,
     temperature: llmConfig.temperature ?? 0.7,
   })

@@ -27,6 +27,7 @@ export const ENVIRONMENT: Environment = isEnvironment(envValue) ? envValue : 'de
  */
 type EnvironmentConfig = {
   authorizationUrl: string
+  billingBaseUrl: string
   clientId: string
   cogitBaseUrl: string
   gitRemoteBaseUrl: string
@@ -82,10 +83,14 @@ export const getCurrentConfig = (): EnvironmentConfig => {
   const cogitBaseUrl = readRequiredEnv('BRV_COGIT_BASE_URL')
   assertRootDomain('BRV_COGIT_BASE_URL', cogitBaseUrl)
 
+  const billingBaseUrl = readRequiredEnv('BRV_BILLING_BASE_URL')
+  assertRootDomain('BRV_BILLING_BASE_URL', billingBaseUrl)
+
   const oidcBase = `${iamBaseUrl}${API_V1_PATH}/oidc`
 
   return {
     authorizationUrl: `${oidcBase}/authorize`,
+    billingBaseUrl,
     clientId: DEFAULTS.clientId,
     cogitBaseUrl,
     gitRemoteBaseUrl: readRequiredEnv('BRV_GIT_REMOTE_BASE_URL'),

@@ -76,6 +76,18 @@ export type QueryExecutorResult = {
  */
 export interface IQueryExecutor {
   /**
+   * Execute query in tool mode. Skips Tier 3/4 LLM dispatch — runs Tier
+   * 0/1 cache + Tier-2-style retrieval (without the `canRespondDirectly`
+   * threshold gate), returns rendered topic content for the calling
+   * agent to synthesise from. No LLM provider required.
+   *
+   * Wire contract documented in the bundled SKILL.md (section 1,
+   * "Tool mode — run query without an LLM provider"). Renaming any
+   * field on the return type is a breaking change for tool consumers.
+   */
+  executeToolMode(options: QueryToolModeOptions): Promise<QueryToolModeResult>
+
+  /**
    * Execute query with an injected agent.
    *
    * @param agent - Long-lived CipherAgent (managed by caller)
@@ -83,4 +95,70 @@ export interface IQueryExecutor {
    * @returns Structured result with response, tier, timing, and search metadata
    */
   executeWithAgent(agent: ICipherAgent, options: QueryExecuteOptions): Promise<QueryExecutorResult>
+}
+
+/**
+ * Options for tool-mode query.
+ */
+export type QueryToolModeOptions = {
+  /** Max matches to return. Defaults to 10. Bounded 1-50 by the CLI flag. */
+  limit?: number
+  /** User question, verbatim. */
+  query: string
+  /** Stable workspace root for scoping search and cache isolation. */
+  worktreeRoot?: string
+}
+
+/**
+ * One retrieved doc returned to the calling agent. `rendered_md` is
+ * snake_case to match the JSON wire envelope; renaming is a breaking
+ * change.
+ */
+export type QueryToolModeMatchedDoc = {
+  format: 'html' | 'markdown'
+  path: string
+  rendered_md: string
+  score: number
+  title: string
+}
+
+/**
+ * Observability + cache signals carried alongside the matches.
+ */
+export type QueryToolModeMetadata = {
+  /**
+   * Which cache layer served the response. `null` when retrieval ran
+   * fresh (no cache hit) or when the cache is disabled.
+   */
+  cacheHit?: 'exact' | 'fuzzy' | null
+  durationMs: number
+  /**
+   * Number of matches the BM25 search returned that were dropped
+   * because they originated from a shared source (origin !== 'local').
+   * v1 of tool mode is local-only; this surfaces when a calling agent's
+   * recall is incomplete so it can fall back to `brv search` for
+   * cross-project context.
+   */
+  skippedSharedCount: number
+  /** 0 = exact cache, 1 = fuzzy cache, 2 = direct search (no LLM). */
+  tier: number
+  topScore: number
+  totalFound: number
+}
+
+/**
+ * Wire envelope returned by every tool-mode query call. One-shot:
+ * `done`/`continuation`-style states don't exist for query.
+ *
+ * - `status: 'ok'` — retrieval ran and produced one or more matches.
+ * - `status: 'no-matches'` — retrieval ran cleanly but BM25 found
+ *   nothing. EXPECTED outcome; outer envelope `success: true`.
+ *
+ * Dispatch / connection failures surface via the outer CLI envelope's
+ * `success: false`.
+ */
+export type QueryToolModeResult = {
+  matchedDocs: QueryToolModeMatchedDoc[]
+  metadata: QueryToolModeMetadata
+  status: 'no-matches' | 'ok'
 }

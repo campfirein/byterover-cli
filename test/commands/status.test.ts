@@ -79,8 +79,8 @@ describe('Status Command', () => {
     restore()
   })
 
-  function createCommand(): TestableStatusCommand {
-    const command = new TestableStatusCommand(mockConnector, config)
+  function createCommand(...argv: string[]): TestableStatusCommand {
+    const command = new TestableStatusCommand(mockConnector, config, argv)
     stub(command, 'log').callsFake((msg?: string) => {
       if (msg) loggedMessages.push(msg)
     })
@@ -488,4 +488,5 @@ describe('Status Command', () => {
       expect(payload).to.have.property('cwd', projectRoot)
     })
   })
+
 })

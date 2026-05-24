@@ -363,7 +363,7 @@ prompt: |
   - `summary` — one-line semantic summary for human reviewers.
   - `tags` — comma-separated category tags (e.g., `"security,authentication"`).
   - `keywords` — comma-separated retrieval keywords (e.g., `"jwt,refresh,token"`).
-  - `related` — comma-separated `@domain/topic` cross-references (e.g., `"@security/cookies,@security/oauth"`).
+  - `related` — comma-separated cross-references. File targets end in `.html` (e.g., `"@security/cookies.html,@security/oauth.html"`); folder/domain targets stay bare (e.g., `"@ops"`). The FE routes by suffix — a missing or wrong extension produces a dead pill.
 
   Notably absent: `importance`, `maturity`, `recency`, `updatedat`, `createdAt`.
   These are runtime signals tracked by the system (sidecar store); the agent
@@ -386,6 +386,10 @@ prompt: |
   Inline-content elements (`<bv-rule>`, `<bv-task>`, `<bv-flow>`,
   `<bv-fact>`, `<bv-pattern>`, `<bv-timestamp>`, `<bv-author>`) only allow
   inline tags: `code`, `strong`, `em`. Write prose directly in those.
+
+  Inside `<li>`, write plain text only — no leading `-`, `*`, `•`,
+  `1.`/`2.` markers. The renderer adds list markers via CSS, so a
+  literal prefix produces a double bullet.
 
   ### Facts Extraction (REQUIRED during curation)
 
@@ -462,7 +466,11 @@ prompt: |
   - Exact configuration values and technical specifications — preserve in
     `<bv-files>` lists or inline `<code>` spans.
   - Diagrams (mermaid, plantuml, ascii, dot) — preserve verbatim in
-    `<bv-diagram>` with `type="..."` attribute and `<pre><code>` body.
+    `<bv-diagram>` with `type="..."` attribute. Emit the body DIRECTLY
+    inside the element, using HTML entities for `<`, `>`, `&` (e.g.
+    mermaid arrows become `--&gt;`). Do NOT wrap the body in
+    `<![CDATA[…]]>` — HTML5 parses CDATA as a bogus comment that the
+    first `-->` closes.
 
   **When preserving rules:**
   - Include the EXACT rule text in `<bv-rule>`, not a summary.

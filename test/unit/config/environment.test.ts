@@ -2,6 +2,7 @@ import {expect} from 'chai'
 
 describe('Environment Configuration', () => {
   const ENV_VARS = {
+    BRV_BILLING_BASE_URL: 'https://billing.test',
     BRV_COGIT_BASE_URL: 'https://cogit.test',
     BRV_GIT_REMOTE_BASE_URL: 'https://cogit-git.test',
     BRV_IAM_BASE_URL: 'https://iam.test',

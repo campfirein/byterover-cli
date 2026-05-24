@@ -7,6 +7,8 @@ import { FileText, Minus, Plus, Undo2 } from 'lucide-react'
 
 import type { ChangeFile, ChangeFileStatus, ConflictType } from '../types'
 
+import { shouldShowAgentPulse } from '../utils/should-show-agent-pulse'
+
 const STATUS_META: Record<ChangeFileStatus, { label: string; letter: string; textClass: string }> = {
   added: { label: 'Added', letter: 'A', textClass: 'text-primary-foreground' },
   deleted: { label: 'Deleted', letter: 'D', textClass: 'text-destructive' },
@@ -21,6 +23,15 @@ const CONFLICT_LABEL: Record<ConflictType, string> = {
   both_modified: 'Both modified',
   deleted_modified: 'Deleted / modified',
   /* eslint-enable camelcase */
+}
+
+function AgentPulseDot() {
+  return (
+    <span
+      className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500"
+      title="High-impact agent edit — worth reviewing before staging"
+    />
+  )
 }
 
 interface FileListItemProps {
@@ -100,6 +111,7 @@ export function FileListItem({ disabled, file, isSelected, onAction, onDiscard, 
             {file.isStaged ? <Minus className="size-3" /> : <Plus className="size-3" />}
           </Button>
         </div>
+        {shouldShowAgentPulse(file.agentMeta) && <AgentPulseDot />}
         <span
           className={cn('w-4 text-center font-mono text-xs font-semibold', meta.textClass)}
           title={file.conflictType ? `Conflict: ${CONFLICT_LABEL[file.conflictType]}` : meta.label}

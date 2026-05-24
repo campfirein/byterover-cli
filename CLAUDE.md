@@ -62,11 +62,11 @@ npm run dev:ui:package               # Vite dev server resolving shared UI from 
 ### Source Layout (`src/`)
 
 - `agent/` — LLM agent: `core/` (interfaces/domain), `infra/` (modules including llm, memory, map, swarm, sandbox, session, tools, document-parser), `resources/` (prompts YAML, tool `.txt` descriptions)
-- `server/` — Daemon infrastructure: `config/`, `core/` (domain/interfaces), `infra/` (modules including vc, git, hub, mcp, cogit, connectors, project, provider-oauth, session, space, dream, webui), `templates/`, `utils/`
+- `server/` — Daemon infrastructure: `config/`, `core/` (domain/interfaces), `infra/` (modules including vc, git, hub, mcp, cogit, connectors, project, provider-oauth, session, space, dream, webui, billing, transport, executor, storage, context-tree), `templates/`, `utils/`
 - `shared/` — Cross-module: constants, types, transport events, utils
 - `tui/` — React/Ink TUI: app (router/pages), components, features (23 modules, including vc, worktree, source, hub, curate), hooks, lib, providers, stores
 - `webui/` — Browser dashboard (React/Vite). Entry `src/webui/index.tsx`; `features/` (15 panels), `pages/` (8 pages: home, changes, configuration, contexts, tasks, analytics, project-selector, not-found), `layouts/`, `stores/`. Connects to the daemon via Socket.IO; no imports from `server/`, `agent/`, or `tui/` (same boundary rule)
-- `oclif/` — Commands grouped by topic (`vc/`, `hub/`, `worktree/`, `source/`, `space/`, `review/`, `connectors/`, `curate/`, `model/`, `providers/`, `swarm/`, `query-log/`) + top-level `.ts` commands (`webui`, `dream`, `review`, `search`, `locations`, `query`, `login`, `logout`, `init`, `mcp`, `pull`, `push`, `restart`, `status`, `debug`); hooks, lib (daemon-client, task-client, json-response)
+- `oclif/` — Commands grouped by topic (`vc/`, `hub/`, `worktree/`, `source/`, `space/`, `review/`, `connectors/`, `curate/`, `model/`, `providers/`, `swarm/`, `query-log/`) + top-level `.ts` commands (`webui`, `dream`, `review`, `search`, `locations`, `query`, `login`, `logout`, `init`, `mcp`, `pull`, `push`, `restart`, `status`, `debug`) + hidden internals (`main` — default `brv` REPL entry; `hook-prompt-submit` — emits `brv-instructions` template for coding-agent pre-prompt hooks, e.g. Claude Code `UserPromptSubmit`); hooks, lib (daemon-client, task-client, json-response)
 
 **Import boundary** (ESLint-enforced): `tui/` must not import from `server/`, `agent/`, or `oclif/`. Use transport events or `shared/`.
 
@@ -81,6 +81,7 @@ npm run dev:ui:package               # Vite dev server resolving shared UI from 
 - Global daemon (`server/infra/daemon/`) hosts Socket.IO transport; clients connect via `@campfirein/brv-transport-client`
 - Agent pool manages forked child processes per project; task routing in `server/infra/process/`
 - MCP server in `server/infra/mcp/` exposes tools via Model Context Protocol; `tools/` subdir has dedicated implementations (`brv-query-tool`, `brv-curate-tool`)
+- Connector subsystem (`server/infra/connectors/`): `rules/`, `skill/`, `mcp/`, `hook/`, `shared/`. Shared rules files (e.g. `AGENTS.md` shared by Amp/Codex/OpenCode) embed an agent-name footer inside `<!-- BEGIN/END BYTEROVER RULES -->` markers — see `shared/constants.ts` (`BRV_RULE_MARKERS`, `BRV_RULE_TAG`, `extractInstalledAgentFromBrvSection`) — so each agent owns its own segment. Preserve the footer when editing rule-section logic
 
 ### Web UI (`src/webui/`, `src/server/infra/webui/`)
 
@@ -89,7 +90,7 @@ npm run dev:ui:package               # Vite dev server resolving shared UI from 
 - Browser bootstraps by fetching `/api/ui/config` to discover the daemon's dynamic Socket.IO port, then connects cross-origin
 - Daemon `ClientType` includes `'webui'` alongside `'tui' | 'cli' | 'agent' | 'mcp' | 'extension'`
 - Build/dev: `npm run build:ui` (Vite, runs as part of `npm run build`); `npm run dev:ui` for live reload. `typecheck` runs both the root and `src/webui/tsconfig.json`
-- Shared UI components live in a git submodule at `packages/byterover-packages/` (published as `@campfirein/byterover-packages`). `dev:ui` / `build:ui:submodule` read from the submodule; `build:ui` / `dev:ui:package` read from the installed `node_modules` copy. Override Vite's resolution with `BRV_UI_SOURCE=submodule|package`
+- Shared UI components live in a git submodule at `packages/byterover-packages/` (published as `@campfirein/byterover-packages`). `dev:ui` / `build:ui:submodule` read from the submodule; `build:ui` / `dev:ui:package` read from the installed `node_modules` copy. Override Vite's resolution with `BRV_UI_SOURCE=submodule|package`. Fresh clones have an empty submodule dir — run `git submodule update --init --recursive` before using submodule mode or Vite resolution will fail
 
 ### VC, Worktrees & Knowledge Sources
 
@@ -107,7 +108,17 @@ npm run dev:ui:package               # Vite dev server resolving shared UI from 
 - Oclif: `src/oclif/commands/{vc,worktree,source}/`; TUI: `src/tui/features/{vc,worktree,source}/`; slash commands (`vc-*`, `worktree`, `source`) in `src/tui/features/commands/definitions/`
 - `brv curate` runs Phases 1–3 in the foreground and detaches Phase 4 (post-curate finalization: summary regeneration, manifest rebuild) to the daemon's `PostWorkRegistry`, which serializes per project and coordinates with `dream-lock-service.ts` to prevent concurrent `_index.md` writes. `--detach` makes the entire run background. Overlapping curate runs for the same project are still rejected. Behavioral contract lives in `src/server/templates/sections/` (`brv-instructions.md`, `workflow.md`, `skill/SKILL.md`) — the in-daemon agent reads these at runtime
 - `brv review [--disable | --enable]` — toggle the project-scoped HITL review log; `brv review pending` lists items, `brv review approve <id>` / `brv review reject <id>` resolve them. When disabled, sync curate skips the "X operations require review" prompt, detached curate stops emitting per-operation review markers, and `brv dream` no longer surfaces `needsReview` operations. The flag is snapshotted at task creation and propagated via `AsyncLocalStorage` (`resolveReviewDisabled`) so mid-task toggles do not race
+- HITL WebUI: pending operations render in the Changes tab (`webui/features/vc/`); the on/off toggle lives in `hitl-settings-panel.tsx` on the Configuration page. Reject restores the pre-operation file snapshot from `file-review-backup-store.ts` (`server/infra/storage/`); transport via `review-handler.ts` + `shared/transport/events/review-events.ts`
 - `brv login` defaults to OAuth (interactive provider picker); pass `--api-key` only for CI. `brv logout` clears credentials
+
+### LLM Billing
+
+- Paid LLM operations (`brv query`, `brv curate`, status checks) call `ensureBillingFunds()` (`src/oclif/lib/insufficient-credits.ts`) before dispatching, throwing `InsufficientCreditsError` if no paid team has credits
+- Server: `server/infra/billing/` — `http-billing-service.ts` (HTTP client against `BRV_BILLING_BASE_URL`), `resolve-billing-source.ts` (priority: project-pinned team > org default), `resolve-billing-team.ts`, `build-status-billing.ts` (status payload), `paid-organizations-endpoint.ts`, `billing-state-endpoint.ts`. Pinned-team selection persisted via `server/infra/storage/file-billing-config-store.ts`
+- Transport: `BillingEvents` / `TeamEvents` in `shared/transport/events/` (resolve, get/list usage, get/set pinned team, get free-user limit, list teams). Handlers: `billing-handler.ts`, `team-handler.ts`, `status-handler.ts`
+- CLI status line: `brv status` / `brv providers list` render credits via `oclif/lib/billing-line.ts` + `format-billing-line.ts`
+- `brv providers connect` (byterover provider) runs a team-select step that emits `BillingEvents.SET_PINNED_TEAM`
+- WebUI: credits pill (`webui/features/provider/components/credits-pill.tsx`), team-select step in `provider-flow-dialog.tsx`, billing API wrappers in `webui/features/provider/api/` (`list-billing-usage`, `list-teams`, `get-pinned-team`, `set-pinned-team`, `get-free-user-limit`)
 
 ### Other oclif topic groups
 
@@ -122,7 +133,7 @@ npm run dev:ui:package               # Vite dev server resolving shared UI from 
 
 - Tools: definitions in `resources/tools/*.txt`, implementations in `infra/tools/implementations/`, registry in `infra/tools/tool-registry.ts`
 - Tool categories: file ops (read/write/edit/glob/grep/list-dir), bash (exec/output), knowledge (create/expand/search), memory (read/write/edit/delete/list), swarm (query/store), todos (read/write), curate, code exec, batch, detect domains, kill process, search history
-- LLM: 20 providers in `infra/llm/providers/` (incl. deepseek, glm, glm-coding-plan); compression strategies in `infra/llm/context/compression/`
+- LLM: 20 providers in `infra/llm/providers/` (incl. deepseek, glm, glm-coding-plan, xai); compression strategies in `infra/llm/context/compression/`
 - System prompts: contributor pattern (XML sections) in `infra/system-prompt/`
 - Map/memory: `infra/map/` (agentic map, context-tree store, LLM map memory, worker pool); `infra/memory/` (memory-manager, deduplicator)
 - Storage: file-based blob (`infra/blob/`) and key storage (`infra/storage/`) — no SQLite
@@ -152,6 +163,7 @@ npm run dev:ui:package               # Vite dev server resolving shared UI from 
 ## Environment
 
 - `BRV_ENV` — `development` | `production` (dev-only commands require `development`, set by `bin/dev.js` and `bin/run.js`)
+- Required service base URLs (loaded from `.env.development` / `.env.production`, see `.env.example`): `BRV_IAM_BASE_URL`, `BRV_COGIT_BASE_URL`, `BRV_LLM_BASE_URL`, `BRV_BILLING_BASE_URL`, `BRV_WEB_APP_URL`, `BRV_GIT_REMOTE_BASE_URL`. Loaded in `server/config/environment.ts`; IAM/COGIT/BILLING are additionally validated by `assertRootDomain` (no paths allowed). All are normalized to strip trailing slashes
 - `BRV_WEBUI_PORT` — override the web UI port (default `7700`)
 - `BRV_UI_SOURCE` — `submodule` | `package` — forces Vite's shared-UI resolution mode
 - `BRV_DATA_DIR` — override the global data dir (default `~/.brv`)

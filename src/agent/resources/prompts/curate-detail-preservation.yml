@@ -44,13 +44,14 @@ prompt: |
   - One `<bv-diagram>` per diagram. Do NOT combine multiple diagrams into a single element.
   - Always set the `type` attribute (`mermaid`, `plantuml`, `ascii`, `dot`, `graphviz`, `other`)
   - Use the `title` attribute when the diagram has a caption or label nearby
+  - Emit the body DIRECTLY inside the element, using HTML entities for `<`, `>`, `&` (e.g. mermaid arrows become `--&gt;`). Do NOT wrap in `<![CDATA[…]]>` — HTML5 parses CDATA as a bogus comment that the first `-->` closes.
   - Example:
     ```
     <bv-diagram type="mermaid" title="Authentication Flow">
     graph TD
-      A[Request] --> B{Has Token?}
-      B -->|Yes| C[Validate]
-      B -->|No| D[Reject]
+      A[Request] --&gt; B{Has Token?}
+      B --&gt;|Yes| C[Validate]
+      B --&gt;|No| D[Reject]
     </bv-diagram>
     ```
 

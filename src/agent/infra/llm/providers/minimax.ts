@@ -24,6 +24,7 @@ export const minimaxProvider: ProviderModule = {
 
     return new AiSdkContentGenerator({
       model: provider.chatModel(config.model),
+      requestTimeoutMs: config.requestTimeoutMs,
     })
   },
   defaultModel: 'MiniMax-M2.7',

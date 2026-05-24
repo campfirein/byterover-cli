@@ -120,6 +120,10 @@ export default defineConfig(({command, mode}) => {
         registerType: 'autoUpdate',
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+          // The main bundle exceeds the default 2 MiB once CodeMirror + mermaid are bundled.
+          // PWA only serves the offline fallback, not the full app — so dropping the main chunk
+          // from the precache is fine, but the warning is noisy. Raise the cap to keep build clean.
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           navigateFallback: '/index.html',
         },
       }),

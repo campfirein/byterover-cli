@@ -25,7 +25,6 @@
 import {GlobalInstanceManager} from '@campfirein/brv-transport-client'
 import express from 'express'
 import {fork, type StdioOptions} from 'node:child_process'
-import {randomUUID} from 'node:crypto'
 import {mkdirSync, readdirSync, readFileSync, unlinkSync} from 'node:fs'
 import {dirname, join} from 'node:path'
 import {fileURLToPath} from 'node:url'
@@ -33,12 +32,13 @@ import {fileURLToPath} from 'node:url'
 import type {BrvConfig} from '../../core/domain/entities/brv-config.js'
 
 import {ReviewEvents} from '../../../shared/transport/events/review-events.js'
+import {TaskEvents, type TaskHeartbeatEvent} from '../../../shared/transport/events/task-events.js'
 import {
   AGENT_IDLE_CHECK_INTERVAL_MS,
   AGENT_IDLE_TIMEOUT_MS,
-  AGENT_POOL_MAX_SIZE,
   BRV_DIR,
   HEARTBEAT_FILE,
+  TASK_HEARTBEAT_INTERVAL_MS,
   WEBUI_DEFAULT_PORT,
 } from '../../constants.js'
 import {
@@ -48,21 +48,20 @@ import {
   TransportStateEventNames,
   TransportTaskEventNames,
 } from '../../core/domain/transport/schemas.js'
+import {buildReviewUrl} from '../../utils/build-review-url.js'
 import {getGlobalDataDir} from '../../utils/global-data-path.js'
-import {getProjectDataDir} from '../../utils/path-utils.js'
 import {crashLog, processLog} from '../../utils/process-logger.js'
+import {createBillingStateHandler} from '../billing/billing-state-endpoint.js'
 import {ClientManager} from '../client/client-manager.js'
 import {ProjectConfigStore} from '../config/file-config-store.js'
 import {readContextTreeRemoteUrl} from '../context-tree/read-context-tree-remote.js'
-import {DreamStateService} from '../dream/dream-state-service.js'
-import {DreamTrigger} from '../dream/dream-trigger.js'
-import {createReviewApiRouter} from '../http/review-api-handler.js'
 import {broadcastToProjectRoom} from '../process/broadcast-utils.js'
 import {CurateLogHandler} from '../process/curate-log-handler.js'
 import {setupFeatureHandlers} from '../process/feature-handlers.js'
 import {QueryLogHandler} from '../process/query-log-handler.js'
+import {TaskHeartbeatManager} from '../process/task-heartbeat-manager.js'
 import {TaskHistoryHook} from '../process/task-history-hook.js'
-import {getStore as getTaskHistoryStore} from '../process/task-history-store-cache.js'
+import {configureTaskHistoryStoreCache, getStore as getTaskHistoryStore} from '../process/task-history-store-cache.js'
 import {TransportHandlers} from '../process/transport-handlers.js'
 import {ProjectRegistry} from '../project/project-registry.js'
 import {createProviderOAuthTokenStore} from '../provider-oauth/provider-oauth-token-store.js'
@@ -71,9 +70,9 @@ import {clearStaleProviderConfig, resolveProviderConfig} from '../provider/provi
 import {ProjectRouter} from '../routing/project-router.js'
 import {AuthStateStore} from '../state/auth-state-store.js'
 import {ProjectStateLoader} from '../state/project-state-loader.js'
-import {FileCurateLogStore} from '../storage/file-curate-log-store.js'
+import {FileBillingConfigStore} from '../storage/file-billing-config-store.js'
 import {FileProviderConfigStore} from '../storage/file-provider-config-store.js'
-import {FileReviewBackupStore} from '../storage/file-review-backup-store.js'
+import {FileSettingsStore} from '../storage/file-settings-store.js'
 import {createProviderKeychainStore} from '../storage/provider-keychain-store.js'
 import {createTokenStore} from '../storage/token-store.js'
 import {SocketIOTransportServer} from '../transport/socket-io-transport-server.js'
@@ -91,6 +90,7 @@ import {DaemonResilience} from './daemon-resilience.js'
 import {HeartbeatWriter} from './heartbeat.js'
 import {IdleTimeoutPolicy} from './idle-timeout-policy.js'
 import {selectDaemonPort} from './port-selector.js'
+import {bootstrapSettings} from './settings-bootstrap.js'
 import {ShutdownHandler} from './shutdown-handler.js'
 
 function log(msg: string): void {
@@ -216,15 +216,7 @@ async function main(): Promise<void> {
       webuiDistDir,
     })
 
-    // Mount review API first so its responses are not subject to the
-    // web UI middleware's CSP (the review page uses inline scripts).
     const app = express()
-    app.use(
-      createReviewApiRouter({
-        curateLogStoreFactory: (projectPath) => new FileCurateLogStore({baseDir: getProjectDataDir(projectPath)}),
-        reviewBackupStoreFactory: (projectPath) => new FileReviewBackupStore(join(projectPath, BRV_DIR)),
-      }),
-    )
     app.use(webuiApp)
 
     webuiServer = new WebUiServer(app)
@@ -260,6 +252,13 @@ async function main(): Promise<void> {
     daemonResilience.install()
 
     // 7. Create services (auth, project state, agent pool, handlers)
+    // Settings bootstrap: read settings.json once, apply user overrides to
+    // AgentPool and task-history cache. Missing or invalid entries fall
+    // back to defaults; parseErrors and rejected entries are logged here.
+    const settingsStore = new FileSettingsStore()
+    const resolvedSettings = await bootstrapSettings({log, store: settingsStore})
+    configureTaskHistoryStoreCache({maxEntries: resolvedSettings.taskHistoryMaxEntries})
+
     const projectRegistry = new ProjectRegistry({log})
     const projectRouter = new ProjectRouter({transport: transportServer})
     const clientManager = new ClientManager()
@@ -271,81 +270,28 @@ async function main(): Promise<void> {
       projectRegistry,
     })
 
-    // Shared queue-length resolver — used by both idle timeout policy and dream trigger
+    // Shared queue-length resolver — used by the idle timeout policy
     const getQueueLength = (projectPath: string): number =>
       agentPool?.getQueueState().find((q) => q.projectPath === projectPath)?.queueLength ?? 0
 
-    // Shared project-config resolver — used by the idle-dream dispatch and the
-    // task-router resolver wired into TransportHandlers below. Both paths must
-    // stamp the same reviewDisabled value so review semantics are consistent
-    // regardless of dispatch source (CLI task:create vs idle trigger).
-    const curateConfigStore = new ProjectConfigStore()
-    const resolveReviewDisabled = async (projectPath: string): Promise<boolean> => {
-      const config = await curateConfigStore.read(projectPath)
-      return config?.reviewDisabled === true
-    }
-
-    // Shared dream pre-check trigger factory.
-    // The lock service explicitly throws if invoked — gate 4 (lock) is the agent's job;
-    // the daemon must only ever evaluate gates 1-3 via checkEligibility().
-    const makeDreamPreCheckTrigger = (projectPath: string): DreamTrigger =>
-      new DreamTrigger({
-        dreamLockService: {
-          tryAcquire() {
-            throw new Error('Lock must not be acquired during daemon eligibility pre-check')
-          },
-        },
-        dreamStateService: new DreamStateService({baseDir: join(projectPath, BRV_DIR)}),
-        getQueueLength,
-      })
-
-    // Agent idle timeout policy — kills agents after period of inactivity
+    // Agent idle timeout policy — kills agents after period of inactivity.
+    // The legacy "dream-eligible? dispatch instead of killing" branch
+    // (ENG-2884) is gone — tool-mode dream is agent-driven, not daemon-
+    // scheduled. Idle agents are simply cleaned up.
     const agentIdleTimeoutPolicy = new AgentIdleTimeoutPolicy({
       checkIntervalMs: AGENT_IDLE_CHECK_INTERVAL_MS,
       getQueueLength,
       log,
       async onAgentIdle(projectPath: string, queueLength: number) {
-        // Don't kill agents that have queued tasks waiting
         if (queueLength > 0) {
           log(`Skipping idle cleanup: ${projectPath} has ${queueLength} queued tasks`)
           return
         }
 
-        // Don't kill agents that are actively processing a task
         const entry = agentPool?.getEntries().find((e) => e.projectPath === projectPath)
         if (entry?.hasActiveTask) {
           log(`Skipping idle cleanup: ${projectPath} has active task`)
           return
-        }
-
-        // Check dream eligibility before killing (gates 1-3 only, no lock).
-        // Lock acquisition happens in the agent process when the dream task executes.
-        try {
-          const result = await makeDreamPreCheckTrigger(projectPath).checkEligibility(projectPath)
-          if (result.eligible) {
-            log(`Dream eligible, dispatching dream task: ${projectPath}`)
-            // Idle dispatch bypasses TaskRouter.handleTaskCreate, so the
-            // reviewDisabled snapshot that the task-router stamps for the CLI
-            // path must be reproduced inline here. Without it, idle dreams
-            // would always default to review-enabled regardless of project
-            // setting (see resolveReviewDisabled above).
-            const reviewDisabled = await resolveReviewDisabled(projectPath)
-            agentPool?.submitTask({
-              clientId: 'daemon',
-              content: 'Memory consolidation (idle trigger)',
-              force: false,
-              projectPath,
-              reviewDisabled,
-              taskId: randomUUID(),
-              trigger: 'agent-idle',
-              type: 'dream',
-            })
-            return
-          }
-
-          log(`Dream not eligible (${result.reason}), killing idle agent: ${projectPath}`)
-        } catch {
-          log(`Dream eligibility check failed, killing idle agent: ${projectPath}`)
         }
 
         agentPool?.handleAgentDisconnected(projectPath)
@@ -378,6 +324,8 @@ async function main(): Promise<void> {
         return fork(agentProcessPath, [], forkOptions)
       },
       log,
+      maxConcurrentTasks: resolvedSettings.agentMaxConcurrentTasks,
+      maxSize: resolvedSettings.agentPoolMaxSize,
       transportServer,
     })
 
@@ -385,10 +333,10 @@ async function main(): Promise<void> {
     agentIdleTimeoutPolicy.start()
 
     const curateLogHandler = new CurateLogHandler(undefined, (info) => {
-      const encoded = Buffer.from(info.projectPath).toString('base64url')
-      const reviewPort = webuiServer?.getPort() ?? port
-      const reviewUrl = `http://127.0.0.1:${reviewPort}/review?project=${encoded}`
-      const payload = {pendingCount: info.pendingCount, reviewUrl, taskId: info.taskId}
+      const webuiPort = webuiServer?.getPort()
+      const payload = webuiPort
+        ? {pendingCount: info.pendingCount, reviewUrl: buildReviewUrl(webuiPort, info.projectPath), taskId: info.taskId}
+        : {pendingCount: info.pendingCount, taskId: info.taskId}
       // Send directly to the task originator (covers CLI clients not in the project room)
       transportServer!.sendTo(info.clientId, ReviewEvents.NOTIFY, payload)
       // Also broadcast to the project room so TUI and other connected clients are notified
@@ -435,6 +383,25 @@ async function main(): Promise<void> {
       resolveProviderConfig({authStateStore, providerConfigStore, providerKeychainStore, tokenRefreshManager}),
     )
 
+    // Per-task liveness ticker (M6 T1). Fires `TaskEvents.HEARTBEAT` to the
+    // CLI during quiet periods so clients can distinguish "task still
+    // progressing" from "daemon is stuck". Reset by every other task-scoped
+    // emission inside the task router; cleared on the three terminal events.
+    const taskHeartbeatManager = new TaskHeartbeatManager({
+      emit(taskId, clientId, projectPath) {
+        const payload: TaskHeartbeatEvent = {lastActivityAt: Date.now(), taskId}
+        transportServer!.sendTo(clientId, TaskEvents.HEARTBEAT, payload)
+        broadcastToProjectRoom(projectRegistry, projectRouter, projectPath, TaskEvents.HEARTBEAT, payload, clientId)
+      },
+      intervalMs: TASK_HEARTBEAT_INTERVAL_MS,
+    })
+    const billingConfigStoreFactory = (projectPath: string) =>
+      new FileBillingConfigStore({baseDir: join(projectPath, BRV_DIR)})
+    transportServer.onRequest(
+      TransportStateEventNames.GET_BILLING_CONFIG,
+      createBillingStateHandler(billingConfigStoreFactory),
+    )
+
     const transportHandlers = new TransportHandlers({
       agentPool,
       clientManager,
@@ -445,28 +412,13 @@ async function main(): Promise<void> {
       getTaskHistoryStore,
       // Resolves the project's review-disabled flag once at task-create. The result
       // is stamped onto TaskInfo + TaskExecute so daemon hooks (CurateLogHandler) and
-      // the agent process (curate-tool backups, dream review entries) all observe a
-      // single value across the daemon→agent process boundary. Shared with the
-      // idle-dream dispatch above so review semantics are identical regardless of
-      // dispatch source (CLI task:create vs agent-idle trigger).
-      isReviewDisabled: resolveReviewDisabled,
-      lifecycleHooks: [curateLogHandler, queryLogHandler, taskHistoryHook],
-      // Daemon-side gate for dream task:create — mirrors the idle-trigger pre-check
-      // in this file so the CLI path (brv dream without --force) actually honors
-      // gate 3 (queue). The agent-side check kept gate 3 hardcoded to skip,
-      // which made the CLI ignore the spec when other tasks were queued.
-      async preDispatchCheck(task, projectPath) {
-        if (task.type !== 'dream' || task.force) return {eligible: true}
-        if (!projectPath) return {eligible: true}
-
-        try {
-          const result = await makeDreamPreCheckTrigger(projectPath).checkEligibility(projectPath)
-          return result.eligible ? {eligible: true} : {eligible: false, skipResult: `Dream skipped: ${result.reason}`}
-        } catch {
-          // Fail-open on pre-check errors: let the agent's own gate check be the fallback.
-          return {eligible: true}
-        }
+      // the agent process (curate-tool backups) all observe a single value across
+      // the daemon→agent process boundary.
+      async isReviewDisabled(projectPath) {
+        const config = await new ProjectConfigStore().read(projectPath)
+        return config?.reviewDisabled === true
       },
+      lifecycleHooks: [curateLogHandler, queryLogHandler, taskHistoryHook],
       projectRegistry,
       projectRouter,
       // Stamp the active provider/model snapshot onto every created task so the
@@ -484,6 +436,7 @@ async function main(): Promise<void> {
           ...(config.activeProvider ? {provider: config.activeProvider} : {}),
         }
       },
+      taskHeartbeatManager,
       transport: transportServer,
     })
     transportHandlers.setup()
@@ -632,12 +585,6 @@ async function main(): Promise<void> {
         webuiDistDir,
       })
       const newApp = express()
-      newApp.use(
-        createReviewApiRouter({
-          curateLogStoreFactory: (projectPath) => new FileCurateLogStore({baseDir: getProjectDataDir(projectPath)}),
-          reviewBackupStoreFactory: (projectPath) => new FileReviewBackupStore(join(projectPath, BRV_DIR)),
-        }),
-      )
       newApp.use(newWebuiApp)
 
       // Start on new port
@@ -655,7 +602,7 @@ async function main(): Promise<void> {
       agentIdleStatus: agentIdleTimeoutPolicy.getIdleStatus(),
       agentPool: {
         entries: agentPool!.getEntries(),
-        maxSize: AGENT_POOL_MAX_SIZE,
+        maxSize: resolvedSettings.agentPoolMaxSize,
         queue: agentPool!.getQueueState(),
         size: agentPool!.getSize(),
       },
@@ -688,6 +635,7 @@ async function main(): Promise<void> {
     // without waiting for OIDC discovery (~400ms).
     await setupFeatureHandlers({
       authStateStore,
+      billingConfigStoreFactory,
       broadcastToProject(projectPath, event, data) {
         broadcastToProjectRoom(projectRegistry, projectRouter, projectPath, event, data)
       },
@@ -698,6 +646,7 @@ async function main(): Promise<void> {
       providerKeychainStore,
       providerOAuthTokenStore,
       resolveProjectPath: (clientId) => clientManager.getClient(clientId)?.projectPath,
+      settingsStore,
       transport: transportServer,
       webuiPort: webuiServer?.getPort(),
     })

@@ -101,24 +101,21 @@ describe('bv-topic validator', () => {
     })
   })
 
-  describe('runtime signals are NOT bv-topic attributes', () => {
+  describe('reserved attributes are rejected at validation', () => {
     // These fields lived on bv-topic in an earlier draft. They were
     // moved to the runtime-signal sidecar store (per-user, per-machine,
     // bumped on every brv query) so re-introducing them here would
-    // revert that migration. The schema's `passthrough` tolerates them
-    // gracefully (parse-and-skip) but they should never be authored.
-    it('passthrough tolerates legacy importance/maturity/recency without enforcing them', () => {
-      const result = validateBvTopic(makeNode({
-        importance: '89',
-        maturity: 'core',
-        path: 'x',
-        recency: '0.97',
-        title: 't',
-        updatedat: '2026-04-27T08:17:42Z',
-      }))
-      // Tolerated, but no longer enforced — the writer ignores them and
-      // reads runtime signals from the sidecar instead.
-      expect(result.valid).to.equal(true)
-    })
+    // revert that migration. The schema's `.superRefine` rejects them
+    // so the calling agent gets a structured `attribute-validation`
+    // error and the correction loop fires — silent passthrough would
+    // mask the contract violation.
+    for (const field of ['importance', 'maturity', 'recency', 'createdat', 'updatedat']) {
+      it(`rejects \`${field}\` as a reserved system attribute`, () => {
+        const result = validateBvTopic(makeNode({[field]: 'whatever', path: 'x', title: 't'}))
+        expect(result.valid).to.equal(false)
+        if (result.valid) return
+        expect(result.errors.some((e) => e.field === field)).to.equal(true)
+      })
+    }
   })
 })

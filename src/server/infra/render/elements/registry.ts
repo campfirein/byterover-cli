@@ -93,8 +93,9 @@ export const ELEMENT_REGISTRY: ElementRegistry = {
     allowedChildren: 'block',
     description:
       'Preserves a diagram (mermaid / plantuml / ascii / dot) verbatim. ' +
-      'Optional `type` selects the fenced-code-block language tag; optional ' +
-      '`title` becomes the diagram caption.',
+      'Body goes directly inside the element with HTML entities for <, >, & — ' +
+      'no <![CDATA[…]]> wrapper. Optional `type` declares the diagram language ' +
+      'for renderers; optional `title` becomes the diagram caption.',
     name: 'bv-diagram',
     optionalAttributes: ['type', 'title'],
     requiredAttributes: [],

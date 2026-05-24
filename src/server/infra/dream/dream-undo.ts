@@ -5,12 +5,13 @@
  * Only undoes the LAST dream — not a history stack.
  */
 
-import {mkdir, unlink, writeFile} from 'node:fs/promises'
-import {dirname, resolve} from 'node:path'
+import {mkdir, unlink, utimes, writeFile} from 'node:fs/promises'
+import {dirname, join, resolve} from 'node:path'
 
 import type {CurateLogEntry, CurateLogOperation} from '../../core/domain/entities/curate-log-entry.js'
 import type {ICurateLogStore} from '../../core/interfaces/storage/i-curate-log-store.js'
 import type {IReviewBackupStore} from '../../core/interfaces/storage/i-review-backup-store.js'
+import type {IRuntimeSignalStore} from '../../core/interfaces/storage/i-runtime-signal-store.js'
 import type {DreamLogEntry, DreamOperation} from './dream-log-schema.js'
 import type {DreamState} from './dream-state-schema.js'
 
@@ -31,6 +32,14 @@ export type DreamUndoDeps = {
   manifestService: {buildManifest(dir?: string): Promise<unknown>}
   projectRoot?: string
   reviewBackupStore?: Pick<IReviewBackupStore, 'delete'>
+  /**
+   * Optional — when provided, undoPrune restores each archived topic's
+   * runtime signals from the PRUNE op's `previousSignals` map. Without
+   * this dep (or for older log entries lacking the field), the file
+   * still gets restored but with default signals — surprising for
+   * agents who expected pruned topics to re-surface on the next scan.
+   */
+  runtimeSignalStore?: Pick<IRuntimeSignalStore, 'set'>
 }
 
 export type DreamUndoResult = {
@@ -378,6 +387,60 @@ async function undoPrune(
 ): Promise<void> {
   switch (op.action) {
     case 'ARCHIVE': {
+      // Tool-mode finalize writes a flat .brv/archive/<relPath> copy and
+      // captures the body inline as previousTexts; restore from the log
+      // directly so we don't depend on archive-service-managed stubs.
+      //
+      // Newer log entries also carry `previousMtimes` and
+      // `previousSignals`; restoring them re-creates the observable
+      // state that drove the prune decision (e.g. importance < 35,
+      // mtime > 60d) so the topic re-surfaces on the next scan if it
+      // still qualifies. Older entries lack these fields — the file
+      // is still restored, but signals fall back to defaults.
+      if (op.previousTexts && Object.keys(op.previousTexts).length > 0) {
+        const archiveDir = join(dirname(ctx.contextTreeDir), 'archive')
+        for (const [filePath, content] of Object.entries(op.previousTexts)) {
+          const fullPath = safePath(ctx.contextTreeDir, filePath)
+          // eslint-disable-next-line no-await-in-loop
+          await mkdir(dirname(fullPath), {recursive: true})
+          // eslint-disable-next-line no-await-in-loop
+          await writeFile(fullPath, content, 'utf8')
+
+          // Restore original mtime so stale-mtime prune candidates
+          // re-qualify. `writeFile` stamps mtime=now; `utimes` overwrites.
+          const savedMtimeMs = op.previousMtimes?.[filePath]
+          if (savedMtimeMs !== undefined) {
+            const mtime = new Date(savedMtimeMs)
+            // eslint-disable-next-line no-await-in-loop
+            await utimes(fullPath, mtime, mtime)
+          }
+
+          // Restore sidecar signals so importance / maturity-driven
+          // prune candidates re-qualify. Best-effort — sidecar write
+          // failure shouldn't fail the file restore.
+          const savedSignals = op.previousSignals?.[filePath]
+          if (savedSignals !== undefined && ctx.deps.runtimeSignalStore) {
+            try {
+              // eslint-disable-next-line no-await-in-loop
+              await ctx.deps.runtimeSignalStore.set(filePath, savedSignals)
+            } catch {
+              // best-effort sidecar restore; the file itself is back
+            }
+          }
+
+          ctx.result.restoredFiles.push(filePath)
+
+          // Clean up the .brv/archive/<relPath> duplicate so we don't leave
+          // a stale copy alongside the restored original. Best-effort —
+          // ENOENT is fine, real errors get surfaced via the per-op try/catch.
+          // eslint-disable-next-line no-await-in-loop
+          await unlinkSafe(join(archiveDir, filePath))
+        }
+
+        break
+      }
+
+      // Legacy LLM-driven prune path — archive service round-trip.
       if (!ctx.deps.archiveService) {
         throw new Error(`Cannot undo PRUNE/ARCHIVE: no archive service available for ${op.file}`)
       }

@@ -1,6 +1,7 @@
 export const ReviewEvents = {
   DECIDE_TASK: 'review:decideTask',
   GET_DISABLED: 'review:getDisabled',
+  LIST_OPERATIONS: 'review:listOperations',
   NOTIFY: 'review:notify',
   PENDING: 'review:pending',
   SET_DISABLED: 'review:setDisabled',
@@ -20,7 +21,8 @@ export interface ReviewSetDisabledResponse {
 
 export interface ReviewNotifyEvent {
   pendingCount: number
-  reviewUrl: string
+  /** URL to the local Changes tab (only set when WebUI is running). */
+  reviewUrl?: string
   taskId: string
 }
 
@@ -55,4 +57,27 @@ export interface ReviewPendingTask {
 export interface ReviewPendingResponse {
   pendingCount: number
   tasks: ReviewPendingTask[]
+}
+
+/**
+ * Single agent-authored operation surfaced for the WebUI Changes tab.
+ * Returned by `review:listOperations`. Path is context-tree-relative (e.g.
+ * `architecture/daemon/lifecycle.md`) so the client can join it onto the working-tree
+ * file list returned by `vc:status`. `reviewStatus` is `undefined` for ops the agent
+ * applied directly without queueing (low-impact UPSERT/MERGE/UPDATE/ADD).
+ */
+export interface AgentChangeOperation {
+  filePath: string
+  impact?: 'high' | 'low'
+  /** entry.startedAt — used by the client to dedup multiple ops on the same file (latest wins). */
+  opCreatedAt: number
+  reason?: string
+  reviewStatus?: 'approved' | 'pending' | 'rejected'
+  summary?: string
+  taskId: string
+  type: 'ADD' | 'DELETE' | 'MERGE' | 'UPDATE' | 'UPSERT'
+}
+
+export interface ReviewListOperationsResponse {
+  operations: AgentChangeOperation[]
 }

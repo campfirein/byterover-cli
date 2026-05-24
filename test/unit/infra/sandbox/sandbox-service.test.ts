@@ -195,7 +195,7 @@ describe('SandboxService', () => {
     it('should make tools.searchKnowledge functional after service is set', async () => {
       const service = new SandboxService()
       service.setFileSystem(mockFileSystem as unknown as IFileSystem)
-      service.setSearchKnowledgeService(mockSearchKnowledgeService as ISearchKnowledgeService)
+      service.setSearchKnowledgeService(mockSearchKnowledgeService as unknown as ISearchKnowledgeService)
 
       const result = await service.executeCode('tools.searchKnowledge("test")', 'session1')
 
@@ -206,7 +206,7 @@ describe('SandboxService', () => {
     it('should call the search service with correct parameters', async () => {
       const service = new SandboxService()
       service.setFileSystem(mockFileSystem as unknown as IFileSystem)
-      service.setSearchKnowledgeService(mockSearchKnowledgeService as ISearchKnowledgeService)
+      service.setSearchKnowledgeService(mockSearchKnowledgeService as unknown as ISearchKnowledgeService)
 
       await service.executeCode(
         'tools.searchKnowledge("authentication", { limit: 5 })',

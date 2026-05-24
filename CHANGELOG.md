@@ -2,6 +2,29 @@
 
 All notable user-facing changes to ByteRover CLI will be documented in this file.
 
+## [3.14.0]
+
+### Added
+- **Review pending changes from `brv webui`.** The human-in-the-loop review queue now lives inside the Changes tab, with a Configuration toggle to turn review on or off per project. Approve, reject, or inspect pending curate operations next to your other diffs. The `brv review` CLI commands still work, and dashboard links deep-link straight to the right project's Changes tab.
+
+### Fixed
+- **`brv vc checkout` works on a freshly initialized project.** Right after `brv vc init` and `brv vc fetch`, checking out a remote-only branch used to fail with a misleading "no commits yet" error. The fetched ref now resolves correctly, so the init, fetch, checkout sequence works as expected. A typoed branch name also reports "branch not found" instead of "no commits yet."
+- **MCP server no longer pegs the CPU after the daemon disconnects.** When the daemon dropped, the MCP server used by Claude Desktop, Cursor, and other MCP-aware clients could spin into a high-CPU loop and hang on shutdown. It now installs one-shot crash guards, exits cleanly within 2 seconds, and lets pending tool calls return a real error before the connection closes.
+
+## [3.13.0]
+
+### Added
+- **ByteRover credits in the header and billing team picker.** The REPL and web header now show your remaining ByteRover credits, and when you connect a provider you can pick which billing team to charge per project. Your choice is remembered until you change it. Configurable via `BRV_BILLING_BASE_URL`.
+- **Clear "out of credits" message with a top-up link.** When a request fails because your ByteRover credits run out, the CLI now shows a direct top-up URL instead of a generic failure.
+
+### Changed
+- **Duplicate models filtered from OpenAI-compatible providers.** Some upstream endpoints (e.g. NVIDIA NIM) return the same model under multiple aliases. `brv providers connect` now dedupes by model ID so the picker shows clean rows.
+- **Simpler OpenClaw installer.** `scripts/openclaw-setup.sh` now auto-installs the `brv` CLI if it is missing, installs the skill via `npx clawhub@latest`, and points to "connect a provider" as the post-install next step. Daily Knowledge Mining cron and the onboarding plugin scaffold were removed.
+
+### Fixed
+- **Shared rules connectors no longer collide.** When several agents share a single `AGENTS.md` or `CLAUDE.md` (e.g. Amp, Codex, OpenCode, or Claude Code + OpenClaude), `brv connectors list` reads the footer marker inside the BRV section so only the installed agent's rules connector is shown.
+- **OpenClaw installer no longer crashes under strict shell mode.** Fixed an unbound-variable error in `scripts/openclaw-setup.sh` and cleaned up orphan onboarding-plugin code paths.
+
 ## [3.12.0]
 
 ### Added

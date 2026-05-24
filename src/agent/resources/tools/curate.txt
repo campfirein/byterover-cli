@@ -49,8 +49,10 @@ segment (e.g., `security/auth`, `payments/refunds`, `infra/postgres_upgrade`).
   `"security,authentication,jwt"`).
 - `keywords` — optional. Comma-separated retrieval keywords (e.g.,
   `"jwt,refresh_token,rs256"`).
-- `related` — optional. Comma-separated `@domain/topic` cross-references
-  (e.g., `"@security/cookies,@security/oauth"`).
+- `related` — optional. Comma-separated cross-references. File targets
+  end in `.html` (e.g. `"@security/cookies.html,@security/oauth.html"`);
+  folder/domain targets stay bare (e.g. `"@ops"`). The FE routes by
+  suffix — a missing or wrong extension produces a dead pill.
 
 **NOT bv-topic attributes** — do not emit `importance`, `maturity`,
 `recency`, `updatedat`, or `createdAt`. These are runtime signals tracked
@@ -113,8 +115,11 @@ context):
   code, or scenario walkthroughs.
 
 `<bv-diagram>` — `## Narrative > Diagrams`. Preserves a diagram VERBATIM
-  (mermaid / plantuml / ascii / dot / graphviz). Use a `<pre><code>`
-  block for the diagram body.
+  (mermaid / plantuml / ascii / dot / graphviz). Emit the diagram body
+  DIRECTLY inside the element, using HTML entities for `<`, `>`, `&`
+  (e.g. mermaid arrows become `--&gt;`). Do NOT wrap the body in
+  `<![CDATA[…]]>` — HTML5 parses CDATA as a bogus comment that the
+  first `-->` closes, mangling the diagram source.
   - optional `type` — one of `"mermaid"`, `"plantuml"`, `"ascii"`,
     `"dot"`, `"graphviz"`, `"other"`.
   - optional `title` — caption for the diagram.
@@ -162,6 +167,10 @@ inline-content element — write the prose directly.
 
 Do not introduce custom elements outside the closed `<bv-*>` vocabulary.
 
+Inside `<li>`, write plain text only — no leading `-`, `*`, `•`,
+`1.`/`2.` markers. The renderer adds list markers via CSS, so a literal
+prefix produces a double bullet.
+
 **Detail-preservation**
 
 When the input contains diagrams, tables, code examples, factual
@@ -203,7 +212,7 @@ of your response is `<`; the last characters are `</bv-topic>`.
 A bug + fix runbook with full structure:
 
 ```
-<bv-topic path="security/auth" title="JWT refresh under clock skew" summary="JWT refresh fails on clients with skewed clocks; resolved by adding leeway and a metric." tags="security,authentication" keywords="jwt,refresh,clock-skew,401" related="@security/oauth">
+<bv-topic path="security/auth" title="JWT refresh under clock skew" summary="JWT refresh fails on clients with skewed clocks; resolved by adding leeway and a metric." tags="security,authentication" keywords="jwt,refresh,clock-skew,401" related="@security/oauth.html">
   <bv-reason>Capture the clock-skew bug + leeway fix so the next on-call has the runbook.</bv-reason>
   <bv-task>Diagnose JWT refresh failures under client clock skew.</bv-task>
   <bv-changes>
@@ -252,11 +261,11 @@ A general project-context topic with a diagram:
     <p>pg_dump/pg_restore for initial seed; logical replication on the source. Some extensions (pg_stat_statements, postgis) need re-installation on the new instance.</p>
   </bv-dependencies>
   <bv-diagram type="ascii" title="Upgrade phases">
-<pre><code>[PG14 primary] --(logical replication)--> [PG16 replica]
+[PG14 primary] --(logical replication)--&gt; [PG16 replica]
                                                     |
                                           (cutover window)
                                                     v
-                                          [PG16 primary]</code></pre>
+                                          [PG16 primary]
   </bv-diagram>
 </bv-topic>
 ```

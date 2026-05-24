@@ -516,5 +516,59 @@ describe('ContextTreeHandler', () => {
       expect(result.files[0].path).to.equal('file.md')
       expect(result.files[0].lastUpdatedBy).to.be.undefined
     })
+
+    it('should pass folder paths to gitService.log unchanged', async () => {
+      deps.gitService.log.resolves([])
+
+      await createHandler()
+      await callHandler(ContextTreeEvents.GET_FILE_METADATA, {
+        paths: ['architecture', 'testing'],
+      })
+
+      const filepaths = deps.gitService.log.getCalls().map((c) => c.args[0].filepath)
+      expect(filepaths).to.have.members(['architecture', 'testing'])
+    })
+
+    it('should return folder metadata from the latest tree-touching commit', async () => {
+      const commitDate = new Date('2026-04-15T09:00:00Z')
+      deps.gitService.log.resolves([{
+        author: {email: 'bob@test.com', name: 'Bob'},
+        message: 'update folder',
+        sha: 'def456',
+        timestamp: commitDate,
+      }])
+
+      await createHandler()
+      const result = await callHandler(ContextTreeEvents.GET_FILE_METADATA, {
+        paths: ['authentication'],
+      })
+
+      expect(result.files).to.have.length(1)
+      expect(result.files[0].path).to.equal('authentication')
+      expect(result.files[0].lastUpdatedBy).to.equal('Bob')
+      expect(result.files[0].lastUpdatedWhen).to.equal(commitDate.toISOString())
+    })
+
+    it('should accept a mix of file and folder paths in one request', async () => {
+      deps.gitService.log.callsFake(async ({filepath}: {filepath: string}) => [{
+        author: {email: 'carol@test.com', name: `Carol-${filepath}`},
+        message: `update ${filepath}`,
+        sha: 'xyz789',
+        timestamp: new Date('2026-05-01T00:00:00Z'),
+      }])
+
+      await createHandler()
+      const result = await callHandler(ContextTreeEvents.GET_FILE_METADATA, {
+        paths: ['architecture', 'patterns.md', 'testing/integration.md'],
+      })
+
+      expect(result.files).to.have.length(3)
+      const byPath = new Map(
+        result.files.map((f: {lastUpdatedBy: string; path: string}) => [f.path, f.lastUpdatedBy]),
+      )
+      expect(byPath.get('architecture')).to.equal('Carol-architecture')
+      expect(byPath.get('patterns.md')).to.equal('Carol-patterns.md')
+      expect(byPath.get('testing/integration.md')).to.equal('Carol-testing/integration.md')
+    })
   })
 })

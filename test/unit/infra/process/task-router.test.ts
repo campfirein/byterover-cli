@@ -517,7 +517,7 @@ describe('TaskRouter', () => {
       router.setup()
 
       const handler = transportHelper.requestHandlers.get(TransportTaskEventNames.CREATE)
-      const request = makeTaskCreateRequest({type: 'dream'})
+      const request = makeTaskCreateRequest({type: 'curate'})
       await handler!(request, 'client-1')
 
       expect(preDispatchCheck.calledOnce, 'preDispatchCheck should be invoked').to.be.true
@@ -538,7 +538,7 @@ describe('TaskRouter', () => {
       router.setup()
 
       const handler = transportHelper.requestHandlers.get(TransportTaskEventNames.CREATE)
-      const request = makeTaskCreateRequest({type: 'dream'})
+      const request = makeTaskCreateRequest({type: 'curate'})
       await handler!(request, 'client-1')
 
       // Agent pool never receives the task
@@ -567,7 +567,7 @@ describe('TaskRouter', () => {
       router.setup()
 
       const handler = transportHelper.requestHandlers.get(TransportTaskEventNames.CREATE)
-      const request = makeTaskCreateRequest({type: 'dream'})
+      const request = makeTaskCreateRequest({type: 'curate'})
       await handler!(request, 'client-1')
 
       // Errors in pre-check must not block dispatch — agent's own gate check is the fallback
@@ -577,7 +577,7 @@ describe('TaskRouter', () => {
     it('is skipped when no preDispatchCheck is configured', async () => {
       // default router in beforeEach has no preDispatchCheck
       const handler = transportHelper.requestHandlers.get(TransportTaskEventNames.CREATE)
-      const request = makeTaskCreateRequest({type: 'dream'})
+      const request = makeTaskCreateRequest({type: 'curate'})
       await handler!(request, 'client-1')
 
       expect((agentPool.submitTask as SinonStub).calledOnce).to.be.true
@@ -601,7 +601,7 @@ describe('TaskRouter', () => {
       router.setup()
 
       const handler = transportHelper.requestHandlers.get(TransportTaskEventNames.CREATE)
-      const request = makeTaskCreateRequest({type: 'dream'})
+      const request = makeTaskCreateRequest({type: 'curate'})
       await handler!(request, 'client-1')
 
       expect(agentPool.notifyTaskCompleted.called, 'pre-check skip must not notify the agent pool').to.be.false
@@ -626,7 +626,7 @@ describe('TaskRouter', () => {
       routerWithHooks.setup()
 
       const handler = hookHelper.requestHandlers.get(TransportTaskEventNames.CREATE)
-      const request = makeTaskCreateRequest({type: 'dream'})
+      const request = makeTaskCreateRequest({type: 'curate'})
       await handler!(request, 'client-1')
 
       // Allow async hook chain to flush
@@ -651,7 +651,7 @@ describe('TaskRouter', () => {
       router.setup()
 
       const handler = transportHelper.requestHandlers.get(TransportTaskEventNames.CREATE)
-      const request = makeTaskCreateRequest({type: 'dream'})
+      const request = makeTaskCreateRequest({type: 'curate'})
       await handler!(request, 'client-1')
 
       const broadcastCall = projectRouter.broadcastToProject.getCalls().find(

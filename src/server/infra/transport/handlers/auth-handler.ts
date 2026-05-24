@@ -3,6 +3,7 @@ import type {User} from '../../../core/domain/entities/user.js'
 import type {IAuthService} from '../../../core/interfaces/auth/i-auth-service.js'
 import type {ICallbackHandler} from '../../../core/interfaces/auth/i-callback-handler.js'
 import type {ITokenStore} from '../../../core/interfaces/auth/i-token-store.js'
+import type {IProviderConfigStore} from '../../../core/interfaces/i-provider-config-store.js'
 import type {IBrowserLauncher} from '../../../core/interfaces/services/i-browser-launcher.js'
 import type {IUserService} from '../../../core/interfaces/services/i-user-service.js'
 import type {IAuthStateStore} from '../../../core/interfaces/state/i-auth-state-store.js'
@@ -12,6 +13,7 @@ import type {ProjectPathResolver} from './handler-types.js'
 
 import {
   AuthEvents,
+  type AuthGetStateRequest,
   type AuthGetStateResponse,
   type AuthLoginWithApiKeyRequest,
   type AuthLoginWithApiKeyResponse,
@@ -21,8 +23,11 @@ import {
   type AuthStartLoginResponse,
 } from '../../../../shared/transport/events/auth-events.js'
 import {AuthToken} from '../../../core/domain/entities/auth-token.js'
+import {TransportDaemonEventNames} from '../../../core/domain/transport/schemas.js'
 import {getErrorMessage} from '../../../utils/error-helpers.js'
 import {processLog} from '../../../utils/process-logger.js'
+
+const BYTEROVER_PROVIDER_ID = 'byterover'
 
 function toUserDTO(user: User): UserDTO {
   const dto: UserDTO = {
@@ -45,6 +50,7 @@ export interface AuthHandlerDeps {
   browserLauncher: IBrowserLauncher
   callbackHandler: ICallbackHandler
   projectConfigStore: IProjectConfigStore
+  providerConfigStore: IProviderConfigStore
   resolveProjectPath: ProjectPathResolver
   tokenStore: ITokenStore
   transport: ITransportServer
@@ -61,6 +67,7 @@ export class AuthHandler {
   private readonly browserLauncher: IBrowserLauncher
   private readonly callbackHandler: ICallbackHandler
   private readonly projectConfigStore: IProjectConfigStore
+  private readonly providerConfigStore: IProviderConfigStore
   private readonly resolveProjectPath: ProjectPathResolver
   private readonly tokenStore: ITokenStore
   private readonly transport: ITransportServer
@@ -72,6 +79,7 @@ export class AuthHandler {
     this.browserLauncher = deps.browserLauncher
     this.callbackHandler = deps.callbackHandler
     this.projectConfigStore = deps.projectConfigStore
+    this.providerConfigStore = deps.providerConfigStore
     this.resolveProjectPath = deps.resolveProjectPath
     this.tokenStore = deps.tokenStore
     this.transport = deps.transport
@@ -111,6 +119,20 @@ export class AuthHandler {
       // TUI auth-guard only checks isAuthorized, so the user proceeds immediately.
       // Next successful poll cycle (5s) fills in user details.
       this.transport.broadcast(AuthEvents.STATE_CHANGED, {isAuthorized: true})
+    }
+  }
+
+  private async disconnectByteRoverProvider(): Promise<void> {
+    try {
+      const isConnected = await this.providerConfigStore.isProviderConnected(BYTEROVER_PROVIDER_ID)
+      if (!isConnected) return
+
+      await this.providerConfigStore.disconnectProvider(BYTEROVER_PROVIDER_ID)
+      this.transport.broadcast(TransportDaemonEventNames.PROVIDER_UPDATED, {})
+    } catch (error) {
+      processLog(
+        `[Auth] Failed to disconnect byterover on auth clear: ${error instanceof Error ? error.message : String(error)}`,
+      )
     }
   }
 
@@ -188,11 +210,12 @@ export class AuthHandler {
     this.authStateStore.onAuthExpired(() => {
       this.transport.broadcast(AuthEvents.EXPIRED, {})
       this.transport.broadcast(AuthEvents.STATE_CHANGED, {isAuthorized: false})
+      this.disconnectByteRoverProvider()
     })
   }
 
   private setupGetState(): void {
-    this.transport.onRequest<void, AuthGetStateResponse>(AuthEvents.GET_STATE, async (_data, clientId) => {
+    this.transport.onRequest<AuthGetStateRequest, AuthGetStateResponse>(AuthEvents.GET_STATE, async (data) => {
       try {
         const token = await this.tokenStore.load()
 
@@ -200,7 +223,7 @@ export class AuthHandler {
           return {isAuthorized: false}
         }
 
-        const projectPath = this.resolveProjectPath(clientId)
+        const {projectPath} = data
         const [user, brvConfig] = await Promise.all([
           this.userService.getCurrentUser(token.sessionKey),
           projectPath ? this.projectConfigStore.read(projectPath) : Promise.resolve(),
@@ -266,6 +289,7 @@ export class AuthHandler {
     this.transport.onRequest<void, AuthLogoutResponse>(AuthEvents.LOGOUT, async () => {
       try {
         await this.tokenStore.clear()
+        await this.disconnectByteRoverProvider()
         await this.authStateStore.loadToken()
         this.transport.broadcast(AuthEvents.STATE_CHANGED, {isAuthorized: false})
         return {success: true}

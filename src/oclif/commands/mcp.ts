@@ -1,9 +1,14 @@
 import {NoInstanceRunningError} from '@campfirein/brv-transport-client'
 import {Command} from '@oclif/core'
+import {appendFileSync, mkdirSync} from 'node:fs'
 import {join} from 'node:path'
 
 import {ByteRoverMcpServer} from '../../server/infra/mcp/index.js'
 import {getGlobalDataDir} from '../../server/utils/global-data-path.js'
+import {runMcpCleanup} from '../lib/mcp-cleanup.js'
+import {createMcpCrashHandlers} from '../lib/mcp-crash-handler.js'
+
+const CLEANUP_TIMEOUT_MS = 2000
 
 /**
  * MCP command - starts the MCP server for coding agent integration.
@@ -24,18 +29,34 @@ Exposes tools:
   public static hidden = true // Called by agents, not users directly
 
   public async run(): Promise<void> {
-    // Prevent silent crashes — log to stderr so Windsurf/Cursor/Claude can surface the error
-    const logError = (label: string, error: unknown): void => {
-      const msg = error instanceof Error ? error.stack ?? error.message : String(error)
-      process.stderr.write(`[brv-mcp] ${label}: ${msg}\n`)
+    // Crash handlers exit(1) on any unhandled error so MCP clients can respawn.
+    // Without exit, a recurring exception source pegs CPU and SIGTERM is ignored.
+    const logsDir = join(getGlobalDataDir(), 'logs')
+    const crashLogPath = join(logsDir, 'mcp-crash.log')
+    // Ensure the logs directory exists once at boot so the crash path (which
+    // may run under EPIPE / OOM pressure) never has to do filesystem setup.
+    try {
+      mkdirSync(logsDir, {recursive: true})
+    } catch {
+      // Best-effort. The fileWrite below is wrapped in try/catch by the handler.
     }
 
-    process.on('uncaughtException', (error) => {
-      logError('Uncaught exception', error)
+    const crashHandlers = createMcpCrashHandlers({
+      exit(code) {
+        // eslint-disable-next-line n/no-process-exit, unicorn/no-process-exit
+        process.exit(code)
+      },
+      fileWrite(line) {
+        appendFileSync(crashLogPath, line)
+      },
+      now: () => new Date(),
+      stderrWrite(chunk) {
+        process.stderr.write(chunk)
+      },
     })
-    process.on('unhandledRejection', (reason) => {
-      logError('Unhandled rejection', reason)
-    })
+
+    process.on('uncaughtException', crashHandlers.onUncaughtException)
+    process.on('unhandledRejection', crashHandlers.onUnhandledRejection)
 
     try {
       const server = new ByteRoverMcpServer({
@@ -43,12 +64,15 @@ Exposes tools:
         workingDirectory: process.cwd(),
       })
 
-      // Graceful shutdown
-      const cleanup = async (): Promise<void> => {
-        await server.stop()
-        // eslint-disable-next-line n/no-process-exit, unicorn/no-process-exit
-        process.exit(0)
-      }
+      // Graceful shutdown — race server.stop() against a hard timeout so SIGTERM
+      // is always honored even if stop() hangs or rejects.
+      const cleanup = (): Promise<void> =>
+        runMcpCleanup(() => server.stop(), CLEANUP_TIMEOUT_MS, {
+          exit(code) {
+            // eslint-disable-next-line n/no-process-exit, unicorn/no-process-exit
+            process.exit(code)
+          },
+        })
 
       process.on('SIGTERM', cleanup)
       process.on('SIGINT', cleanup)
@@ -66,7 +90,10 @@ Exposes tools:
         })
       })
 
-      await server.stop()
+      // Route the stdin-close shutdown through the same bounded cleanup helper
+      // as SIGTERM/SIGINT so a throw inside server.stop() can't degrade a
+      // graceful exit into an uncaughtException(1).
+      await cleanup()
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('Failed to start daemon')) {
         this.logToStderr(`Error: ${error.message}`)

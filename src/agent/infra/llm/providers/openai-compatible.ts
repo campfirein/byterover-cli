@@ -24,6 +24,7 @@ export const openaiCompatibleProvider: ProviderModule = {
 
     return new AiSdkContentGenerator({
       model: provider.chatModel(config.model),
+      requestTimeoutMs: config.requestTimeoutMs,
     })
   },
   defaultModel: 'llama3',

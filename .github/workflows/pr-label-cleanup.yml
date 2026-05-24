@@ -1,0 +1,28 @@
+# SECURITY: this workflow is the load-bearing safety mechanism for the
+# `safe-to-test` label gate in `pr-validation.yml`. It strips the label on
+# every push so a maintainer's authorization applies only to the exact commit
+# they reviewed. If this workflow breaks, the gate degrades into
+# "approve once, run forever" - verify after any edits.
+name: PR Label Cleanup
+
+on:
+  pull_request_target:
+    types: [synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  remove-label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove safe-to-test label if present
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api -X DELETE \
+            "repos/$REPO/issues/$PR_NUMBER/labels/safe-to-test" \
+            --silent || true

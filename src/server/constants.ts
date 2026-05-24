@@ -124,6 +124,25 @@ export const TASK_HISTORY_STALE_THRESHOLD_MS = 600_000
 
 // Review backups (stores pre-curate file content for local HITL review diffs)
 export const REVIEW_BACKUPS_DIR = 'review-backups'
+
+// User-configurable operational settings (global, restart-required)
+export const SETTINGS_FILE = 'settings.json'
+export const SETTINGS_SCHEMA_VERSION = '1'
+
+// Default wall-clock budget for the agentic loop (`llm.iterationBudgetMs`).
+// Slow local-LLM users override via `brv settings set llm.iterationBudgetMs <ms>`.
+export const AGENT_LLM_ITERATION_BUDGET_MS = 600_000 // 10 minutes
+
+// Default per-request HTTP timeout for direct LLM provider calls
+// (`llm.requestTimeoutMs`). A hung Ollama/LM Studio connection aborts at this
+// boundary; the retry layer treats the abort as a transient error.
+export const AGENT_LLM_REQUEST_TIMEOUT_MS = 120_000 // 2 minutes
+
+// Per-task heartbeat interval. The task router fires `TaskEvents.HEARTBEAT`
+// after this much quiet time so the CLI can distinguish "task is slow but
+// progressing" from "daemon is stuck". Reset by any other task-scoped
+// emission. Internal constant — not user-configurable in M6.
+export const TASK_HEARTBEAT_INTERVAL_MS = 10_000 // 10 seconds
 // === Hierarchical DAG (summary, archive, manifest) ===
 export const SUMMARY_INDEX_FILE = '_index.md'
 export const ARCHIVE_DIR = '_archived'
@@ -132,6 +151,13 @@ export const FULL_ARCHIVE_EXTENSION = '.full.md'
 export const ABSTRACT_EXTENSION = '.abstract.md'
 export const OVERVIEW_EXTENSION = '.overview.md'
 export const MANIFEST_FILE = '_manifest.json'
+/**
+ * Tool-mode context-tree index. A single auto-generated HTML file at the
+ * context-tree root carrying the `<bv-index>` navigation document. Excluded
+ * from BM25/query results via `isDerivedArtifact`, but tracked by CoGit so
+ * peers consume the latest index without having to run `brv index rebuild`.
+ */
+export const INDEX_HTML_FILE = 'index.html'
 export const ARCHIVE_IMPORTANCE_THRESHOLD = 35
 export const DEFAULT_GHOST_CUE_MAX_TOKENS = 220
 

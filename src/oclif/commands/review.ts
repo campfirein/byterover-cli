@@ -13,8 +13,7 @@ export default class Review extends Command {
 
 When disabled:
 - 'brv curate' (sync mode) no longer prints the "X operations require review" prompt
-- Curate-log entries written in '--detach' mode no longer carry the per-operation review marker
-- 'brv dream' no longer surfaces its own needsReview operations as pending reviews
+- Curate-log entries no longer carry the per-operation review marker
 - 'brv review pending' will not list any new entries until re-enabled`
   public static examples = [
     '# Show current state',

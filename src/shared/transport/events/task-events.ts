@@ -18,9 +18,21 @@ export const TaskEvents = {
   DELETED: 'task:deleted',
   ERROR: 'task:error',
   GET: 'task:get',
+  HEARTBEAT: 'task:heartbeat',
   LIST: 'task:list',
   STARTED: 'task:started',
 } as const
+
+/**
+ * Wire payload for the daemon-driven liveness signal.
+ * Emitted on a stale-interval timer when no other task-scoped event has
+ * been forwarded for the given `taskId`; cleared on terminal events.
+ */
+export interface TaskHeartbeatEvent {
+  /** `Date.now()` snapshot taken at emit time (echoed for client diagnostics). */
+  lastActivityAt: number
+  taskId: string
+}
 
 export interface TaskCreateRequest {
   clientCwd?: string
@@ -29,7 +41,7 @@ export interface TaskCreateRequest {
   folderPath?: string
   projectPath?: string
   taskId: string
-  type: 'curate' | 'curate-folder' | 'query' | 'search'
+  type: 'curate' | 'curate-folder' | 'curate-html-direct' | 'dream-finalize' | 'dream-scan' | 'query' | 'query-tool-mode' | 'search'
   worktreeRoot?: string
 }
 

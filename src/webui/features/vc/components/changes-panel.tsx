@@ -11,6 +11,7 @@ import { formatError } from '../../../lib/error-messages'
 import { toastVcError } from '../../../lib/toast-vc-error'
 import { useTransportStore } from '../../../stores/transport-store'
 import { useAuthStore } from '../../auth/stores/auth-store'
+import { useReviewDecideTask } from '../api/execute-review-decide-task'
 import { useVcAdd } from '../api/execute-vc-add'
 import { useVcCommit } from '../api/execute-vc-commit'
 import { useVcMergeAbort } from '../api/execute-vc-merge-abort'
@@ -18,8 +19,10 @@ import { useVcMergeContinue } from '../api/execute-vc-merge-continue'
 import { useVcPull } from '../api/execute-vc-pull'
 import { useVcPush } from '../api/execute-vc-push'
 import { useVcReset } from '../api/execute-vc-reset'
+import { useGetAgentChanges } from '../api/get-agent-changes'
 import { useGetVcStatus } from '../api/get-vc-status'
 import { fileKey } from '../utils/file-key'
+import { joinAgentMeta } from '../utils/join-agent-meta'
 import { statusToFiles } from '../utils/status-to-files'
 import { BranchBar } from './branch-bar'
 import { CommitInput } from './commit-input'
@@ -45,6 +48,7 @@ export function ChangesPanel() {
   const isAuthenticated = useAuthStore((s) => s.isAuthorized)
   const selectedProject = useTransportStore((s) => s.selectedProject)
   const { data: status, isFetching, isLoading, refetch } = useGetVcStatus()
+  const { data: agentChanges } = useGetAgentChanges()
   const [selectedKey, setSelectedKey] = useState<string | undefined>()
   const [viewMode, setViewMode] = useState<ViewMode>('single')
   const [discardTargets, setDiscardTargets] = useState<ChangeFile[] | undefined>()
@@ -58,8 +62,17 @@ export function ChangesPanel() {
   const pullMutation = useVcPull()
   const mergeAbortMutation = useVcMergeAbort()
   const mergeContinueMutation = useVcMergeContinue()
+  const reviewDecideMutation = useReviewDecideTask()
 
-  const { staged, unmerged, unstaged } = useMemo(() => statusToFiles(status), [status])
+  const { staged, unmerged, unstaged } = useMemo(() => {
+    const buckets = statusToFiles(status)
+    const ops = agentChanges?.operations ?? []
+    return {
+      staged: joinAgentMeta(buckets.staged, ops),
+      unmerged: joinAgentMeta(buckets.unmerged, ops),
+      unstaged: joinAgentMeta(buckets.unstaged, ops),
+    }
+  }, [status, agentChanges])
 
   const selectedFile = useMemo(
     () => (selectedKey ? [...unmerged, ...staged, ...unstaged].find((f) => fileKey(f) === selectedKey) : undefined),
@@ -95,16 +108,56 @@ export function ChangesPanel() {
     )
   }
 
-  const handleStageFile = (file: ChangeFile) =>
-    runAction(addMutation.mutateAsync({ filePaths: [file.path] }), 'Failed to stage file')
+  const groupPendingByTask = (files: ChangeFile[]): Map<string, string[]> => {
+    const byTask = new Map<string, string[]>()
+    for (const f of files) {
+      if (f.agentMeta?.reviewStatus !== 'pending') continue
+      const arr = byTask.get(f.agentMeta.taskId) ?? []
+      arr.push(f.path)
+      byTask.set(f.agentMeta.taskId, arr)
+    }
+
+    return byTask
+  }
+
+  const decidePendingFiles = async (files: ChangeFile[], decision: 'approved' | 'rejected') => {
+    const byTask = groupPendingByTask(files)
+    if (byTask.size === 0) return
+    await Promise.all(
+      [...byTask.entries()].map(([taskId, filePaths]) =>
+        runAction(
+          reviewDecideMutation.mutateAsync({ decision, filePaths, taskId }),
+          decision === 'approved' ? 'Failed to approve agent edits' : 'Failed to reject agent edits',
+        ),
+      ),
+    )
+  }
+
+  const handleStageFile = async (file: ChangeFile) => {
+    try {
+      await addMutation.mutateAsync({ filePaths: [file.path] })
+    } catch (error) {
+      toast.error(formatError(error, 'Failed to stage file'))
+      return
+    }
+
+    await decidePendingFiles([file], 'approved')
+  }
 
   const handleUnstageFile = (file: ChangeFile) =>
     runAction(resetMutation.mutateAsync({ filePaths: [file.path] }), 'Failed to unstage file')
 
-  const handleStageAll = () => {
+  const handleStageAll = async () => {
+    if (unstaged.length === 0) return
     const filePaths = unstaged.map((f) => f.path)
-    if (filePaths.length === 0) return
-    runAction(addMutation.mutateAsync({ filePaths }), 'Failed to stage all')
+    try {
+      await addMutation.mutateAsync({ filePaths })
+    } catch (error) {
+      toast.error(formatError(error, 'Failed to stage all'))
+      return
+    }
+
+    await decidePendingFiles(unstaged, 'approved')
   }
 
   const stageMergeFiles = (paths: string[]) =>
@@ -219,9 +272,21 @@ export function ChangesPanel() {
 
   const handleStageToggle = (file: ChangeFile) => (file.isStaged ? handleUnstageFile(file) : handleStageFile(file))
 
-  const handleDiscardFile = (file: ChangeFile) => setDiscardTargets([file])
-  const handleDiscardAll = () => {
-    if (unstaged.length > 0) setDiscardTargets(unstaged)
+  const handleDiscardFile = async (file: ChangeFile) => {
+    if (file.agentMeta?.reviewStatus === 'pending') {
+      await decidePendingFiles([file], 'rejected')
+      return
+    }
+
+    setDiscardTargets([file])
+  }
+
+  const handleDiscardAll = async () => {
+    if (unstaged.length === 0) return
+    const pending = unstaged.filter((f) => f.agentMeta?.reviewStatus === 'pending')
+    const others = unstaged.filter((f) => f.agentMeta?.reviewStatus !== 'pending')
+    if (pending.length > 0) await decidePendingFiles(pending, 'rejected')
+    if (others.length > 0) setDiscardTargets(others)
   }
 
   const hasAnyChanges = staged.length + unstaged.length + unmerged.length > 0

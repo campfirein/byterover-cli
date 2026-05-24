@@ -4,7 +4,7 @@ import type {MutationConfig} from '../../../lib/react-query'
 
 import {AuthEvents, type AuthRefreshResponse} from '../../../../shared/transport/events'
 import {useTransportStore} from '../../../stores/transport-store'
-import {getAuthStateQueryOptions} from './get-auth-state'
+import {AUTH_STATE_QUERY_ROOT} from './get-auth-state'
 
 export const refreshAuth = (): Promise<AuthRefreshResponse> => {
   const {apiClient} = useTransportStore.getState()
@@ -23,7 +23,7 @@ export const useRefreshAuth = ({mutationConfig}: UseRefreshAuthOptions = {}) => 
 
   return useMutation({
     onSuccess(...args) {
-      queryClient.invalidateQueries({queryKey: getAuthStateQueryOptions().queryKey})
+      queryClient.invalidateQueries({queryKey: AUTH_STATE_QUERY_ROOT})
       onSuccess?.(...args)
     },
     ...restConfig,

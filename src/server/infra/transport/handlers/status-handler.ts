@@ -5,6 +5,10 @@ import type {StatusDTO} from '../../../../shared/transport/types/dto.js'
 import type {ITokenStore} from '../../../core/interfaces/auth/i-token-store.js'
 import type {IContextTreeService} from '../../../core/interfaces/context-tree/i-context-tree-service.js'
 import type {IContextTreeSnapshotService} from '../../../core/interfaces/context-tree/i-context-tree-snapshot-service.js'
+import type {IProviderConfigStore} from '../../../core/interfaces/i-provider-config-store.js'
+import type {IBillingService} from '../../../core/interfaces/services/i-billing-service.js'
+import type {IAuthStateStore} from '../../../core/interfaces/state/i-auth-state-store.js'
+import type {IBillingConfigStore} from '../../../core/interfaces/storage/i-billing-config-store.js'
 import type {ICurateLogStore} from '../../../core/interfaces/storage/i-curate-log-store.js'
 import type {IProjectConfigStore} from '../../../core/interfaces/storage/i-project-config-store.js'
 import type {ITransportServer} from '../../../core/interfaces/transport/i-transport-server.js'
@@ -12,17 +16,26 @@ import type {ITransportServer} from '../../../core/interfaces/transport/i-transp
 import {StatusEvents, type StatusGetRequest, type StatusGetResponse} from '../../../../shared/transport/events/status-events.js'
 import {BRV_DIR, CONTEXT_TREE_DIR} from '../../../constants.js'
 import {listSourceStatuses} from '../../../core/domain/source/source-operations.js'
+import {buildReviewUrl} from '../../../utils/build-review-url.js'
+import {resolveBillingForProject} from '../../billing/resolve-billing-source.js'
 import {BrokenWorktreePointerError, MalformedWorktreePointerError, resolveProject} from '../../project/resolve-project.js'
 import {type ProjectPathResolver, resolveRequiredProjectPath} from './handler-types.js'
 
 /** Factory that creates a curate log store scoped to a project directory. */
 export type CurateLogStoreFactory = (projectPath: string) => ICurateLogStore
 
+/** Factory that creates a billing config store scoped to a project directory. */
+export type BillingConfigStoreFactory = (projectPath: string) => IBillingConfigStore
+
 export interface StatusHandlerDeps {
+  authStateStore: IAuthStateStore
+  billingConfigStoreFactory: BillingConfigStoreFactory
+  billingService: IBillingService
   contextTreeService: IContextTreeService
   contextTreeSnapshotService: IContextTreeSnapshotService
   curateLogStoreFactory: CurateLogStoreFactory
   projectConfigStore: IProjectConfigStore
+  providerConfigStore: IProviderConfigStore
   resolveProjectPath: ProjectPathResolver
   tokenStore: ITokenStore
   transport: ITransportServer
@@ -34,20 +47,28 @@ export interface StatusHandlerDeps {
  * Collects auth, project, and context tree status — pure data, no terminal output.
  */
 export class StatusHandler {
+  private readonly authStateStore: IAuthStateStore
+  private readonly billingConfigStoreFactory: BillingConfigStoreFactory
+  private readonly billingService: IBillingService
   private readonly contextTreeService: IContextTreeService
   private readonly contextTreeSnapshotService: IContextTreeSnapshotService
   private readonly curateLogStoreFactory: CurateLogStoreFactory
   private readonly projectConfigStore: IProjectConfigStore
+  private readonly providerConfigStore: IProviderConfigStore
   private readonly resolveProjectPath: ProjectPathResolver
   private readonly tokenStore: ITokenStore
   private readonly transport: ITransportServer
   private readonly webuiPort?: number
 
   constructor(deps: StatusHandlerDeps) {
+    this.authStateStore = deps.authStateStore
+    this.billingConfigStoreFactory = deps.billingConfigStoreFactory
+    this.billingService = deps.billingService
     this.contextTreeService = deps.contextTreeService
     this.contextTreeSnapshotService = deps.contextTreeSnapshotService
     this.curateLogStoreFactory = deps.curateLogStoreFactory
     this.projectConfigStore = deps.projectConfigStore
+    this.providerConfigStore = deps.providerConfigStore
     this.resolveProjectPath = deps.resolveProjectPath
     this.tokenStore = deps.tokenStore
     this.transport = deps.transport
@@ -126,6 +147,14 @@ export class StatusHandler {
       }
     } catch {}
 
+    result.billing = await resolveBillingForProject({
+      authStateStore: this.authStateStore,
+      billingConfigStoreFactory: this.billingConfigStoreFactory,
+      billingService: this.billingService,
+      projectPath: effectiveProjectPath,
+      providerConfigStore: this.providerConfigStore,
+    })
+
     // Abstract generation queue status (written by agent process via abstract-queue.ts)
     try {
       const queueStatusPath = join(projectPath, BRV_DIR, '_queue_status.json')
@@ -197,10 +226,8 @@ export class StatusHandler {
 
       if (pendingFiles.size > 0) {
         result.pendingReviewCount = pendingFiles.size
-        const reviewPort = this.webuiPort ?? this.transport.getPort()
-        if (reviewPort) {
-          const encoded = Buffer.from(projectPath).toString('base64url')
-          result.reviewUrl = `http://127.0.0.1:${reviewPort}/review?project=${encoded}`
+        if (this.webuiPort) {
+          result.reviewUrl = buildReviewUrl(this.webuiPort, projectPath)
         }
       }
     } catch {

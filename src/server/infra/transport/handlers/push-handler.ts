@@ -22,6 +22,7 @@ import {
   NotAuthenticatedError,
   ProjectNotInitError,
 } from '../../../core/domain/errors/task-error.js'
+import {buildReviewUrl} from '../../../utils/build-review-url.js'
 import {mapToPushContexts} from '../../cogit/context-tree-to-push-context-mapper.js'
 import {
   guardAgainstGitVc,
@@ -282,12 +283,8 @@ export class PushHandler {
     if (pushableDeleted.length > 0) parts.push(`${pushableDeleted.length} deleted`)
 
     let reviewUrl: string | undefined
-    if (pendingReviewCount > 0) {
-      const reviewPort = this.webuiPort ?? this.transport.getPort()
-      if (reviewPort) {
-        const encoded = Buffer.from(projectPath).toString('base64url')
-        reviewUrl = `http://127.0.0.1:${reviewPort}/review?project=${encoded}`
-      }
+    if (pendingReviewCount > 0 && this.webuiPort) {
+      reviewUrl = buildReviewUrl(this.webuiPort, projectPath)
     }
 
     return {

@@ -12,7 +12,7 @@ import type {IFileService} from '../../../core/interfaces/services/i-file-servic
 import type {IRuleTemplateService} from '../../../core/interfaces/services/i-rule-template-service.js'
 
 import {AGENT_CONNECTOR_CONFIG} from '../../../core/domain/entities/agent.js'
-import {hasMcpToolsInBrvSection} from '../shared/constants.js'
+import {extractInstalledAgentFromBrvSection, hasMcpToolsInBrvSection} from '../shared/constants.js'
 import {RuleFileManager} from '../shared/rule-file-manager.js'
 import {RULES_CONNECTOR_CONFIGS} from './rules-connector-config.js'
 
@@ -134,7 +134,12 @@ export class RulesConnector implements IConnector {
 
       const content = await this.fileService.read(fullPath)
       const hasMcpTools = hasMcpToolsInBrvSection(content)
-      const installed = hasMarkers && !hasMcpTools
+      const footerAgent = extractInstalledAgentFromBrvSection(content)
+      // Footer present: only the agent named in the footer owns this rule file.
+      // Footer absent (legacy file pre-footer): fall back to marker presence so
+      // existing installs keep reporting installed until the next reinstall.
+      const matchesFooter = footerAgent === undefined ? true : footerAgent === agent
+      const installed = hasMarkers && !hasMcpTools && matchesFooter
 
       return {
         configExists: true,

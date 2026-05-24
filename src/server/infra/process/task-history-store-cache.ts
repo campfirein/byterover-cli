@@ -38,6 +38,23 @@ let daemonStartedAt = Date.now()
 let testLoggerForGetStore: ((msg: string) => void) | undefined
 
 /**
+ * Daemon-startup-configured cap on per-project task history entries.
+ * `undefined` means "use FileTaskHistoryStore's own default". Set once by
+ * the daemon bootstrap before any task lookups; applies only to stores
+ * created after the call.
+ */
+let configuredMaxEntries: number | undefined
+
+/**
+ * Daemon bootstrap entry point. Sets the `maxEntries` used by every
+ * per-project store the cache creates afterwards. Stores already cached
+ * are left untouched so existing tasks observe stable retention.
+ */
+export function configureTaskHistoryStoreCache(options: {readonly maxEntries: number}): void {
+  configuredMaxEntries = options.maxEntries
+}
+
+/**
  * Resolve (or lazily create) the per-project store. The first call for a
  * given `projectPath` schedules a best-effort audit; subsequent calls reuse
  * the cached store and skip re-auditing.
@@ -45,7 +62,11 @@ let testLoggerForGetStore: ((msg: string) => void) | undefined
 export function getStore(projectPath: string): FileTaskHistoryStore {
   let store = stores.get(projectPath)
   if (!store) {
-    store = new FileTaskHistoryStore({baseDir: getProjectDataDir(projectPath), daemonStartedAt})
+    store = new FileTaskHistoryStore({
+      baseDir: getProjectDataDir(projectPath),
+      daemonStartedAt,
+      maxEntries: configuredMaxEntries,
+    })
     stores.set(projectPath, store)
   }
 
@@ -110,6 +131,7 @@ export function resetTaskHistoryStoreCache(): void {
   stores.clear()
   auditedProjects.clear()
   testLoggerForGetStore = undefined
+  configuredMaxEntries = undefined
   // Re-capture boot time so tests see fresh "this daemon just started" semantics
   // for the C0 stale-recovery gate.
   daemonStartedAt = Date.now()

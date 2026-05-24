@@ -1,30 +1,15 @@
 import {Badge} from '@campfirein/byterover-packages/components/badge'
-import {Button} from '@campfirein/byterover-packages/components/button'
 import {Tooltip, TooltipContent, TooltipTrigger} from '@campfirein/byterover-packages/components/tooltip'
-import {Plug} from 'lucide-react'
-import {useState} from 'react'
 
 import logo from '../assets/logo-byterover.svg'
-import {StatusDot} from '../components/status-dot'
 import {AuthMenu} from '../features/auth/components/auth-menu'
-import {HelpMenu} from '../features/onboarding/components/help-menu'
+import {HelpMenu} from '../features/help/components/help-menu'
 import {ProjectDropdown} from '../features/project/components/project-dropdown'
-import {useGetActiveProviderConfig} from '../features/provider/api/get-active-provider-config'
-import {useGetProviders} from '../features/provider/api/get-providers'
-import {ProviderFlowDialog} from '../features/provider/components/provider-flow'
 import {BranchDropdown} from '../features/vc/components/branch-dropdown'
 import {useTransportStore} from '../stores/transport-store'
 
 export function Header() {
   const version = useTransportStore((s) => s.version)
-  const [providerDialogOpen, setProviderDialogOpen] = useState(false)
-  const {data: providersData} = useGetProviders()
-  const {data: activeConfig} = useGetActiveProviderConfig()
-
-  const activeProvider = providersData?.providers.find((p) => p.isCurrent)
-  const providerLabel = activeProvider
-    ? `${activeProvider.name}${activeConfig?.activeModel ? ` | ${activeConfig.activeModel}` : ''}`
-    : 'No model configured'
 
   return (
     <header className="flex items-center gap-4 px-6 py-3.5">
@@ -58,28 +43,9 @@ export function Header() {
       {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Right: provider/model + docs + login */}
+      {/* Right: help + login */}
       <div className="flex items-center gap-3">
-        <Tooltip>
-          <TooltipTrigger render={<Button onClick={() => setProviderDialogOpen(true)} size="sm" variant="ghost" />}>
-            <span className="relative mr-1 inline-flex size-4 shrink-0">
-              <Plug className="size-4" />
-              {activeProvider && (
-                <StatusDot
-                  className="border-background absolute -right-0.5 -bottom-0.5 size-2 border-2"
-                  tone="success"
-                />
-              )}
-            </span>
-            {providerLabel}
-            {!activeProvider && <StatusDot pulsing tone="amber" />}
-          </TooltipTrigger>
-          <TooltipContent>Configure provider to power curate & query</TooltipContent>
-        </Tooltip>
-        <ProviderFlowDialog onOpenChange={setProviderDialogOpen} open={providerDialogOpen} />
-
         <HelpMenu />
-
         <AuthMenu />
       </div>
     </header>

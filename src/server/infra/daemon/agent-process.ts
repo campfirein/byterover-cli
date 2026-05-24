@@ -21,12 +21,17 @@
 
 import {connectToTransport, type ITransportClient} from '@campfirein/brv-transport-client'
 import {randomUUID} from 'node:crypto'
-import {appendFileSync} from 'node:fs'
-import {join} from 'node:path'
+import {appendFileSync, existsSync} from 'node:fs'
+import {basename, join, relative, sep} from 'node:path'
 
 import type {ISearchKnowledgeService} from '../../../agent/infra/sandbox/tools-sdk.js'
 import type {BrvConfig} from '../../core/domain/entities/brv-config.js'
-import type {ProviderConfigResponse, TaskExecute} from '../../core/domain/transport/schemas.js'
+import type {
+  BillingPinChangedPayload,
+  BillingStateResponse,
+  ProviderConfigResponse,
+  TaskExecute,
+} from '../../core/domain/transport/schemas.js'
 import type {IRuntimeSignalStore} from '../../core/interfaces/storage/i-runtime-signal-store.js'
 
 import {SESSIONS_DIR} from '../../../agent/core/domain/session/session-metadata.js'
@@ -34,13 +39,16 @@ import {CipherAgent} from '../../../agent/infra/agent/index.js'
 import {FileSystemService} from '../../../agent/infra/file-system/file-system-service.js'
 import {FolderPackService} from '../../../agent/infra/folder-pack/folder-pack-service.js'
 import {SessionMetadataStore} from '../../../agent/infra/session/session-metadata-store.js'
+import {loadAgentSettingsSnapshot} from '../../../agent/infra/settings/agent-settings-snapshot.js'
 import {FileKeyStorage} from '../../../agent/infra/storage/file-key-storage.js'
 import {runWithReviewDisabled} from '../../../agent/infra/tools/implementations/curate-tool-task-context.js'
 import {createSearchKnowledgeService} from '../../../agent/infra/tools/implementations/search-knowledge-service.js'
+import {decodeCurateHtmlContent} from '../../../shared/transport/curate-html-content.js'
 import {AuthEvents} from '../../../shared/transport/events/auth-events.js'
+import {decodeQueryToolModeContent} from '../../../shared/transport/query-tool-mode-content.js'
 import {decodeSearchContent} from '../../../shared/transport/search-content.js'
 import {getCurrentConfig} from '../../config/environment.js'
-import {BRV_DIR, DEFAULT_LLM_MODEL, PROJECT} from '../../constants.js'
+import {BRV_DIR, CONTEXT_TREE_DIR, DEFAULT_LLM_MODEL, PROJECT} from '../../constants.js'
 import {serializeTaskError, TaskError, TaskErrorCode} from '../../core/domain/errors/task-error.js'
 import {loadSources} from '../../core/domain/source/source-schema.js'
 import {
@@ -49,17 +57,18 @@ import {
   TransportStateEventNames,
   TransportTaskEventNames,
 } from '../../core/domain/transport/schemas.js'
-import {FileContextTreeArchiveService} from '../context-tree/file-context-tree-archive-service.js'
+import {regenerateContextTreeIndex} from '../context-tree/index-generator.js'
 import {RuntimeSignalStore} from '../context-tree/runtime-signal-store.js'
-import {DreamLockService} from '../dream/dream-lock-service.js'
+import {bumpSidecarOnCurateWrite} from '../context-tree/tool-mode-sidecar-updaters.js'
 import {DreamLogStore} from '../dream/dream-log-store.js'
 import {DreamStateService} from '../dream/dream-state-service.js'
-import {DreamTrigger} from '../dream/dream-trigger.js'
+import {type DreamKind, finalizeDreamSession, scanDreamCandidates} from '../dream/tool-mode/dream-session.js'
 import {CurateExecutor} from '../executor/curate-executor.js'
-import {DreamExecutor} from '../executor/dream-executor.js'
 import {FolderPackExecutor} from '../executor/folder-pack-executor.js'
 import {QueryExecutor} from '../executor/query-executor.js'
 import {SearchExecutor} from '../executor/search-executor.js'
+import {backupContextTreeFile, buildCurateHtmlLogEntry} from '../process/curate-html-log.js'
+import {validateHtmlTopic, writeHtmlTopic} from '../render/writer/html-writer.js'
 import {FileCurateLogStore} from '../storage/file-curate-log-store.js'
 import {FileReviewBackupStore} from '../storage/file-review-backup-store.js'
 import {TaskUsageAggregator} from '../telemetry/task-usage-aggregator.js'
@@ -188,7 +197,7 @@ async function activateExistingSession(sessionId: string, providerId: string): P
  */
 let cachedSessionKey = ''
 let cachedBrvConfig: BrvConfig | undefined
-let cachedTeamId = ''
+let cachedPinnedOrgId: string | undefined
 let cachedSpaceId = ''
 let cachedActiveProvider = ''
 let cachedActiveModel = ''
@@ -254,16 +263,18 @@ async function start(): Promise<void> {
     sessionKey?: string
   }
 
-  const [configResult, authResult, providerResult] = await Promise.all([
+  const [configResult, authResult, providerResult, billingResult] = await Promise.all([
     transport.requestWithAck<ProjectConfigResponse>(TransportStateEventNames.GET_PROJECT_CONFIG, {projectPath}),
     transport.requestWithAck<AuthResponse>(TransportStateEventNames.GET_AUTH),
     transport.requestWithAck<ProviderConfigResponse>(TransportStateEventNames.GET_PROVIDER_CONFIG),
+    transport.requestWithAck<BillingStateResponse>(TransportStateEventNames.GET_BILLING_CONFIG, {projectPath}),
+    loadAgentSettingsSnapshot(transport),
   ])
 
   cachedBrvConfig = configResult.brvConfig
-  cachedTeamId = configResult.teamId ?? ''
   cachedSpaceId = configResult.spaceId ?? ''
   cachedSessionKey = authResult.sessionKey ?? ''
+  cachedPinnedOrgId = billingResult.pinnedTeamId
 
   agentLog('Initial config loaded from state server')
 
@@ -273,7 +284,6 @@ async function start(): Promise<void> {
     (data) => {
       if (data.projectPath !== projectPath) return
       if (data.brvConfig) cachedBrvConfig = data.brvConfig
-      if (data.teamId !== undefined) cachedTeamId = data.teamId
       if (data.spaceId !== undefined) cachedSpaceId = data.spaceId
     },
   )
@@ -285,6 +295,11 @@ async function start(): Promise<void> {
   transport.on(TransportDaemonEventNames.PROVIDER_UPDATED, () => {
     providerConfigDirty = true
     providerFetchRetries = 0
+  })
+
+  transport.on<BillingPinChangedPayload>(TransportDaemonEventNames.BILLING_PIN_CHANGED, (data) => {
+    if (data.projectPath !== projectPath) return
+    cachedPinnedOrgId = data.teamId
   })
 
   // 4. Provider config resolved by daemon (API key, base URL, headers, etc.)
@@ -329,7 +344,7 @@ async function start(): Promise<void> {
     projectIdProvider: () => PROJECT,
     sessionKeyProvider: () => cachedSessionKey,
     spaceIdProvider: () => cachedSpaceId,
-    teamIdProvider: () => cachedTeamId,
+    teamIdProvider: () => cachedPinnedOrgId ?? '',
     transportClient: transport,
   })
 
@@ -478,12 +493,20 @@ async function executeTask(
   storagePath: string,
   runtimeSignalStore: IRuntimeSignalStore,
 ): Promise<void> {
-  const {clientCwd, clientId, content, files, folderPath, force, reviewDisabled, taskId, trigger, type, worktreeRoot} = task
+  const {clientCwd, clientId, content, files, folderPath, reviewDisabled, taskId, trigger, type, worktreeRoot} = task
   if (!transport || !agent) return
 
-  // Search tasks are pure BM25 retrieval — no LLM, no provider needed.
-  // Skip provider validation so search works even without a configured provider.
-  if (type !== 'search') {
+  // Search + tool-mode query + tool-mode curate are pure deterministic
+  // paths — no LLM, no provider needed. Skip provider validation so they
+  // work even without a configured provider (the headline promise of
+  // tool mode).
+  if (
+    type !== 'search' &&
+    type !== 'query-tool-mode' &&
+    type !== 'curate-html-direct' &&
+    type !== 'dream-scan' &&
+    type !== 'dream-finalize'
+  ) {
     const freshProviderConfig = await transport.requestWithAck<ProviderConfigResponse>(
       TransportStateEventNames.GET_PROVIDER_CONFIG,
     )
@@ -516,12 +539,11 @@ async function executeTask(
       // Refresh config from state server to pick up changes from init/space-switch
       // (they write directly to disk, bypassing the agent's cached state)
       try {
-        const configResult = await transport.requestWithAck<{brvConfig?: BrvConfig; spaceId?: string; teamId?: string}>(
+        const configResult = await transport.requestWithAck<{brvConfig?: BrvConfig; spaceId?: string}>(
           TransportStateEventNames.GET_PROJECT_CONFIG,
           {projectPath},
         )
         if (configResult.brvConfig) cachedBrvConfig = configResult.brvConfig
-        if (configResult.teamId !== undefined) cachedTeamId = configResult.teamId
         if (configResult.spaceId !== undefined) cachedSpaceId = configResult.spaceId
       } catch {
         agentLog('Failed to refresh config before task execution')
@@ -570,13 +592,22 @@ async function executeTask(
     // on this project drains. `query` / `search` are intentionally NOT
     // gated — they read the manifest and tolerate a stale snapshot via
     // `readManifestIfFresh` + rebuild fallback, so blocking them would
-    // be a needless latency hit.
-    if (type === 'curate' || type === 'curate-folder' || type === 'dream') {
+    // be a needless latency hit. `dream-finalize` renames topic files
+    // and so MUST gate (otherwise an in-flight Phase 4 `_index.md`
+    // rebuild can reference files we just archived). `dream-scan` is
+    // read-only but we gate it too so a scan never observes a tree
+    // mid-rebuild and returns inconsistent candidates.
+    if (
+      type === 'curate' ||
+      type === 'curate-folder' ||
+      type === 'dream-finalize' ||
+      type === 'dream-scan'
+    ) {
       await postWorkRegistry.awaitProject(projectPath)
     }
 
     try {
-      let result: string
+      let result: string = ''
       let logId: string | undefined
       // Captured during curate / curate-folder; submitted to the registry
       // after `task:completed` so the user does not wait on Phase 4.
@@ -644,46 +675,279 @@ async function executeTask(
           break
         }
 
-        case 'dream': {
-          const brvDir = join(projectPath, BRV_DIR)
-          const dreamLockService = new DreamLockService({baseDir: brvDir})
-          const dreamStateService = new DreamStateService({baseDir: brvDir})
+        case 'curate-html-direct': {
+          // Tool-mode curate: no LLM dispatch, no provider gate, no
+          // usage aggregator. Calling agent (typically over MCP) has
+          // already authored the <bv-topic> HTML; daemon validates +
+          // writes the topic file. Single-shot, single round-trip.
+          // Mirrors the post-ENG-2815 oclif `brv curate` writer-direct
+          // flow but exposed as a daemon task type so MCP clients can
+          // hit it the same way they hit `query-tool-mode`.
+          const {confirmOverwrite, html, meta} = decodeCurateHtmlContent(content)
+          const contextTreeRoot = join(projectPath, BRV_DIR, CONTEXT_TREE_DIR)
 
-          // Run trigger check (acquires lock if eligible).
-          // Gate 3 (queue) is pre-checked by the daemon (TransportHandlers.preDispatchCheck
-          // for CLI dispatch, onAgentIdle for idle-trigger dispatch), so the agent treats
-          // its own queue view as empty. Gates 1 (time) and 2 (activity) are re-checked here
-          // as defense-in-depth in case state drifted between dispatch and execution.
-          const dreamTrigger = new DreamTrigger({
-            dreamLockService,
-            dreamStateService,
-            getQueueLength: () => 0,
-          })
-          const eligibility = await dreamTrigger.tryStartDream(projectPath, force)
-          if (!eligibility.eligible) {
-            result = `Dream skipped: ${eligibility.reason}`
+          // Pre-resolve the target path so we can report whether the
+          // write replaced an existing file. validateHtmlTopic is
+          // idempotent + cheap (parse5 only); writeHtmlTopic re-runs
+          // it internally so we don't risk drift between checks.
+          const preValidation = validateHtmlTopic(html)
+          const absoluteTopicFilePath = preValidation.ok
+            ? join(contextTreeRoot, `${preValidation.topicPath}.html`)
+            : undefined
+          const existedBefore = absoluteTopicFilePath !== undefined && existsSync(absoluteTopicFilePath)
+
+          // Seed the review-backup BEFORE the destructive write. Without this,
+          // a curate over an existing topic (confirmOverwrite=true, meta.impact=high)
+          // creates a `reviewStatus: pending` log entry but leaves nothing for
+          // `brv review reject` to restore from — review-handler.ts:152 treats
+          // a missing backup as ADD and unlinks the file, destroying the user's
+          // prior knowledge. Honors task.reviewDisabled and ENOENT gracefully.
+          if (existedBefore && absoluteTopicFilePath !== undefined) {
+            await backupContextTreeFile({
+              absoluteFilePath: absoluteTopicFilePath,
+              contextTreeRoot,
+              reviewBackupStore: new FileReviewBackupStore(join(projectPath, BRV_DIR)),
+              reviewDisabled: reviewDisabled ?? false,
+            })
+          }
+
+          const startedAt = Date.now()
+          const writeResult = await writeHtmlTopic({confirmOverwrite, contextTreeRoot, rawHtml: html})
+          const completedAt = Date.now()
+
+          // HITL log entry — restores `brv review pending` surfacing for
+          // tool-mode curates. Pre-allocate the id via getNextId() so it
+          // matches FileCurateLogStore's `cur-<timestamp>` ID_PATTERN; a
+          // random UUID would silently be invisible to list()/getById().
+          // Failed writes also get an entry (status: error) so the TUI
+          // doesn't lie about what was attempted.
+          let relativeFilePath: string | undefined
+          let topicPathResolved: string | undefined
+          if (writeResult.ok) {
+            relativeFilePath = relative(contextTreeRoot, writeResult.filePath).replaceAll(sep, '/')
+            topicPathResolved = preValidation.ok
+              ? preValidation.topicPath
+              : relativeFilePath.replace(/\.html$/, '')
+
+            // Mirror the curate into the runtime-signal sidecar so prune (and
+            // any future signal-driven ranking) has real data to work with.
+            // Best-effort: never blocks the write that already succeeded;
+            // pass an agentLog-backed logger so swallowed sidecar failures
+            // (corrupt key store, permission denied) leave a breadcrumb in
+            // the daemon session log instead of being silently invisible.
+            await bumpSidecarOnCurateWrite({
+              existedBefore,
+              logger: {
+                debug: (msg: string): void => agentLog(msg),
+                error: (msg: string): void => agentLog(msg),
+                info: (msg: string): void => agentLog(msg),
+                warn: (msg: string): void => agentLog(msg),
+              },
+              relPath: relativeFilePath,
+              store: runtimeSignalStore,
+            })
+          } else if (preValidation.ok) {
+            topicPathResolved = preValidation.topicPath
+          }
+
+          try {
+            const curateLogStore = new FileCurateLogStore({baseDir: storagePath})
+            const entryId = await curateLogStore.getNextId()
+            const logEntry = buildCurateHtmlLogEntry({
+              completedAt,
+              confirmOverwrite: Boolean(confirmOverwrite),
+              existedBefore,
+              // Absolute path — the review-handler treats `op.filePath` as
+              // absolute and calls `relative(contextTreeDir, ...)` to derive
+              // a display key. Storing a relative path here makes the entry
+              // unmatchable in `brv review approve`.
+              filePath: writeResult.ok ? writeResult.filePath : undefined,
+              id: entryId,
+              meta,
+              reviewDisabled: reviewDisabled ?? false,
+              startedAt,
+              taskId,
+              topicPath: topicPathResolved,
+              writeResult,
+            })
+            await curateLogStore.save(logEntry)
+            logId = entryId
+          } catch (error) {
+            // Logging must never block curate execution. Swallow + log
+            // so a transient FS error doesn't fail an otherwise-successful
+            // curate.
+            agentLog(
+              `curate-html-direct: failed to persist log entry for ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
+            )
+          }
+
+          // Regenerate the context-tree index so the new topic appears in
+          // index.html. Deferred to postWorkRegistry (drained below): it
+          // runs after task:completed — off the user-facing latency path —
+          // and is per-project serialized, so concurrent curate-html-direct
+          // tasks cannot race on index.html.
+          if (writeResult.ok) {
+            postWork = () =>
+              regenerateContextTreeIndex({
+                contextTreeRoot,
+                log: (msg) => agentLog(`curate-html-direct ${taskId}: ${msg}`),
+                projectName: basename(projectPath),
+              })
+          }
+
+          // Validation failures emit task:completed (NOT task:error) so
+          // the calling agent sees the structured errors via the normal
+          // result payload and can retry with corrected HTML. task:error
+          // would force MCP clients into an isError path that some host
+          // renderers collapse or truncate.
+          result = writeResult.ok
+            ? JSON.stringify({
+                filePath: relativeFilePath,
+                overwrote: existedBefore && Boolean(confirmOverwrite),
+                status: 'ok',
+                topicPath: topicPathResolved,
+                // Omit `warnings` from the wire envelope when empty so
+                // existing consumers (CI logs, MCP host renderers) do
+                // not see a noisy `"warnings": []` on every clean write.
+                ...(writeResult.warnings.length > 0 ? {warnings: writeResult.warnings} : {}),
+              })
+            : JSON.stringify({errors: writeResult.errors, status: 'validation-failed'})
+
+          break
+        }
+
+        case 'dream-finalize': {
+          // Archive the loser topics the agent picked. Stateless on
+          // daemon side — `sessionId` is opaque; we don't track sessions
+          // in v1. Writes a DreamLogEntry so `brv dream undo` can restore.
+          const brvDir = join(projectPath, BRV_DIR)
+          const contextTreeRoot = join(brvDir, CONTEXT_TREE_DIR)
+          let parsed: {archive?: string[]; sessionId?: string}
+          try {
+            parsed = content ? JSON.parse(content) : {}
+          } catch {
+            result = JSON.stringify({error: 'dream-finalize: invalid JSON content', status: 'error'})
             break
           }
 
-          const dreamExecutor = new DreamExecutor({
-            archiveService: new FileContextTreeArchiveService(runtimeSignalStore),
-            curateLogStore: new FileCurateLogStore({baseDir: storagePath}),
-            dreamLockService,
-            dreamLogStore: new DreamLogStore({baseDir: brvDir}),
-            dreamStateService,
-            reviewBackupStore: new FileReviewBackupStore(brvDir),
-            runtimeSignalStore,
-            searchService: searchKnowledgeService,
-          })
-          const dreamResult = await dreamExecutor.executeWithAgent(agent, {
-            priorMtime: eligibility.priorMtime,
-            projectRoot: projectPath,
-            ...(reviewDisabled === undefined ? {} : {reviewDisabled}),
-            taskId,
-            trigger: trigger ?? 'cli',
-          })
-          result = dreamResult.result
-          logId = dreamResult.logId
+          const startedAt = Date.now()
+          try {
+            const finalizeResult = await finalizeDreamSession({
+              archive: parsed.archive ?? [],
+              brvDir,
+              contextTreeRoot,
+              runtimeSignalStore,
+              sessionId: parsed.sessionId ?? '',
+            })
+
+            // Write a dream-log entry so `brv dream undo` can revert. Skipped
+            // when nothing was actually archived — no-op finalizes shouldn't
+            // pollute the undo history.
+            if (finalizeResult.archived.length > 0) {
+              const dreamLogStore = new DreamLogStore({baseDir: brvDir})
+              const dreamStateService = new DreamStateService({baseDir: brvDir})
+              const logId = await dreamLogStore.getNextId()
+              const completedAt = Date.now()
+              await dreamLogStore.save({
+                completedAt,
+                id: logId,
+                operations: finalizeResult.archived.map((path) => ({
+                  action: 'ARCHIVE',
+                  file: path,
+                  needsReview: false,
+                  // Pre-archive metadata captured by finalizeDreamSession so
+                  // undo can restore not just the file body but the mtime
+                  // and runtime signals that drove the prune decision (e.g.
+                  // importance < 35, stale-mtime > 60d). Without this,
+                  // undo restores the file but resets observable state and
+                  // the topic stops re-surfacing on the next prune scan.
+                  previousMtimes: {[path]: finalizeResult.previousMtimes[path]},
+                  previousSignals: {[path]: finalizeResult.previousSignals[path]},
+                  previousTexts: {[path]: finalizeResult.previousTexts[path]},
+                  reason: 'tool-mode dream finalize',
+                  type: 'PRUNE',
+                })),
+                startedAt,
+                status: 'completed',
+                summary: {
+                  consolidated: 0,
+                  errors: 0,
+                  flaggedForReview: 0,
+                  pruned: finalizeResult.archived.length,
+                  synthesized: 0,
+                },
+                taskId,
+                trigger: trigger ?? 'cli',
+              })
+              await dreamStateService.update((state) => ({
+                ...state,
+                lastDreamAt: new Date().toISOString(),
+                lastDreamLogId: logId,
+                totalDreams: state.totalDreams + 1,
+              }))
+
+              // Archiving removed topics — refresh index.html so they
+              // drop out of the navigation index. Deferred to
+              // postWorkRegistry (per-project serialized, runs after
+              // task:completed) — same rationale as curate-html-direct.
+              postWork = () =>
+                regenerateContextTreeIndex({
+                  contextTreeRoot,
+                  log: (msg) => agentLog(`dream-finalize ${taskId}: ${msg}`),
+                  projectName: basename(projectPath),
+                })
+
+              result = JSON.stringify({
+                archived: finalizeResult.archived,
+                logId,
+                skipped: finalizeResult.skipped,
+                status: 'ok',
+              })
+            } else {
+              result = JSON.stringify({
+                archived: finalizeResult.archived,
+                skipped: finalizeResult.skipped,
+                status: 'ok',
+              })
+            }
+          } catch (error) {
+            result = JSON.stringify({
+              error: error instanceof Error ? error.message : String(error),
+              status: 'error',
+            })
+          }
+
+          break
+        }
+
+        case 'dream-scan': {
+          // Tool-mode dream — no LLM, no provider. The daemon enumerates
+          // candidates and returns them; the calling agent does all
+          // semantic judgment via brv-curate UPDATE/MERGE/ADD writes
+          // before invoking dream-finalize to archive losers.
+          const contextTreeRoot = join(projectPath, BRV_DIR, CONTEXT_TREE_DIR)
+          let parsed: {kinds?: DreamKind[]; maxCandidates?: number; scope?: string}
+          try {
+            parsed = content ? JSON.parse(content) : {}
+          } catch {
+            result = JSON.stringify({error: 'dream-scan: invalid JSON content', status: 'error'})
+            break
+          }
+
+          try {
+            const scanResult = await scanDreamCandidates({
+              contextTreeRoot,
+              options: parsed,
+              runtimeSignalStore,
+              searchService: searchKnowledgeService,
+            })
+            result = JSON.stringify({...scanResult, status: 'ok'})
+          } catch (error) {
+            result = JSON.stringify({
+              error: error instanceof Error ? error.message : String(error),
+              status: 'error',
+            })
+          }
 
           break
         }
@@ -729,6 +993,23 @@ async function executeTask(
           break
         }
 
+        case 'query-tool-mode': {
+          // Tool-mode query: no LLM dispatch, no provider gate, no
+          // usage aggregator. Daemon runs Tier 0/1 cache + Tier-2-style
+          // retrieval (without the canRespondDirectly threshold) and
+          // returns the wire envelope. Wire contract: bundled SKILL.md
+          // (section 1, "Tool mode — run query without an LLM provider").
+          const toolModeOptions = decodeQueryToolModeContent(content)
+          const toolModeResult = await queryExecutor.executeToolMode({
+            limit: toolModeOptions.limit,
+            query: toolModeOptions.query,
+            worktreeRoot,
+          })
+          result = JSON.stringify(toolModeResult)
+
+          break
+        }
+
         case 'search': {
           const searchOptions = decodeSearchContent(content)
           const searchResult = await searchExecutor.execute(searchOptions)
@@ -742,7 +1023,13 @@ async function executeTask(
       // the response as soon as the agent body finishes.
       agentLog(`task:completed taskId=${taskId}`)
       try {
-        transport.request(TransportTaskEventNames.COMPLETED, {clientId, ...(logId ? {logId} : {}), projectPath, result, taskId})
+        transport.request(TransportTaskEventNames.COMPLETED, {
+          clientId,
+          ...(logId ? {logId} : {}),
+          projectPath,
+          result,
+          taskId,
+        })
       } catch (error) {
         agentLog(
           `task:completed send failed taskId=${taskId}: ${error instanceof Error ? error.message : String(error)}`,

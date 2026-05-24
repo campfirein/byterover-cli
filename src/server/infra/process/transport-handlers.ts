@@ -37,6 +37,7 @@ import type {ITransportServer} from '../../core/interfaces/transport/i-transport
 import type {IsReviewDisabledResolver, PreDispatchCheck} from './task-router.js'
 
 import {ConnectionCoordinator} from './connection-coordinator.js'
+import {TaskHeartbeatManager} from './task-heartbeat-manager.js'
 import {TaskRouter} from './task-router.js'
 
 export type {IsReviewDisabledResolver, PreDispatchCheck, PreDispatchCheckResult} from './task-router.js'
@@ -62,6 +63,11 @@ type TransportHandlersOptions = {
   projectRouter?: IProjectRouter
   /** Resolves the active provider/model snapshot stamped onto created tasks. */
   resolveActiveProvider?: () => Promise<{model?: string; provider?: string}>
+  /**
+   * Optional liveness ticker. Constructed by the daemon and shared so
+   * `clearTasks()` can dispose its timers alongside in-memory task state.
+   */
+  taskHeartbeatManager?: TaskHeartbeatManager
   transport: ITransportServer
 }
 
@@ -80,6 +86,7 @@ export class TransportHandlers {
       agentPool: options.agentPool,
       getAgentForProject: (projectPath) => this.connectionCoordinator.getAgentForProject(projectPath),
       getTaskHistoryStore: options.getTaskHistoryStore,
+      heartbeatManager: options.taskHeartbeatManager,
       isReviewDisabled: options.isReviewDisabled,
       lifecycleHooks: options.lifecycleHooks,
       preDispatchCheck: options.preDispatchCheck,

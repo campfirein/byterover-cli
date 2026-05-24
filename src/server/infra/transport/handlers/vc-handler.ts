@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import {join} from 'node:path'
+import {basename, join} from 'node:path'
 
 import type {ITokenStore} from '../../../core/interfaces/auth/i-token-store.js'
 import type {IContextTreeService} from '../../../core/interfaces/context-tree/i-context-tree-service.js'
@@ -55,12 +55,14 @@ import {
   VcEvents,
   type VcResetMode,
 } from '../../../../shared/transport/events/vc-events.js'
+import {INDEX_HTML_FILE} from '../../../constants.js'
 import {BrvConfig} from '../../../core/domain/entities/brv-config.js'
 import {Space} from '../../../core/domain/entities/space.js'
 import {GitAuthError, GitError} from '../../../core/domain/errors/git-error.js'
 import {NotAuthenticatedError} from '../../../core/domain/errors/task-error.js'
 import {VcError} from '../../../core/domain/errors/vc-error.js'
 import {ensureContextTreeGitignore, ensureGitignoreEntries} from '../../../utils/gitignore.js'
+import {generateContextTreeIndex, regenerateContextTreeIndex} from '../../context-tree/index-generator.js'
 import {buildCogitRemoteUrl, isValidBranchName, parseUserFacingUrl} from '../../git/cogit-url.js'
 import {type ProjectBroadcaster, type ProjectPathResolver, resolveRequiredProjectPath} from './handler-types.js'
 
@@ -216,6 +218,53 @@ export class VcHandler {
     )
 
     this.transport.onRequest<void, IVcStatusResponse>(VcEvents.STATUS, (_data, clientId) => this.handleStatus(clientId))
+  }
+
+  /**
+   * If `index.html` is among the merge conflicts, the conflict is spurious —
+   * the file is derived from the topic set. Regenerate it from the current
+   * (merged) topics and stage the result. Returns the conflicts minus
+   * `index.html` so the caller can decide whether to finalize the merge or
+   * surface the remaining conflicts to the user.
+   *
+   * Best-effort: any failure leaves the conflict for the user to resolve.
+   */
+  private async autoResolveIndexConflict(params: {
+    conflicts: Array<{path: string; type: string}>
+    directory: string
+    projectPath: string
+  }): Promise<{indexResolved: boolean; remainingConflicts: Array<{path: string; type: string}>}> {
+    const {conflicts, directory, projectPath} = params
+    // Root-only match — a user-authored topic at `architecture/index.html` is a
+    // regular topic, not the navigation artifact, so it must surface as a
+    // normal conflict for the user to resolve.
+    const indexConflicted = conflicts.some((c) => c.path === INDEX_HTML_FILE)
+    if (!indexConflicted) {
+      return {indexResolved: false, remainingConflicts: conflicts}
+    }
+
+    // Other topic files may still carry conflict markers at this point — the
+    // walker silently drops them as malformed, so the interim `index.html` may
+    // miss entries. The post-`--continue` regen (or a manual rebuild) produces
+    // the complete index once the user resolves the remaining conflicts.
+    const regen = await generateContextTreeIndex({
+      contextTreeRoot: directory,
+      projectName: basename(projectPath),
+    })
+    if (!regen.ok) {
+      return {indexResolved: false, remainingConflicts: conflicts}
+    }
+
+    try {
+      await this.gitService.add({directory, filePaths: [INDEX_HTML_FILE]})
+    } catch {
+      return {indexResolved: false, remainingConflicts: conflicts}
+    }
+
+    return {
+      indexResolved: true,
+      remainingConflicts: conflicts.filter((c) => c.path !== INDEX_HTML_FILE),
+    }
   }
 
   private async buildAuthorHint(existing?: IVcGitConfig): Promise<string> {
@@ -557,11 +606,17 @@ export class VcHandler {
       }
 
       if (error instanceof Error && 'code' in error && error.code === 'NotFoundError') {
-        // Distinguish empty repo from branch-not-found
-        const commits = await this.gitService.log({depth: 1, directory})
-        if (commits.length === 0) {
+        // After ENG-2835 the gitService.checkout no longer throws NotFoundError on the
+        // source ref's listFiles snapshot; the catch only sees target-ref-missing.
+        // Two flavors of that: (a) user typoed the target name — emit BRANCH_NOT_FOUND;
+        // (b) user asked to checkout the branch they are already on but the branch is
+        // unborn (e.g. fresh `brv vc init && brv vc checkout main`) — emit NO_COMMITS
+        // with the actionable message. The pre-ENG-2835 proxy used commit count, which
+        // collapsed (a) and (b) into the same answer when HEAD was unborn; comparing
+        // target name against the current branch separates them cleanly.
+        if (data.branch === previousBranch) {
           throw new VcError(
-            `Your current branch does not have any commits yet. Run 'brv vc add' and 'brv vc commit' first.`,
+            `Your current branch '${data.branch}' does not have any commits yet. Run 'brv vc add' and 'brv vc commit' first, or pull from a remote.`,
             VcErrorCode.NO_COMMITS,
           )
         }
@@ -1040,17 +1095,32 @@ export class VcHandler {
     })
 
     if (!result.success) {
-      return {
-        action: 'merge',
-        branch: data.branch,
-        conflicts: result.conflicts.map((c) => ({path: c.path, type: c.type})),
+      const initialConflicts = result.conflicts.map((c) => ({path: c.path, type: c.type}))
+      const {indexResolved, remainingConflicts} = await this.autoResolveIndexConflict({
+        conflicts: initialConflicts,
+        directory,
+        projectPath,
+      })
+
+      if (indexResolved && remainingConflicts.length === 0) {
+        // index.html was the only conflict and the regen handled it — finalize the merge.
+        await this.gitService.commit({
+          author: {email: config.email, name: config.name},
+          directory,
+          message: data.message ?? `Merge branch '${data.branch}'`,
+        })
+        return {action: 'merge', branch: data.branch}
       }
+
+      return {action: 'merge', branch: data.branch, conflicts: remainingConflicts}
     }
 
     if (result.alreadyUpToDate) {
       return {action: 'merge', alreadyUpToDate: true, branch: data.branch}
     }
 
+    // Merge changed the topic set — refresh the derived navigation index.
+    await this.regenerateIndexBestEffort(directory, projectPath)
     return {action: 'merge', branch: data.branch}
   }
 
@@ -1091,7 +1161,24 @@ export class VcHandler {
         remote,
       })
       if (!result.success) {
-        conflicts = result.conflicts.map((c) => ({path: c.path, type: c.type}))
+        const initialConflicts = result.conflicts.map((c) => ({path: c.path, type: c.type}))
+        const {indexResolved, remainingConflicts} = await this.autoResolveIndexConflict({
+          conflicts: initialConflicts,
+          directory,
+          projectPath,
+        })
+
+        if (indexResolved && remainingConflicts.length === 0 && author) {
+          // index.html was the only conflict and the regen handled it — finalize the merge.
+          await this.gitService.commit({
+            author,
+            directory,
+            message: `Merge branch '${branch}' of ${remote}`,
+          })
+          return {alreadyUpToDate: false, branch}
+        }
+
+        conflicts = remainingConflicts
         return {branch, conflicts}
       }
 
@@ -1121,6 +1208,11 @@ export class VcHandler {
 
       const message = error instanceof Error ? error.message : 'Pull failed. Check your connection and try again.'
       throw new VcError(message, VcErrorCode.PULL_FAILED)
+    }
+
+    if (!alreadyUpToDate) {
+      // Pull changed the topic set — refresh the derived navigation index.
+      await this.regenerateIndexBestEffort(directory, projectPath)
     }
 
     return {alreadyUpToDate, branch}
@@ -1461,6 +1553,15 @@ export class VcHandler {
     }
 
     return this.gitService.getTextBlob({directory, path, ref: side})
+  }
+
+  private async regenerateIndexBestEffort(directory: string, projectPath: string): Promise<void> {
+    // Logging muted: index is a derived artifact, recoverable via `brv index rebuild`.
+    await regenerateContextTreeIndex({
+      contextTreeRoot: directory,
+      log() {},
+      projectName: basename(projectPath),
+    })
   }
 
   /**

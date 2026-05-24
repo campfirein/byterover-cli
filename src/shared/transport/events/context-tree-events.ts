@@ -80,7 +80,10 @@ export interface ContextTreeUpdateFileResponse {
 // --- GET_FILE_METADATA ---
 
 export interface ContextTreeGetFileMetadataRequest {
-  /** File paths to fetch metadata for. */
+  /**
+   * File or folder paths to fetch metadata for. Folder paths resolve to the
+   * latest commit that modified any descendant of the folder.
+   */
   paths: string[]
   /** Explicit project path. When omitted, uses the client's registered project. */
   projectPath?: string

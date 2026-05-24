@@ -304,7 +304,13 @@ export class CurateExecutor implements ICurateExecutor {
 
     let writeResult
     try {
-      writeResult = await writeHtmlTopic({contextTreeRoot, rawHtml: response})
+      // `confirmOverwrite: true` bypasses the writer's path-exists guard.
+      // The legacy in-daemon agent path has its own supervisory context:
+      // the agent runs search + read before deciding to write, and the
+      // surrounding executor lifecycle drives `pendingReview` snapshot /
+      // approval for UPDATE operations. The guard is intended specifically
+      // for tool mode where the calling agent lacks that machinery.
+      writeResult = await writeHtmlTopic({confirmOverwrite: true, contextTreeRoot, rawHtml: response})
     } catch (error) {
       // Hard error (path traversal, I/O failure). Surface as `failed`
       // status; the executor's caller logs the error.

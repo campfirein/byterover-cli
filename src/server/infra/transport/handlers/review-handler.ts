@@ -7,10 +7,12 @@ import type {IReviewBackupStore} from '../../../core/interfaces/storage/i-review
 import type {ITransportServer} from '../../../core/interfaces/transport/i-transport-server.js'
 
 import {
+  type AgentChangeOperation,
   type ReviewDecideTaskRequest,
   type ReviewDecideTaskResponse,
   ReviewEvents,
   type ReviewGetDisabledResponse,
+  type ReviewListOperationsResponse,
   type ReviewPendingOperation,
   type ReviewPendingResponse,
   type ReviewPendingTask,
@@ -46,6 +48,13 @@ type PendingOp = {
 async function writeFileWithDirs(absolutePath: string, content: string): Promise<void> {
   await mkdir(dirname(absolutePath), {recursive: true})
   await writeFile(absolutePath, content, 'utf8')
+}
+
+function projectContextTreeFilePath(absoluteFilePath: string | undefined, contextTreeDir: string): string | undefined {
+  if (!absoluteFilePath) return undefined
+  const rel = relative(contextTreeDir, absoluteFilePath)
+  if (rel.startsWith('..')) return undefined
+  return rel
 }
 
 // ── Handler ──────────────────────────────────────────────────────────────────
@@ -84,6 +93,11 @@ export class ReviewHandler {
       (_data, clientId) => this.handleGetDisabled(clientId),
     )
 
+    this.transport.onRequest<Record<string, unknown>, ReviewListOperationsResponse>(
+      ReviewEvents.LIST_OPERATIONS,
+      (_data, clientId) => this.handleListOperations(clientId),
+    )
+
     this.transport.onRequest<Record<string, unknown>, ReviewPendingResponse>(
       ReviewEvents.PENDING,
       (_data, clientId) => this.handlePending(clientId),
@@ -114,10 +128,10 @@ export class ReviewHandler {
 
       for (let i = 0; i < entry.operations.length; i++) {
         const op = entry.operations[i]
-        if (op.reviewStatus !== 'pending' || !op.filePath) continue
+        if (op.reviewStatus !== 'pending') continue
 
-        const rel = relative(contextTreeDir, op.filePath)
-        if (rel.startsWith('..')) continue
+        const rel = projectContextTreeFilePath(op.filePath, contextTreeDir)
+        if (!rel) continue
 
         let ops = pendingByPath.get(rel)
         if (!ops) {
@@ -221,6 +235,43 @@ export class ReviewHandler {
     return {reviewDisabled: config.reviewDisabled === true}
   }
 
+  private async handleListOperations(clientId: string): Promise<ReviewListOperationsResponse> {
+    const projectPath = resolveRequiredProjectPath(this.resolveProjectPath, clientId)
+    const config = await this.projectConfigStore.read(projectPath)
+    if (!config) {
+      throw new Error(`Project not initialized: ${projectPath}. Run \`brv init\` first.`)
+    }
+
+    if (config.reviewDisabled === true) return {operations: []}
+
+    const contextTreeDir = join(projectPath, BRV_DIR, CONTEXT_TREE_DIR)
+    const store = this.curateLogStoreFactory(projectPath)
+    const entries = await store.list({limit: 200, status: ['completed']})
+
+    const operations: AgentChangeOperation[] = []
+    for (const entry of entries) {
+      for (const op of entry.operations) {
+        if (op.status === 'failed') continue
+        const filePath = projectContextTreeFilePath(op.filePath, contextTreeDir)
+        if (!filePath) continue
+
+        const projected: AgentChangeOperation = {
+          filePath,
+          opCreatedAt: entry.startedAt,
+          taskId: entry.taskId,
+          type: op.type,
+        }
+        if (op.impact) projected.impact = op.impact
+        if (op.reason) projected.reason = op.reason
+        if (op.summary) projected.summary = op.summary
+        if (op.reviewStatus) projected.reviewStatus = op.reviewStatus
+        operations.push(projected)
+      }
+    }
+
+    return {operations}
+  }
+
   private async handlePending(clientId: string): Promise<ReviewPendingResponse> {
     const projectPath = resolveRequiredProjectPath(this.resolveProjectPath, clientId)
     const contextTreeDir = join(projectPath, BRV_DIR, CONTEXT_TREE_DIR)
@@ -241,10 +292,8 @@ export class ReviewHandler {
         }
 
         const pendingOp: ReviewPendingOperation = {path: op.path, type: op.type}
-        if (op.filePath) {
-          const rel = relative(contextTreeDir, op.filePath)
-          if (!rel.startsWith('..')) pendingOp.filePath = rel
-        }
+        const filePath = projectContextTreeFilePath(op.filePath, contextTreeDir)
+        if (filePath) pendingOp.filePath = filePath
 
         if (op.impact) pendingOp.impact = op.impact
         if (op.reason) pendingOp.reason = op.reason

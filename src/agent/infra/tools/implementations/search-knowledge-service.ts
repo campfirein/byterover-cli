@@ -7,7 +7,7 @@ import type {ElementName} from '../../../../server/core/domain/render/element-ty
 import type {IRuntimeSignalStore} from '../../../../server/core/interfaces/storage/i-runtime-signal-store.js'
 import type {IFileSystem} from '../../../core/interfaces/i-file-system.js'
 import type {ILogger} from '../../../core/interfaces/i-logger.js'
-import type {ISearchKnowledgeService, SearchKnowledgeResult} from '../../sandbox/tools-sdk.js'
+import type {ISearchKnowledgeService, SearchKnowledgeOptions, SearchKnowledgeResult} from '../../sandbox/tools-sdk.js'
 
 import {
   BRV_DIR,
@@ -288,6 +288,17 @@ export type ElementHint =
  * Extended search options supporting symbolic filters.
  */
 export interface SearchOptions {
+  /**
+   * Multi-word query combination strategy. Mirrors the public option of
+   * the same name on `SearchKnowledgeOptions`; defined here as the
+   * canonical-source type so the two declarations cannot drift if a
+   * new value is added.
+   * `'auto'` (or undefined) = AND-first with OR fallback (default).
+   * `'OR'` = skip AND-first; useful when the caller wants any-term
+   * recall over precision (e.g. dream pair-discovery).
+   * `'AND'` = AND only, no OR fallback.
+   */
+  combineWith?: SearchKnowledgeOptions['combineWith']
   /**
    * Pre-filter the candidate set by `<bv-*>` element shape before
    * BM25 ranking. Wired but unused by today's callers; the grammar
@@ -1081,6 +1092,49 @@ export class SearchKnowledgeService implements ISearchKnowledgeService {
   }
 
   /**
+   * Invalidate the cached MiniSearch index so the next `search()` call
+   * rebuilds from disk regardless of TTL. Callers that have just
+   * mutated the context tree (or know they're operating against a
+   * freshly-loaded topic set, like dream-scan) use this to bypass the
+   * 5-second TTL fast-path that would otherwise serve stale results.
+   *
+   * Awaits any in-flight build BEFORE clearing. Without this, an
+   * orphan builder started before the refresh can later resolve and
+   * write back to `state.cachedIndex` (acquireIndex publishes at the
+   * end of its build body), defeating the invalidation. Awaiting lets
+   * the in-flight build settle and publish, then the clear removes
+   * its now-stale result — so the next caller is guaranteed to do a
+   * fresh disk read. Rejections from the in-flight build are
+   * swallowed; callers of refreshIndex don't care about that build's
+   * outcome, they just want a clean slate.
+   *
+   * Maintainer note: after `await inFlight` resolves, `acquireIndex`'s
+   * `finally` block has already nulled `state.buildingPromise`, so the
+   * explicit `= undefined` below is defensive — kept for symmetry and
+   * to guard against any future flow where the promise is stored
+   * outside that `finally`. A racing `acquireIndex()` between the
+   * await and the clear may capture a fresh `buildingPromise` that
+   * this clear then nulls the pointer to; the inner build still
+   * publishes its fresh index correctly, but the very next
+   * `acquireIndex()` after that won't see the in-flight promise and
+   * may start a parallel build. That's a benign double-build
+   * inefficiency, not a correctness issue.
+   */
+  async refreshIndex(): Promise<void> {
+    const inFlight = this.state.buildingPromise
+    if (inFlight) {
+      try {
+        await inFlight
+      } catch {
+        // in-flight build failure is irrelevant to the invalidation contract
+      }
+    }
+
+    this.state.cachedIndex = undefined
+    this.state.buildingPromise = undefined
+  }
+
+  /**
    * Search the knowledge base for relevant topics.
    * Supports symbolic path queries, scoped search, kind/maturity filtering, and overview mode.
    *
@@ -1443,11 +1497,22 @@ export class SearchKnowledgeService implements ISearchKnowledgeService {
 
     // AND-first strategy: for multi-word queries, try AND for concentrated scores.
     // If AND returns no results, fall back to OR to ensure no regression.
+    //
+    // Caller-driven override (`options.combineWith`): 'OR' skips AND-first
+    // entirely (any-term recall — needed for dream pair-discovery where the
+    // source title is the query and AND collapses cross-pair matches to
+    // self-only); 'AND' is strict AND with no OR fallback; 'auto' / undefined
+    // preserves the historical AND-first-with-OR-fallback behavior.
     let rawResults: Array<{id: string; queryTerms: string[]; score: number}>
     let andSearchFailed = false
     const searchOpts = composedFilter ? {filter: composedFilter} : {}
+    const combineMode = options?.combineWith ?? 'auto'
 
-    if (filteredWords.length >= 2) {
+    if (combineMode === 'OR') {
+      rawResults = index.search(filteredQuery, {combineWith: 'OR', ...searchOpts})
+    } else if (combineMode === 'AND') {
+      rawResults = index.search(filteredQuery, {combineWith: 'AND', ...searchOpts})
+    } else if (filteredWords.length >= 2) {
       rawResults = index.search(filteredQuery, {combineWith: 'AND', ...searchOpts})
       if (rawResults.length === 0) {
         andSearchFailed = true
