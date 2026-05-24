@@ -210,6 +210,7 @@
     "prepack": "npm run build && BRV_ENV=production oclif manifest",
     "prepare": "husky",
     "test": "mocha --forbid-only \"test/**/*.test.ts\"",
+    "test:e2e:analytics": "npm run build && mocha --forbid-only --timeout 600000 \"test/e2e/analytics/dev-beta.e2e.ts\"",
     "typecheck": "tsc --noEmit && tsc --noEmit -p src/webui/tsconfig.json",
     "version": "git add README.md"
   },
