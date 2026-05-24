@@ -4,7 +4,7 @@ ENG-2834 — Markdown-to-HTML context-tree migration script.
 
 One-shot, offline, no-daemon migrator that converts a project's
 `.brv/context-tree/` from Markdown topic files to `<bv-topic>` HTML
-documents matching the format `proj/html-mem-conversion`'s curate
+documents matching the format `proj/byterover-tool-mode`'s curate
 flow writes today.
 
 Scope (per the Linear ticket): walk `.brv/context-tree/`, route every
@@ -25,10 +25,20 @@ lingering in `.brv/context-tree/` as `.md`. The archive root is
 source tree structure. `--dry-run` runs classification + conversion
 in memory only.
 
-Reference: design.md §17 (narrower scope shipped). Mapping rules are
-mirrored from the TypeScript curate/HTML writer
-(`src/server/infra/render/`) so the migrated topics validate when
-read by the existing pipeline.
+Output contract: the migrated HTML uses ONLY the closed `bv-*`
+vocabulary defined in `src/server/infra/render/elements/registry.ts`
+on `proj/byterover-tool-mode`. Non-bv-* elements are NOT emitted —
+the render pipeline would silently skip them (see html-reader.ts:77,
+html-renderer.ts:155), making any preservation in `<p>`/`<section>`
+dead content from the brv pipeline's perspective. Content that has
+no clean bv-* target is dropped with a per-file warning so the
+operator can see exactly what was lost.
+
+Heuristic recovery (cases 1, 2, 4, 7, 8): orphan section content
+(`## Overview`, `## Architecture`, `## Evidence`, etc.) is mapped to
+the nearest semantically-fitting bv-* element when the canonical
+counterpart is empty. Conflict resolution: canonical wins, orphan
+content is dropped + warned.
 
 Usage:
     python migrate_context_tree.py --project-root /path/to/project
@@ -81,7 +91,8 @@ OVERVIEW_EXTENSION = ".overview.md"
 MANIFEST_FILE = "_manifest.json"
 
 # Canonical body sections produced by the markdown writer; everything
-# else is treated as an orphan section and preserved as plain HTML.
+# else is treated as an orphan section and routed through the heading-
+# name heuristic map below.
 KNOWN_SECTION_HEADINGS = {"Reason", "Raw Concept", "Narrative", "Facts", "Relations"}
 
 # Diagram type enum from `<bv-diagram type>` schema.
@@ -96,6 +107,93 @@ FACT_CATEGORIES = {
     "team",
     "environment",
     "other",
+}
+
+# Frontmatter keys the migrator maps to <bv-topic> attributes. Anything
+# else is either a runtime-signal (allow-listed below, dropped silently)
+# or unknown content metadata (warned + dropped).
+KNOWN_FRONTMATTER_KEYS_CONTENT = {
+    "title",
+    "summary",
+    "tags",
+    "keywords",
+    "related",
+    "relateds",
+    "createdAt",
+    "updatedAt",
+    "short_description",
+}
+
+# Runtime signals live in the sidecar store per the runtime-signals
+# migration. They're frontmatter today but intentionally dropped at
+# migration time — no warning emitted.
+RUNTIME_SIGNAL_FRONTMATTER_KEYS = {
+    "importance",
+    "recency",
+    "maturity",
+    "accessCount",
+    "updateCount",
+}
+
+# Heading-name heuristic — orphan `## X` sections route to bv-*
+# elements when the canonical counterpart is empty. Keys are lowercase;
+# values describe the routing strategy used by _process_orphan_sections.
+#
+# Strategies:
+#   reason_if_empty           — populate <bv-reason> if canonical is empty
+#   structure_if_empty        — populate <bv-structure> if canonical empty
+#   dependencies_if_empty     — populate <bv-dependencies> if empty
+#   highlights_if_empty       — populate <bv-highlights> if empty
+#   examples_if_empty         — populate <bv-examples> if empty
+#   summary_attr_if_empty     — populate <bv-topic summary> attr if empty
+#   rules_split               — split into multiple <bv-rule> siblings (append)
+#   patterns_multiple         — bullets become <bv-pattern> siblings (append)
+#   decisions_multiple        — bullets become <bv-decision> siblings (append)
+#   facts_parse               — bullets parsed as <bv-fact> siblings (append)
+ORPHAN_H2_HEURISTIC = {
+    "abstract": "summary_attr_if_empty",
+    "overview": "reason_if_empty",
+    "summary": "summary_attr_if_empty",
+    "purpose": "reason_if_empty",
+    "architecture": "structure_if_empty",
+    "structure": "structure_if_empty",
+    "scope": "structure_if_empty",
+    "dependencies": "dependencies_if_empty",
+    "highlights": "highlights_if_empty",
+    "features": "highlights_if_empty",
+    "examples": "examples_if_empty",
+    "rules": "rules_split",
+    "patterns": "patterns_multiple",
+    "decisions": "decisions_multiple",
+    "evidence": "facts_parse",
+}
+
+# Heuristic for unknown `### X` subsections under `## Narrative` (case
+# 8). Same value semantics as ORPHAN_H2_HEURISTIC.
+NARRATIVE_SUBSECTION_HEURISTIC = {
+    "patterns": "patterns_multiple",
+    "decisions": "decisions_multiple",
+    "overview": "structure_if_empty",
+}
+
+# `## Raw Concept` recognized labels under bold-heading form
+# `**Label:**`. Plural-tolerant per case 7 — both singular and plural
+# forms route to the same bv-* element.
+RAW_CONCEPT_LABEL_MAP = {
+    "task": "task",
+    "tasks": "task",
+    "change": "changes",
+    "changes": "changes",
+    "file": "files",
+    "files": "files",
+    "flow": "flow",
+    "flows": "flow",
+    "timestamp": "timestamp",
+    "timestamps": "timestamp",
+    "author": "author",
+    "authors": "author",
+    "pattern": "patterns",
+    "patterns": "patterns",
 }
 
 
@@ -144,11 +242,30 @@ def slugify_rule_id(text: str, prefix: str) -> str:
     return f"{prefix}-{slug}"
 
 
+# Case 5: detect "Rule N:" / "Rule N." prefix as a splitter pattern.
+# Curator output frequently uses this form (a) on consecutive lines
+# with no blank between (defeats the paragraph fallback), or (b) on
+# the SAME line separated only by a sentence-ending period.
+#
+# Matches when the prefix appears at line start (`^`) or immediately
+# after a sentence-ending punctuation + whitespace. The lookbehind
+# avoids splitting on mid-sentence mentions like "similar to Rule 3:".
+_RULE_PREFIX_LINE = re.compile(
+    r"(?m)(?:^|(?<=[.!?])\s+)Rule\s*\d+\s*[:.\)]\s*",
+    re.IGNORECASE,
+)
+
+
 def split_rules_block(rules_text: str) -> list[dict]:
     """Split a markdown `### Rules` block into individual rule entries.
-    Recognises bullet lists, numbered lists, and paragraph-separated
-    rules (in that priority). Each entry carries `text`, optional
-    `severity`, and a unique `id`.
+
+    Detection priority (case 5 — new):
+      1. dash/asterisk/plus bullets (`-`, `*`, `+`)
+      2. numbered list (`1.`, `2.`)
+      3. "Rule N:" / "Rule N." prefix on consecutive lines
+      4. blank-line-separated paragraphs
+
+    Each entry carries `text`, optional `severity`, and a unique `id`.
     """
     trimmed = rules_text.strip()
     if not trimmed:
@@ -163,6 +280,12 @@ def split_rules_block(rules_text: str) -> list[dict]:
         items = [re.sub(r"^[-*+]\s+", "", l) for l in bullets]
     elif numbered:
         items = [re.sub(r"^\d+\.\s+", "", l) for l in numbered]
+    elif _RULE_PREFIX_LINE.search(trimmed):
+        # Case 5: split on "Rule N:" line starts. The first item may
+        # have content before the first prefix (rare) — captured as a
+        # leading entry only if non-empty.
+        parts = _RULE_PREFIX_LINE.split(trimmed)
+        items = [p.strip() for p in parts if p.strip()]
     else:
         items = [p.strip() for p in re.split(r"\n\s*\n", trimmed) if p.strip()]
 
@@ -233,11 +356,15 @@ def rel_path_to_topic_path(rel_path: str) -> str:
 
 
 _SECTION_REGEX = re.compile(r"^##\s+([^\n]+?)\s*$([\s\S]*?)(?=^##\s|\Z)", re.MULTILINE)
+_FENCED_BLOCK_REGEX = re.compile(
+    r"(?:\*\*(.+?)\*\*\n)?```(\w*)\n([\s\S]*?)```"
+)
 
 
-def parse_orphan_sections(body: str) -> list[dict]:
+def _list_orphan_sections(body: str) -> list[dict]:
     """Walk a markdown body and return every `## X` section whose
-    heading is not in the canonical set."""
+    heading is not in the canonical set. Each entry: heading, content,
+    span (start, end) for fenced-block dedup."""
     out: list[dict] = []
     for m in _SECTION_REGEX.finditer(body):
         heading = m.group(1).strip()
@@ -246,7 +373,7 @@ def parse_orphan_sections(body: str) -> list[dict]:
         content = m.group(2).strip()
         if not content:
             continue
-        out.append({"heading": heading, "content": content})
+        out.append({"heading": heading, "content": content, "span": (m.start(), m.end())})
     return out
 
 
@@ -255,20 +382,21 @@ def parse_orphan_sections(body: str) -> list[dict]:
 # =============================================================================
 
 
-def _parse_frontmatter(content: str) -> Tuple[Optional[dict], str]:
-    """Extract YAML frontmatter from the head of the file. Returns
-    (frontmatter_dict, body). When no frontmatter is found, returns
-    (None, original_content)."""
-    if not (content.startswith("---\n") or content.startswith("---\r\n")):
-        return None, content
+def _parse_frontmatter(content: str) -> Tuple[Optional[dict], str, str]:
+    """Extract YAML frontmatter from the head of the file.
 
-    # Find the closing --- delimiter.
+    Returns (frontmatter_dict, body, raw_yaml_block). The raw yaml block
+    is returned so callers can detect YAML # comment hazards (case 11).
+    When no frontmatter is found, returns (None, original_content, '')."""
+    if not (content.startswith("---\n") or content.startswith("---\r\n")):
+        return None, content, ""
+
     lf = content.find("\n---\n", 4)
     crlf = content.find("\r\n---\r\n", 5)
     is_crlf = lf == -1
     end = crlf if is_crlf else lf
     if end < 0:
-        return None, content
+        return None, content, ""
 
     delim = 7 if is_crlf else 5
     yaml_block = content[5 if is_crlf else 4 : end]
@@ -277,10 +405,10 @@ def _parse_frontmatter(content: str) -> Tuple[Optional[dict], str]:
     try:
         parsed = yaml.load(yaml_block, Loader=FrontmatterLoader)
     except yaml.YAMLError:
-        return None, content
+        return None, content, yaml_block
     if not isinstance(parsed, dict):
-        return None, content
-    return parsed, body
+        return None, content, yaml_block
+    return parsed, body, yaml_block
 
 
 def _str_list(value) -> list[str]:
@@ -316,134 +444,227 @@ def _parse_reason(body: str) -> Optional[str]:
     return _parse_section(body, "Reason")
 
 
-def _parse_raw_concept(body: str) -> dict:
+# Case 9/10: loose-bullet regex used by Facts and Raw Concept list
+# parsers. Matches `- `, `* `, `+ `, or `1. ` line-leading bullets.
+_LOOSE_BULLET_PREFIX = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+")
+
+
+def _strip_bullet_prefix(line: str) -> Optional[str]:
+    """Return the content of a bulleted line (any common style), or
+    None if the line isn't a bullet."""
+    m = _LOOSE_BULLET_PREFIX.match(line)
+    if not m:
+        return None
+    return line[m.end():]
+
+
+def _parse_raw_concept(body: str) -> Tuple[dict, list[str]]:
+    """Parse `## Raw Concept`. Returns (raw_concept_dict, warnings).
+
+    Case 7 — plural tolerance: `**Tasks:**`, `**Flows:**`, etc. route
+    to the same target as their singular form. Labels still not in
+    `RAW_CONCEPT_LABEL_MAP` are warned + dropped.
+
+    Case 9/10 — bullet tolerance: Changes / Files lists accept `- `,
+    `* `, `+ `, and `1. ` style bullets.
+    """
+    warnings: list[str] = []
     section = _parse_section(body, "Raw Concept")
     if not section:
-        return {}
+        return {}, warnings
+
     rc: dict = {}
 
-    m_task = re.search(
-        r"\*\*\s*Task\s*:\s*\*\*\s*\n([\s\S]*?)(?=\n\*\*|\n##|$)", section, re.IGNORECASE
-    )
-    if m_task:
-        rc["task"] = m_task.group(1).strip()
-
-    m_changes = re.search(
-        r"\*\*\s*Changes\s*:\s*\*\*\s*\n([\s\S]*?)(?=\n\*\*|\n##|$)", section, re.IGNORECASE
-    )
-    if m_changes:
-        rc["changes"] = [
-            l.strip()[2:]
-            for l in m_changes.group(1).split("\n")
-            if l.strip().startswith("- ")
-        ]
-
-    m_files = re.search(
-        r"\*\*\s*Files\s*:\s*\*\*\s*\n([\s\S]*?)(?=\n\*\*|\n##|$)", section, re.IGNORECASE
-    )
-    if m_files:
-        rc["files"] = [
-            l.strip()[2:]
-            for l in m_files.group(1).split("\n")
-            if l.strip().startswith("- ")
-        ]
-
-    m_flow = re.search(
-        r"\*\*\s*Flow\s*:\s*\*\*\s*\n([\s\S]*?)(?=\n\*\*|\n##|$)", section, re.IGNORECASE
-    )
-    if m_flow:
-        rc["flow"] = m_flow.group(1).strip()
-
-    m_timestamp = re.search(r"\*\*\s*Timestamp\s*:\s*\*\*\s*(.+)", section, re.IGNORECASE)
-    if m_timestamp:
-        rc["timestamp"] = m_timestamp.group(1).strip()
-
-    m_author = re.search(r"\*\*\s*Author\s*:\s*\*\*\s*(.+)", section, re.IGNORECASE)
-    if m_author:
-        rc["author"] = m_author.group(1).strip()
-
-    m_patterns = re.search(
-        r"\*\*\s*Patterns\s*:\s*\*\*\s*\n([\s\S]*?)(?=\n\*\*|\n##|$)",
+    # Walk every **Label:** bold-heading subsection.
+    sub_iter = re.finditer(
+        r"\*\*\s*([A-Za-z][\w \t]*?)\s*:\s*\*\*\s*\n?([\s\S]*?)(?=\n\*\*[A-Za-z]|\n##|$)",
         section,
-        re.IGNORECASE,
     )
-    if m_patterns:
-        patterns: list[dict] = []
-        for line in m_patterns.group(1).split("\n"):
-            if not line.strip().startswith("- `"):
-                continue
-            pm = re.match(r"- `(.+?)`(?:\s*\(flags:\s*(.+?)\))?\s*-\s*(.+)", line)
-            if pm:
-                entry = {"pattern": pm.group(1), "description": pm.group(3).strip()}
-                if pm.group(2):
-                    entry["flags"] = pm.group(2)
-                patterns.append(entry)
-        if patterns:
-            rc["patterns"] = patterns
+    for m in sub_iter:
+        raw_label = m.group(1).strip()
+        sub_body = m.group(2).strip()
+        key = RAW_CONCEPT_LABEL_MAP.get(raw_label.lower())
+        if key is None:
+            if sub_body:
+                warnings.append(
+                    f"dropped-raw-concept-subsection:{raw_label} ({len(sub_body)} chars)"
+                )
+            continue
 
-    return rc
+        if key == "task":
+            if "task" not in rc:
+                rc["task"] = sub_body
+        elif key == "flow":
+            if "flow" not in rc:
+                rc["flow"] = sub_body
+        elif key == "timestamp":
+            if "timestamp" not in rc:
+                # Timestamp is single-line; take the first non-empty line.
+                first = next((l.strip() for l in sub_body.splitlines() if l.strip()), "")
+                rc["timestamp"] = first or sub_body
+        elif key == "author":
+            if "author" not in rc:
+                first = next((l.strip() for l in sub_body.splitlines() if l.strip()), "")
+                rc["author"] = first or sub_body
+        elif key == "changes":
+            existing = rc.get("changes", [])
+            for line in sub_body.splitlines():
+                content = _strip_bullet_prefix(line)
+                if content is not None and content.strip():
+                    existing.append(content.strip())
+            if existing:
+                rc["changes"] = existing
+        elif key == "files":
+            existing = rc.get("files", [])
+            for line in sub_body.splitlines():
+                content = _strip_bullet_prefix(line)
+                if content is not None and content.strip():
+                    existing.append(content.strip())
+            if existing:
+                rc["files"] = existing
+        elif key == "patterns":
+            existing = rc.get("patterns", [])
+            for line in sub_body.splitlines():
+                stripped = line.strip()
+                if not stripped.startswith("- `") and not stripped.startswith("* `"):
+                    continue
+                pm = re.match(r"[-*]\s+`(.+?)`(?:\s*\(flags:\s*(.+?)\))?\s*-\s*(.+)", stripped)
+                if pm:
+                    entry = {"pattern": pm.group(1), "description": pm.group(3).strip()}
+                    if pm.group(2):
+                        entry["flags"] = pm.group(2)
+                    existing.append(entry)
+            if existing:
+                rc["patterns"] = existing
+
+    return rc, warnings
 
 
-def _parse_narrative(body: str) -> dict:
-    # Narrative subsections use `### X` underneath `## Narrative`.
+def _parse_narrative(body: str) -> Tuple[dict, dict, list[str]]:
+    """Parse `## Narrative`. Returns (canonical_dict, extras_dict,
+    warnings).
+
+    canonical: {structure, dependencies, highlights, rules, examples,
+                diagrams[]}
+    extras: {patterns: [...], decisions: [...]} from case-8 heuristic
+            mapping of unknown `### X` subsections
+
+    Case 8 — unknown ### subsections routed via NARRATIVE_SUBSECTION_
+    HEURISTIC, others warned + dropped.
+    """
+    warnings: list[str] = []
     pattern = re.compile(
         r"##\s*Narrative\s*\n([\s\S]*?)(?=\n##\s[^#]|\n---\n|$)", re.IGNORECASE
     )
     m = pattern.search(body)
     if not m:
-        return {}
+        return {}, {}, warnings
     section = m.group(1)
     narrative: dict = {}
+    extras: dict = {}
 
-    def grab(name: str) -> Optional[str]:
-        rx = re.compile(
-            rf"###\s*{name}\s*\n([\s\S]*?)(?=\n###\s|\n##\s|$)", re.IGNORECASE
-        )
-        sub = rx.search(section)
-        return sub.group(1).strip() if sub else None
-
-    if (v := grab("Structure")) is not None:
-        narrative["structure"] = v
-    if (v := grab("Dependencies")) is not None:
-        narrative["dependencies"] = v
-    if (v := grab("(?:Highlights|Features)")) is not None:
-        narrative["highlights"] = v
-    if (v := grab("Rules")) is not None:
-        narrative["rules"] = v
-    if (v := grab("Examples")) is not None:
-        narrative["examples"] = v
-
-    # Diagrams: fenced blocks under `### Diagrams`.
-    m_dia = re.search(
-        r"###\s*Diagrams\s*\n([\s\S]*?)(?=\n###\s|\n##\s|$)", section, re.IGNORECASE
+    # Walk every `### X` subsection. Use \Z for end-of-string under
+    # multiline mode — `$` would match end-of-line and produce empty
+    # subsection bodies.
+    sub_iter = re.finditer(
+        r"(?m)^###\s+(.+?)\s*$\n([\s\S]*?)(?=^###\s|\n##\s|\Z)", section
     )
-    if m_dia:
-        diagrams: list[dict] = []
-        for bm in re.finditer(
-            r"(?:\*\*(.+?)\*\*\n)?```(\w*)\n([\s\S]*?)```", m_dia.group(1)
-        ):
-            entry: dict = {"content": bm.group(3).rstrip(), "type": bm.group(2) or "ascii"}
-            if bm.group(1):
-                entry["title"] = bm.group(1)
-            diagrams.append(entry)
-        if diagrams:
-            narrative["diagrams"] = diagrams
-
-    return narrative
-
-
-def _parse_facts(body: str) -> list[dict]:
-    section = _parse_section(body, "Facts")
-    if not section:
-        return []
-    facts: list[dict] = []
-    for line in section.split("\n"):
-        s = line.strip()
-        if not s.startswith("- "):
+    for sm in sub_iter:
+        label = sm.group(1).strip()
+        lower = label.lower()
+        sub_body = sm.group(2).strip()
+        if not sub_body:
             continue
-        stripped = s[2:].strip()
-        # Pattern: "**subject**: statement [category]"
-        structured = re.match(r"^\*\*(.+?)\*\*:\s*(.+?)(?:\s*\[(\w+)\])?$", stripped)
+
+        # Canonical narrative subsections.
+        if lower == "structure":
+            if "structure" not in narrative:
+                narrative["structure"] = sub_body
+            continue
+        if lower == "dependencies":
+            if "dependencies" not in narrative:
+                narrative["dependencies"] = sub_body
+            continue
+        if lower in ("highlights", "features"):
+            if "highlights" not in narrative:
+                narrative["highlights"] = sub_body
+            continue
+        if lower == "rules":
+            if "rules" not in narrative:
+                narrative["rules"] = sub_body
+            continue
+        if lower == "examples":
+            if "examples" not in narrative:
+                narrative["examples"] = sub_body
+            continue
+        if lower == "diagrams":
+            diagrams: list[dict] = []
+            for bm in _FENCED_BLOCK_REGEX.finditer(sub_body):
+                entry: dict = {
+                    "content": bm.group(3).rstrip(),
+                    "type": bm.group(2) or "ascii",
+                }
+                if bm.group(1):
+                    entry["title"] = bm.group(1)
+                diagrams.append(entry)
+            if diagrams:
+                narrative["diagrams"] = diagrams
+            continue
+
+        # Case 8: heuristic route unknown ### subsections.
+        strategy = NARRATIVE_SUBSECTION_HEURISTIC.get(lower)
+        if strategy == "patterns_multiple":
+            items = _parse_bullet_items(sub_body)
+            if items:
+                extras.setdefault("patterns", []).extend(items)
+        elif strategy == "decisions_multiple":
+            items = _parse_bullet_items(sub_body)
+            if items:
+                extras.setdefault("decisions", []).extend(items)
+        elif strategy == "structure_if_empty":
+            # Only fills canonical if empty.
+            if "structure" not in narrative:
+                narrative["structure"] = sub_body
+            else:
+                warnings.append(
+                    f"dropped-narrative-subsection:{label} (canonical structure already populated, {len(sub_body)} chars)"
+                )
+        else:
+            warnings.append(
+                f"dropped-narrative-subsection:{label} ({len(sub_body)} chars)"
+            )
+
+    return narrative, extras, warnings
+
+
+def _parse_bullet_items(section_body: str) -> list[str]:
+    """Extract bulleted items (any common style) as a list of strings.
+    Strips the bullet prefix and bold markdown decoration like
+    `**Name:**` if present, returning the content text."""
+    out: list[str] = []
+    for line in section_body.splitlines():
+        content = _strip_bullet_prefix(line)
+        if content is None:
+            continue
+        content = content.strip()
+        if not content:
+            continue
+        out.append(content)
+    return out
+
+
+def _parse_fact_bullets(section_body: str) -> list[dict]:
+    """Parse a bulleted section as bv-fact items. Used for both `##
+    Facts` (canonical) and `## Evidence` (orphan-routed)."""
+    facts: list[dict] = []
+    for line in section_body.splitlines():
+        content = _strip_bullet_prefix(line)
+        if content is None:
+            continue
+        stripped = content.strip()
+        if not stripped:
+            continue
+        structured = re.match(r"^\*\*(.+?)\*\*\s*:\s*(.+?)(?:\s*\[(\w+)\])?$", stripped)
         if structured:
             entry = {
                 "statement": structured.group(2).strip(),
@@ -453,7 +674,6 @@ def _parse_facts(body: str) -> list[dict]:
                 entry["category"] = structured.group(3)
             facts.append(entry)
             continue
-        # Plain "statement [category]"
         plain = re.match(r"^(.+?)(?:\s*\[(\w+)\])?$", stripped)
         if plain:
             entry = {"statement": plain.group(1).strip()}
@@ -461,6 +681,261 @@ def _parse_facts(body: str) -> list[dict]:
                 entry["category"] = plain.group(2)
             facts.append(entry)
     return facts
+
+
+def _parse_facts(body: str) -> list[dict]:
+    """Parse `## Facts` section. Case 9/10: accepts dash, asterisk,
+    and numbered bullets uniformly."""
+    section = _parse_section(body, "Facts")
+    if not section:
+        return []
+    return _parse_fact_bullets(section)
+
+
+# =============================================================================
+# New helpers for refactor + cases 1, 3, 4, 6, 11
+# =============================================================================
+
+
+def _extract_h1_title(body: str) -> Optional[str]:
+    """Case 1: Find first `# X` body H1 (single-#, not ##). Returns
+    the heading text or None."""
+    for line in body.splitlines():
+        m = re.match(r"^#\s+(.+?)\s*$", line)
+        if m:
+            return m.group(1).strip()
+        # Stop at first `## X` — H1 must be before any ##.
+        if line.lstrip().startswith("##"):
+            return None
+    return None
+
+
+def _extract_lede_paragraph(body: str) -> Optional[str]:
+    """Case 4: Extract prose between the body H1 and the first `##`
+    section (or end-of-body). Returns the joined non-empty lines or
+    None if no lede content exists."""
+    after_h1 = False
+    captured: list[str] = []
+    for line in body.splitlines():
+        if not after_h1:
+            if re.match(r"^#\s+\S", line):
+                after_h1 = True
+            continue
+        if line.lstrip().startswith("## "):
+            break
+        if line.startswith("---"):
+            break
+        captured.append(line)
+    text = "\n".join(captured).strip()
+    return text or None
+
+
+def _check_yaml_hash_hazard(yaml_block: str) -> list[str]:
+    """Case 11: Detect `<space>#` inside unquoted YAML scalar values
+    that would silently truncate. Heuristic: scan key:value lines for
+    ` #` outside of quoted strings."""
+    warnings: list[str] = []
+    for line in yaml_block.splitlines():
+        m = re.match(r"^([A-Za-z_][\w-]*)\s*:\s*(.*)$", line)
+        if not m:
+            continue
+        key = m.group(1)
+        rest = m.group(2)
+        # Quoted scalars are safe.
+        if rest.startswith(("'", '"', "|", ">", "[", "{")):
+            continue
+        # Look for ` #` outside-of-quotes hazard.
+        if " #" in rest:
+            warnings.append(
+                f"yaml-comment-truncation:{key} value contains ' #' — PyYAML treats as inline comment, likely silently truncating"
+            )
+    return warnings
+
+
+def _check_unknown_frontmatter_keys(frontmatter: dict) -> list[str]:
+    """Case 3: warn on frontmatter keys that aren't recognized content
+    keys. Runtime signals are allow-listed (silently dropped per spec).
+    """
+    warnings: list[str] = []
+    for key in frontmatter:
+        if key in KNOWN_FRONTMATTER_KEYS_CONTENT:
+            continue
+        if key in RUNTIME_SIGNAL_FRONTMATTER_KEYS:
+            continue
+        warnings.append(f"dropped-frontmatter-key:{key}")
+    return warnings
+
+
+def _extract_all_fenced_blocks(body: str, exclude_spans: list[tuple[int, int]]) -> list[dict]:
+    """Case 6: Promote every fenced code block in the body to a
+    bv-diagram entry. Language tag drives the type (in-enum → that
+    type; else 'other'). Blocks whose source span falls inside an
+    excluded range (e.g., already-extracted `### Diagrams` blocks)
+    are skipped to avoid double emission.
+    """
+    out: list[dict] = []
+    for bm in _FENCED_BLOCK_REGEX.finditer(body):
+        block_start = bm.start()
+        skip = False
+        for ex_start, ex_end in exclude_spans:
+            if ex_start <= block_start < ex_end:
+                skip = True
+                break
+        if skip:
+            continue
+        entry: dict = {
+            "content": bm.group(3).rstrip(),
+            "type": normalize_diagram_type(bm.group(2) or ""),
+        }
+        if bm.group(1):
+            entry["title"] = bm.group(1)
+        out.append(entry)
+    return out
+
+
+def _diagrams_section_span(body: str) -> Optional[tuple[int, int]]:
+    """Return (start, end) span of the `## Narrative > ### Diagrams`
+    subsection in `body`, for fenced-block dedup."""
+    nar = re.search(
+        r"##\s*Narrative\s*\n([\s\S]*?)(?=\n##\s[^#]|\n---\n|$)", body, re.IGNORECASE
+    )
+    if not nar:
+        return None
+    section_start = nar.start(1)
+    section = nar.group(1)
+    m_dia = re.search(
+        r"###\s*Diagrams\s*\n([\s\S]*?)(?=\n###\s|\n##\s|$)", section, re.IGNORECASE
+    )
+    if not m_dia:
+        return None
+    return (section_start + m_dia.start(1), section_start + m_dia.end(1))
+
+
+def _process_orphan_sections(
+    *,
+    body: str,
+    canonical_reason: Optional[str],
+    canonical_narrative: dict,
+    canonical_summary_attr: str,
+) -> Tuple[dict, list[str]]:
+    """Case 2: Route orphan `## X` sections to bv-* targets via the
+    heading-name heuristic. Conflict resolution: canonical wins; if
+    the canonical target is already populated, the orphan content is
+    dropped and a warning is emitted.
+
+    Returns (extras_dict, warnings) where extras_dict has keys:
+      summary_attr_override : optional str (case 4 fallback)
+      reason                : optional str (only if canonical empty)
+      structure             : optional str (only if canonical empty)
+      dependencies          : optional str
+      highlights            : optional str
+      examples              : optional str
+      rules                 : list[dict]   (multiple, appended)
+      patterns              : list[str]    (multiple, appended)
+      decisions             : list[str]    (multiple, appended)
+      facts                 : list[dict]   (multiple, appended)
+    """
+    warnings: list[str] = []
+    extras: dict = {}
+
+    for orphan in _list_orphan_sections(body):
+        heading = orphan["heading"]
+        lower = heading.lower()
+        content = orphan["content"]
+        strategy = ORPHAN_H2_HEURISTIC.get(lower)
+
+        if strategy is None:
+            warnings.append(
+                f"dropped-orphan-section:{heading} ({len(content)} chars — no bv-* target)"
+            )
+            continue
+
+        if strategy == "summary_attr_if_empty":
+            if not canonical_summary_attr and "summary_attr_override" not in extras:
+                # Strip fenced/markdown decoration to one-paragraph form.
+                first_para = re.split(r"\n\s*\n", content, maxsplit=1)[0].strip()
+                extras["summary_attr_override"] = first_para
+            else:
+                warnings.append(
+                    f"dropped-orphan-section:{heading} (canonical summary already populated)"
+                )
+            continue
+
+        if strategy == "reason_if_empty":
+            if canonical_reason is None and "reason" not in extras:
+                extras["reason"] = content
+            else:
+                warnings.append(
+                    f"dropped-orphan-section:{heading} (canonical <bv-reason> already populated)"
+                )
+            continue
+
+        if strategy == "structure_if_empty":
+            if "structure" not in canonical_narrative and "structure" not in extras:
+                extras["structure"] = content
+            else:
+                warnings.append(
+                    f"dropped-orphan-section:{heading} (canonical <bv-structure> already populated)"
+                )
+            continue
+
+        if strategy == "dependencies_if_empty":
+            if "dependencies" not in canonical_narrative and "dependencies" not in extras:
+                extras["dependencies"] = content
+            else:
+                warnings.append(
+                    f"dropped-orphan-section:{heading} (canonical <bv-dependencies> already populated)"
+                )
+            continue
+
+        if strategy == "highlights_if_empty":
+            if "highlights" not in canonical_narrative and "highlights" not in extras:
+                extras["highlights"] = content
+            else:
+                warnings.append(
+                    f"dropped-orphan-section:{heading} (canonical <bv-highlights> already populated)"
+                )
+            continue
+
+        if strategy == "examples_if_empty":
+            if "examples" not in canonical_narrative and "examples" not in extras:
+                extras["examples"] = content
+            else:
+                warnings.append(
+                    f"dropped-orphan-section:{heading} (canonical <bv-examples> already populated)"
+                )
+            continue
+
+        if strategy == "rules_split":
+            # Split rules — multiple <bv-rule> siblings are valid.
+            items = split_rules_block(content)
+            if items:
+                extras.setdefault("rules", []).extend(items)
+            continue
+
+        if strategy == "patterns_multiple":
+            items = _parse_bullet_items(content)
+            if items:
+                extras.setdefault("patterns", []).extend(items)
+            continue
+
+        if strategy == "decisions_multiple":
+            items = _parse_bullet_items(content)
+            if items:
+                extras.setdefault("decisions", []).extend(items)
+            continue
+
+        if strategy == "facts_parse":
+            items = _parse_fact_bullets(content)
+            if items:
+                extras.setdefault("facts", []).extend(items)
+            else:
+                warnings.append(
+                    f"dropped-orphan-section:{heading} (no parseable fact bullets in {len(content)} chars)"
+                )
+            continue
+
+    return extras, warnings
 
 
 # =============================================================================
@@ -483,23 +958,44 @@ def convert_markdown_topic_to_html(
 
     Pure function — does not touch disk. The orchestrator is
     responsible for atomic writes.
+
+    Output uses ONLY closed bv-* vocabulary; orphan content is mapped
+    to existing bv-* targets via the heading-name heuristic, or
+    dropped + warned when no clean target exists.
     """
     warnings: list[str] = []
     topic_path = rel_path_to_topic_path(rel_path)
 
     normalized = markdown if markdown.endswith("\n") else markdown + "\n"
-    frontmatter, body = _parse_frontmatter(normalized)
+    frontmatter_raw, body, yaml_block = _parse_frontmatter(normalized)
+    frontmatter: dict = frontmatter_raw or {}
 
-    title = _opt_str((frontmatter or {}).get("title")) or topic_path.split("/")[-1] or topic_path
-    summary = _opt_str((frontmatter or {}).get("summary")) or _opt_str((frontmatter or {}).get("short_description")) or ""
-    tags = _str_list((frontmatter or {}).get("tags"))
-    keywords = _str_list((frontmatter or {}).get("keywords"))
+    # Case 11: YAML hazard warnings.
+    warnings.extend(_check_yaml_hash_hazard(yaml_block))
+
+    # Case 3: unknown frontmatter key warnings.
+    warnings.extend(_check_unknown_frontmatter_keys(frontmatter))
+
+    # Title resolution: frontmatter -> body H1 (case 1) -> path slug.
+    fm_title = _opt_str(frontmatter.get("title"))
+    title = fm_title or _extract_h1_title(body) or topic_path.split("/")[-1] or topic_path
+
+    # Summary resolution: frontmatter -> orphan ## Abstract / ##
+    # Overview (handled via heuristic later) -> lede paragraph (case
+    # 4) -> empty.
+    fm_summary = _opt_str(frontmatter.get("summary")) or _opt_str(
+        frontmatter.get("short_description")
+    ) or ""
+    summary = fm_summary  # may be overwritten below by orphan / lede
+
+    tags = _str_list(frontmatter.get("tags"))
+    keywords = _str_list(frontmatter.get("keywords"))
     related = _html_related_paths(
-        _str_list((frontmatter or {}).get("related")) or _str_list((frontmatter or {}).get("relateds"))
+        _str_list(frontmatter.get("related")) or _str_list(frontmatter.get("relateds"))
     )
 
-    created_at = _opt_str((frontmatter or {}).get("createdAt"))
-    updated_at = _opt_str((frontmatter or {}).get("updatedAt"))
+    created_at = _opt_str(frontmatter.get("createdAt"))
+    updated_at = _opt_str(frontmatter.get("updatedAt"))
     fallback = _to_iso(
         datetime.datetime.fromtimestamp(mtime_ms / 1000, tz=datetime.timezone.utc)
     )
@@ -508,10 +1004,54 @@ def convert_markdown_topic_to_html(
         created_at = created_at or fallback
         updated_at = updated_at or fallback
 
-    raw_concept = _parse_raw_concept(body)
-    narrative = _parse_narrative(body)
+    # Canonical parsing.
+    raw_concept, rc_warnings = _parse_raw_concept(body)
+    warnings.extend(rc_warnings)
+    narrative, narrative_extras, narrative_warnings = _parse_narrative(body)
+    warnings.extend(narrative_warnings)
     facts = _parse_facts(body)
     reason = _parse_reason(body)
+
+    # Orphan section heuristic (case 2).
+    orphan_extras, orphan_warnings = _process_orphan_sections(
+        body=body,
+        canonical_reason=reason,
+        canonical_narrative=narrative,
+        canonical_summary_attr=summary,
+    )
+    warnings.extend(orphan_warnings)
+
+    # Merge canonical + orphan-discovered content. Canonical wins per
+    # the conflict resolution rule.
+    if reason is None and "reason" in orphan_extras:
+        reason = orphan_extras["reason"]
+    for key in ("structure", "dependencies", "highlights", "examples"):
+        if key not in narrative and key in orphan_extras:
+            narrative[key] = orphan_extras[key]
+    extra_rules: list[dict] = list(narrative_extras.get("rules", []))
+    extra_rules.extend(orphan_extras.get("rules", []))
+    extra_patterns: list[str] = list(narrative_extras.get("patterns", []))
+    extra_patterns.extend(orphan_extras.get("patterns", []))
+    extra_decisions: list[str] = list(orphan_extras.get("decisions", []))
+    extra_facts: list[dict] = list(orphan_extras.get("facts", []))
+
+    # Case 4 final fallback: hoist lede paragraph if summary still empty
+    # and orphan didn't fill it.
+    if not summary:
+        summary = orphan_extras.get("summary_attr_override", "") or ""
+    if not summary:
+        lede = _extract_lede_paragraph(body)
+        if lede:
+            summary = re.split(r"\n\s*\n", lede, maxsplit=1)[0].strip()
+
+    # Case 6: every fenced block anywhere → bv-diagram. Dedup against
+    # canonical `### Diagrams` extraction (those are already in
+    # narrative['diagrams']).
+    diagrams_span = _diagrams_section_span(body)
+    exclude_spans = [diagrams_span] if diagrams_span else []
+    extra_diagrams = _extract_all_fenced_blocks(body, exclude_spans)
+    if extra_diagrams:
+        narrative.setdefault("diagrams", []).extend(extra_diagrams)
 
     snippets = _extract_snippets_from_body(body)
     if snippets:
@@ -540,8 +1080,10 @@ def convert_markdown_topic_to_html(
     _append_reason(body_parts, reason)
     _append_raw_concept(body_parts, raw_concept)
     _append_narrative(body_parts, narrative)
-    _append_facts(body_parts, facts)
-    _append_orphans(body_parts, body)
+    _append_facts(body_parts, facts + extra_facts)
+    _append_extra_rules(body_parts, extra_rules)
+    _append_extra_patterns(body_parts, extra_patterns)
+    _append_extra_decisions(body_parts, extra_decisions)
 
     inner = ("\n  " + "\n  ".join(body_parts) + "\n") if body_parts else ""
     html = f"<bv-topic {' '.join(attrs)}>{inner}</bv-topic>"
@@ -629,14 +1171,33 @@ def _append_facts(parts: list[str], facts: list[dict]) -> None:
         )
 
 
-def _append_orphans(parts: list[str], body: str) -> None:
-    # Body already has frontmatter stripped (we operate on the
-    # post-frontmatter portion in the convert function).
-    for orphan in parse_orphan_sections(body):
+def _append_extra_rules(parts: list[str], rules: list[dict]) -> None:
+    seen_ids: set[str] = set()
+    for rule in rules:
+        rule_id = rule.get("id", slugify_rule_id(rule.get("text", ""), "r"))
+        # Re-uniquify against any ids already emitted (canonical rules
+        # use their own seen-set; cross-section dedup is best-effort).
+        original = rule_id
+        suffix = 2
+        while rule_id in seen_ids:
+            rule_id = f"{original}-{suffix}"
+            suffix += 1
+        seen_ids.add(rule_id)
+        sev_attr = f' severity="{rule["severity"]}"' if "severity" in rule else ""
         parts.append(
-            f'<p data-md-section="{escape_html_text(orphan["heading"])}">'
-            f'{escape_html_text(orphan["content"])}</p>'
+            f'<bv-rule{sev_attr} id="{escape_html_text(rule_id)}">'
+            f'{escape_html_text(rule["text"])}</bv-rule>'
         )
+
+
+def _append_extra_patterns(parts: list[str], patterns: list[str]) -> None:
+    for pat_text in patterns:
+        parts.append(f"<bv-pattern>{escape_html_text(pat_text)}</bv-pattern>")
+
+
+def _append_extra_decisions(parts: list[str], decisions: list[str]) -> None:
+    for dec_text in decisions:
+        parts.append(f"<bv-decision>{escape_html_text(dec_text)}</bv-decision>")
 
 
 def _extract_snippets_from_body(body: str) -> list[str]:
@@ -644,7 +1205,7 @@ def _extract_snippets_from_body(body: str) -> list[str]:
     only exists when the body contains an explicit `\\n---\\n` ruler
     AFTER frontmatter has been stripped — orphan `## X` content with
     no horizontal rule isn't a snippet, it's section content (and is
-    handled by parse_orphan_sections).
+    handled by the orphan heuristic).
 
     Returns the list of non-empty pieces between rulers. An empty
     return means there were no snippets to drop.
@@ -657,8 +1218,8 @@ def _extract_snippets_from_body(body: str) -> list[str]:
             rf"##\s*{re.escape(heading)}[\s\S]*?(?=\n##\s|\n---\n|$)", re.IGNORECASE
         )
         s = pattern.sub("", s).strip()
-    # Strip orphan `## X` sections too — those are preserved as <p>
-    # blocks elsewhere and must not be re-counted as snippets here.
+    # Strip orphan `## X` sections too — those are routed via the
+    # heuristic elsewhere and must not be re-counted as snippets here.
     s = _SECTION_REGEX.sub("", s).strip()
     snippets = [
         snippet.strip()
@@ -775,9 +1336,6 @@ def _process_file(
     try:
         markdown = source_abs.read_text(encoding="utf-8")
     except OSError as e:
-        # Move the file out of the live tree even when unreadable so
-        # the post-migration tree stays .md-free. The reason captures
-        # the read failure so it surfaces in the report.
         return _archive_failed(source_abs, archive_abs, rel, f"read-error: {e}", dry_run)
 
     if not markdown.strip():
