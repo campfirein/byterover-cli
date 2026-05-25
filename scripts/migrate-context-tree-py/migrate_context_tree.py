@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import re
 import shutil
 import sys
@@ -89,6 +90,13 @@ SUMMARY_INDEX_FILE = "_index.md"
 ABSTRACT_EXTENSION = ".abstract.md"
 OVERVIEW_EXTENSION = ".overview.md"
 MANIFEST_FILE = "_manifest.json"
+
+# Manifest written into the archive root listing relative .md paths
+# whose .html siblings already existed BEFORE migration started. The
+# rollback path reads this list so it doesn't delete .html files that
+# predated the migration (which would be destructive data loss on
+# mixed trees).
+PRE_EXISTING_HTML_MANIFEST = "_pre_existing_html_siblings.json"
 
 # Canonical body sections produced by the markdown writer; everything
 # else is treated as an orphan section and routed through the heading-
@@ -271,21 +279,23 @@ def split_rules_block(rules_text: str) -> list[dict]:
     if not trimmed:
         return []
 
-    lines = [l.strip() for l in trimmed.split("\n") if l.strip()]
-    bullets = [l for l in lines if re.match(r"^[-*+]\s+", l)]
-    numbered = [l for l in lines if re.match(r"^\d+\.\s+", l)]
+    # Detect bullet style on the ORIGINAL (not flattened) text so
+    # multi-line items with indented continuations are kept together
+    # (codex finding — line-flat splitter drops continuations).
+    has_bullets = bool(re.search(r"(?m)^[-*+]\s+\S", trimmed))
+    has_numbered = bool(re.search(r"(?m)^\d+\.\s+\S", trimmed))
 
     items: list[str]
-    if bullets:
-        items = [re.sub(r"^[-*+]\s+", "", l) for l in bullets]
-    elif numbered:
-        items = [re.sub(r"^\d+\.\s+", "", l) for l in numbered]
+    if has_bullets or has_numbered:
+        items = _collect_bullet_items_with_continuations(trimmed)
     elif _RULE_PREFIX_LINE.search(trimmed):
-        # Case 5: split on "Rule N:" line starts. The first item may
-        # have content before the first prefix (rare) — captured as a
-        # leading entry only if non-empty.
+        # Case 5: split on "Rule N:" prefix occurrences. The first
+        # element of `parts` is the text BEFORE the first prefix —
+        # almost always an intro paragraph, not a rule. Drop it; if
+        # the section is purely intro with no prefixes the paragraph
+        # fallback would have handled it instead.
         parts = _RULE_PREFIX_LINE.split(trimmed)
-        items = [p.strip() for p in parts if p.strip()]
+        items = [p.strip() for p in parts[1:] if p.strip()]
     else:
         items = [p.strip() for p in re.split(r"\n\s*\n", trimmed) if p.strip()]
 
@@ -356,24 +366,51 @@ def rel_path_to_topic_path(rel_path: str) -> str:
 
 
 _SECTION_REGEX = re.compile(r"^##\s+([^\n]+?)\s*$([\s\S]*?)(?=^##\s|\Z)", re.MULTILINE)
+
+# Case 6: line-anchor the optional **Title** prefix so a `**bold**` mid-
+# sentence preceding a fence doesn't become a spurious diagram title.
+# The title line must start at column 0 (or right after a newline) and
+# be immediately followed by the fence opener.
 _FENCED_BLOCK_REGEX = re.compile(
-    r"(?:\*\*(.+?)\*\*\n)?```(\w*)\n([\s\S]*?)```"
+    r"(?:(?:^|\n)\*\*(.+?)\*\*\s*\n)?```(\w*)\n([\s\S]*?)```"
 )
+
+# Case 5 (rules splitter) and case 5 (section regex) both need to ignore
+# content inside fenced code blocks so that a literal `## ...` line or a
+# `Rule N:` line inside a fence doesn't terminate / split anything.
+# Mask fenced regions with same-length whitespace so byte spans stay
+# aligned with the original text.
+_FENCE_MASK_REGEX = re.compile(r"```[\s\S]*?```|~~~[\s\S]*?~~~")
+
+
+def _mask_fenced_blocks(text: str) -> str:
+    """Replace fenced code blocks with equal-length whitespace so
+    structural regexes (`## heading`, `Rule N:` splitter, etc.) can
+    walk the text without false-matching inside code samples. Caller
+    must read original content via byte-span slicing into the source
+    text — character positions are preserved by the masking."""
+    return _FENCE_MASK_REGEX.sub(lambda m: " " * len(m.group()), text)
 
 
 def _list_orphan_sections(body: str) -> list[dict]:
     """Walk a markdown body and return every `## X` section whose
-    heading is not in the canonical set. Each entry: heading, content,
-    span (start, end) for fenced-block dedup."""
+    heading is not in the canonical set. Each entry: heading, content.
+
+    Case 5 — runs the section regex against a fence-masked copy of
+    the body so a literal `## ...` line inside a ` ``` ` block doesn't
+    terminate the enclosing section. Content is sliced back out of the
+    original body via the matched span so fenced code survives intact.
+    """
+    masked = _mask_fenced_blocks(body)
     out: list[dict] = []
-    for m in _SECTION_REGEX.finditer(body):
+    for m in _SECTION_REGEX.finditer(masked):
         heading = m.group(1).strip()
         if heading in KNOWN_SECTION_HEADINGS:
             continue
-        content = m.group(2).strip()
+        content = body[m.start(2):m.end(2)].strip()
         if not content:
             continue
-        out.append({"heading": heading, "content": content, "span": (m.start(), m.end())})
+        out.append({"heading": heading, "content": content})
     return out
 
 
@@ -382,21 +419,26 @@ def _list_orphan_sections(body: str) -> list[dict]:
 # =============================================================================
 
 
-def _parse_frontmatter(content: str) -> Tuple[Optional[dict], str, str]:
+def _parse_frontmatter(content: str) -> Tuple[Optional[dict], str, str, Optional[str]]:
     """Extract YAML frontmatter from the head of the file.
 
-    Returns (frontmatter_dict, body, raw_yaml_block). The raw yaml block
-    is returned so callers can detect YAML # comment hazards (case 11).
-    When no frontmatter is found, returns (None, original_content, '')."""
+    Returns (frontmatter_dict, body, raw_yaml_block, parse_error).
+    `parse_error` is None on success; a short string describing the
+    failure when YAML parsing fails or the parsed value isn't a dict.
+    Callers should surface non-None `parse_error` as an operator-
+    visible warning so broken frontmatter is never silently dropped.
+
+    When no frontmatter is found at all, returns (None, original, '', None)
+    — that's a content-shape signal, not a parse failure."""
     if not (content.startswith("---\n") or content.startswith("---\r\n")):
-        return None, content, ""
+        return None, content, "", None
 
     lf = content.find("\n---\n", 4)
     crlf = content.find("\r\n---\r\n", 5)
     is_crlf = lf == -1
     end = crlf if is_crlf else lf
     if end < 0:
-        return None, content, ""
+        return None, content, "", "unterminated-frontmatter-delimiter"
 
     delim = 7 if is_crlf else 5
     yaml_block = content[5 if is_crlf else 4 : end]
@@ -404,11 +446,13 @@ def _parse_frontmatter(content: str) -> Tuple[Optional[dict], str, str]:
 
     try:
         parsed = yaml.load(yaml_block, Loader=FrontmatterLoader)
-    except yaml.YAMLError:
-        return None, content, yaml_block
+    except yaml.YAMLError as e:
+        return None, body, yaml_block, f"yaml-parse-error: {e}"
     if not isinstance(parsed, dict):
-        return None, content, yaml_block
-    return parsed, body, yaml_block
+        return None, body, yaml_block, (
+            f"frontmatter-not-a-mapping (got {type(parsed).__name__})"
+        )
+    return parsed, body, yaml_block, None
 
 
 def _str_list(value) -> list[str]:
@@ -421,6 +465,48 @@ def _opt_str(value) -> Optional[str]:
     return value if isinstance(value, str) else None
 
 
+def _opt_str_typed(
+    value, key: str, warnings: list[str]
+) -> Optional[str]:
+    """Like `_opt_str`, but emits a type-mismatch warning when the
+    value is present but not a string (case 13). Missing values are
+    silent — they fall back to the next resolution layer."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    warnings.append(
+        f"frontmatter-type-mismatch:{key} expected string, got {type(value).__name__}"
+    )
+    return None
+
+
+def _str_list_typed(value, key: str, warnings: list[str]) -> list[str]:
+    """Like `_str_list`, but emits a type-mismatch warning when the
+    value is present but neither a string nor a list-of-strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, list):
+        out: list[str] = []
+        bad = 0
+        for v in value:
+            if isinstance(v, str):
+                out.append(v)
+            else:
+                bad += 1
+        if bad:
+            warnings.append(
+                f"frontmatter-type-mismatch:{key} contained {bad} non-string element(s) — dropped"
+            )
+        return out
+    warnings.append(
+        f"frontmatter-type-mismatch:{key} expected string or list, got {type(value).__name__}"
+    )
+    return []
+
+
 def _html_related_paths(values: list[str]) -> list[str]:
     return [
         f"{value[:-3]}.html" if value.endswith(".md") else value
@@ -429,14 +515,20 @@ def _html_related_paths(values: list[str]) -> list[str]:
 
 
 def _parse_section(body: str, heading: str) -> Optional[str]:
+    """Extract the content body of a named `## Heading` section.
+
+    Case 5 — same fence-masking as `_list_orphan_sections`. The regex
+    walks the masked text to find boundaries, then content is sliced
+    from the original body so fenced code survives."""
     pattern = re.compile(
         rf"##\s*{re.escape(heading)}\s*\n([\s\S]*?)(?=\n##\s|\n---\n|$)",
         re.IGNORECASE,
     )
-    m = pattern.search(body)
+    masked = _mask_fenced_blocks(body)
+    m = pattern.search(masked)
     if not m:
         return None
-    text = m.group(1).strip()
+    text = body[m.start(1):m.end(1)].strip()
     return text or None
 
 
@@ -456,6 +548,55 @@ def _strip_bullet_prefix(line: str) -> Optional[str]:
     if not m:
         return None
     return line[m.end():]
+
+
+def _collect_bullet_items_with_continuations(text: str) -> list[str]:
+    """Split a bulleted block into items, preserving indented
+    continuation lines on the same item.
+
+    Markdown allows multi-line list items where continuation text is
+    indented under the bullet. The naive line-by-line splitter drops
+    those continuations silently — that's the codex finding on the
+    rules block. This helper folds indented (or pure-whitespace)
+    follow-up lines back into the current item until the next bullet-
+    leading line or a blank-line break.
+
+    Returns the list of joined item strings (trimmed)."""
+    items: list[str] = []
+    current: Optional[list[str]] = None
+    for line in text.splitlines():
+        if _LOOSE_BULLET_PREFIX.match(line):
+            if current is not None:
+                joined = "\n".join(current).strip()
+                if joined:
+                    items.append(joined)
+            stripped = _strip_bullet_prefix(line) or ""
+            current = [stripped.rstrip()]
+            continue
+        if current is None:
+            continue
+        if not line.strip():
+            # Blank line terminates the current item.
+            joined = "\n".join(current).strip()
+            if joined:
+                items.append(joined)
+            current = None
+            continue
+        # Indented continuation of the current item — strip leading
+        # whitespace and append.
+        if line.startswith((" ", "\t")):
+            current.append(line.strip())
+        else:
+            # Un-indented non-bullet line — closes the current item.
+            joined = "\n".join(current).strip()
+            if joined:
+                items.append(joined)
+            current = None
+    if current is not None:
+        joined = "\n".join(current).strip()
+        if joined:
+            items.append(joined)
+    return items
 
 
 def _parse_raw_concept(body: str) -> Tuple[dict, list[str]]:
@@ -508,18 +649,12 @@ def _parse_raw_concept(body: str) -> Tuple[dict, list[str]]:
                 rc["author"] = first or sub_body
         elif key == "changes":
             existing = rc.get("changes", [])
-            for line in sub_body.splitlines():
-                content = _strip_bullet_prefix(line)
-                if content is not None and content.strip():
-                    existing.append(content.strip())
+            existing.extend(_collect_bullet_items_with_continuations(sub_body))
             if existing:
                 rc["changes"] = existing
         elif key == "files":
             existing = rc.get("files", [])
-            for line in sub_body.splitlines():
-                content = _strip_bullet_prefix(line)
-                if content is not None and content.strip():
-                    existing.append(content.strip())
+            existing.extend(_collect_bullet_items_with_continuations(sub_body))
             if existing:
                 rc["files"] = existing
         elif key == "patterns":
@@ -553,8 +688,15 @@ def _parse_narrative(body: str) -> Tuple[dict, dict, list[str]]:
     HEURISTIC, others warned + dropped.
     """
     warnings: list[str] = []
+    # Lookahead uses `(?m)^##\s[^#]` so a `## Narrative` followed
+    # IMMEDIATELY by another H2 (no blank line) is still terminated
+    # correctly. The previous `\n##\s[^#]` required a literal `\n`
+    # before the next H2, which meant back-to-back `## A\n## B`
+    # consumed the `\n` and never matched — Narrative swallowed the
+    # whole rest of the document.
     pattern = re.compile(
-        r"##\s*Narrative\s*\n([\s\S]*?)(?=\n##\s[^#]|\n---\n|$)", re.IGNORECASE
+        r"(?ms)##\s*Narrative\s*\n([\s\S]*?)(?=^##\s[^#]|\n---\n|\Z)",
+        re.IGNORECASE,
     )
     m = pattern.search(body)
     if not m:
@@ -638,19 +780,10 @@ def _parse_narrative(body: str) -> Tuple[dict, dict, list[str]]:
 
 
 def _parse_bullet_items(section_body: str) -> list[str]:
-    """Extract bulleted items (any common style) as a list of strings.
-    Strips the bullet prefix and bold markdown decoration like
-    `**Name:**` if present, returning the content text."""
-    out: list[str] = []
-    for line in section_body.splitlines():
-        content = _strip_bullet_prefix(line)
-        if content is None:
-            continue
-        content = content.strip()
-        if not content:
-            continue
-        out.append(content)
-    return out
+    """Extract bulleted items (any common style) as a list of strings,
+    preserving indented continuation lines as part of the same item.
+    Strips the bullet prefix and returns the content text."""
+    return _collect_bullet_items_with_continuations(section_body)
 
 
 def _parse_fact_bullets(section_body: str) -> list[dict]:
@@ -795,9 +928,13 @@ def _extract_all_fenced_blocks(body: str, exclude_spans: list[tuple[int, int]]) 
 
 def _diagrams_section_span(body: str) -> Optional[tuple[int, int]]:
     """Return (start, end) span of the `## Narrative > ### Diagrams`
-    subsection in `body`, for fenced-block dedup."""
+    subsection in `body`, for fenced-block dedup. Same `(?m)^##\\s[^#]`
+    anchoring as `_parse_narrative` so back-to-back H2s terminate
+    correctly."""
     nar = re.search(
-        r"##\s*Narrative\s*\n([\s\S]*?)(?=\n##\s[^#]|\n---\n|$)", body, re.IGNORECASE
+        r"(?ms)##\s*Narrative\s*\n([\s\S]*?)(?=^##\s[^#]|\n---\n|\Z)",
+        body,
+        re.IGNORECASE,
     )
     if not nar:
         return None
@@ -967,8 +1104,13 @@ def convert_markdown_topic_to_html(
     topic_path = rel_path_to_topic_path(rel_path)
 
     normalized = markdown if markdown.endswith("\n") else markdown + "\n"
-    frontmatter_raw, body, yaml_block = _parse_frontmatter(normalized)
+    frontmatter_raw, body, yaml_block, parse_error = _parse_frontmatter(normalized)
     frontmatter: dict = frontmatter_raw or {}
+
+    # Case 3: surface malformed frontmatter so the operator knows
+    # title/summary/tags/related were silently demoted to defaults.
+    if parse_error is not None:
+        warnings.append(f"malformed-frontmatter: {parse_error}")
 
     # Case 11: YAML hazard warnings.
     warnings.extend(_check_yaml_hash_hazard(yaml_block))
@@ -977,25 +1119,32 @@ def convert_markdown_topic_to_html(
     warnings.extend(_check_unknown_frontmatter_keys(frontmatter))
 
     # Title resolution: frontmatter -> body H1 (case 1) -> path slug.
-    fm_title = _opt_str(frontmatter.get("title"))
+    # Case 13: `_opt_str_typed` warns when the value is the wrong type
+    # (e.g. `title: 42`) so silent coercion doesn't hide content loss.
+    fm_title = _opt_str_typed(frontmatter.get("title"), "title", warnings)
     title = fm_title or _extract_h1_title(body) or topic_path.split("/")[-1] or topic_path
 
     # Summary resolution: frontmatter -> orphan ## Abstract / ##
     # Overview (handled via heuristic later) -> lede paragraph (case
     # 4) -> empty.
-    fm_summary = _opt_str(frontmatter.get("summary")) or _opt_str(
-        frontmatter.get("short_description")
-    ) or ""
+    fm_summary = (
+        _opt_str_typed(frontmatter.get("summary"), "summary", warnings)
+        or _opt_str_typed(
+            frontmatter.get("short_description"), "short_description", warnings
+        )
+        or ""
+    )
     summary = fm_summary  # may be overwritten below by orphan / lede
 
-    tags = _str_list(frontmatter.get("tags"))
-    keywords = _str_list(frontmatter.get("keywords"))
+    tags = _str_list_typed(frontmatter.get("tags"), "tags", warnings)
+    keywords = _str_list_typed(frontmatter.get("keywords"), "keywords", warnings)
     related = _html_related_paths(
-        _str_list(frontmatter.get("related")) or _str_list(frontmatter.get("relateds"))
+        _str_list_typed(frontmatter.get("related"), "related", warnings)
+        or _str_list_typed(frontmatter.get("relateds"), "relateds", warnings)
     )
 
-    created_at = _opt_str(frontmatter.get("createdAt"))
-    updated_at = _opt_str(frontmatter.get("updatedAt"))
+    created_at = _opt_str_typed(frontmatter.get("createdAt"), "createdAt", warnings)
+    updated_at = _opt_str_typed(frontmatter.get("updatedAt"), "updatedAt", warnings)
     fallback = _to_iso(
         datetime.datetime.fromtimestamp(mtime_ms / 1000, tz=datetime.timezone.utc)
     )
@@ -1073,15 +1222,28 @@ def convert_markdown_topic_to_html(
         attrs.append(f'keywords="{escape_html_text(",".join(keywords))}"')
     if related:
         attrs.append(f'related="{escape_html_text(",".join(related))}"')
+    # NOTE on `createdat=` / `updatedat=` emission: the bv-topic schema
+    # at src/server/infra/render/elements/bv-topic/schema.ts lists these
+    # in `RESERVED_TOPIC_ATTRIBUTES` and rejects them on LLM input —
+    # they're considered system-managed. The on-disk reader doesn't
+    # enforce that, so they're safe to set here at migration time, and
+    # we want to preserve source dates rather than synthesize from
+    # mtime on every read. The hazard is downstream: if curate later
+    # surfaces an existing migrated topic to the LLM as context and the
+    # LLM copies these attributes back into its output, the writer's
+    # validator will reject it with an attribute-validation error. The
+    # curate prompt builder should scrub reserved attributes before
+    # showing existing content — that's its responsibility, not ours.
     attrs.append(f'createdat="{escape_html_text(created_at)}"')
     attrs.append(f'updatedat="{escape_html_text(updated_at)}"')
 
     body_parts: list[str] = []
+    rule_id_registry: set[str] = set()
     _append_reason(body_parts, reason)
     _append_raw_concept(body_parts, raw_concept)
-    _append_narrative(body_parts, narrative)
+    _append_narrative(body_parts, narrative, rule_id_registry)
     _append_facts(body_parts, facts + extra_facts)
-    _append_extra_rules(body_parts, extra_rules)
+    _append_extra_rules(body_parts, extra_rules, rule_id_registry)
     _append_extra_patterns(body_parts, extra_patterns)
     _append_extra_decisions(body_parts, extra_decisions)
 
@@ -1124,9 +1286,17 @@ def _append_raw_concept(parts: list[str], rc: dict) -> None:
         )
 
 
-def _append_narrative(parts: list[str], narr: dict) -> None:
+def _append_narrative(
+    parts: list[str], narr: dict, rule_ids: Optional[set[str]] = None
+) -> None:
+    """Emit canonical narrative subsections. `rule_ids` is a shared
+    seen-set threaded through canonical + orphan rule emission so a
+    rule that slugifies to the same id in both blocks gets a unique
+    suffix on its second emission (case 10)."""
     if not narr:
         return
+    if rule_ids is None:
+        rule_ids = set()
     if "structure" in narr:
         parts.append(f"<bv-structure>{escape_html_text(narr['structure'])}</bv-structure>")
     if "dependencies" in narr:
@@ -1139,9 +1309,10 @@ def _append_narrative(parts: list[str], narr: dict) -> None:
         )
     if "rules" in narr:
         for rule in split_rules_block(narr["rules"]):
+            rid = _uniquify_id(rule["id"], rule_ids)
             sev_attr = f' severity="{rule["severity"]}"' if "severity" in rule else ""
             parts.append(
-                f'<bv-rule{sev_attr} id="{escape_html_text(rule["id"])}">'
+                f'<bv-rule{sev_attr} id="{escape_html_text(rid)}">'
                 f'{escape_html_text(rule["text"])}</bv-rule>'
             )
     if "examples" in narr:
@@ -1153,6 +1324,18 @@ def _append_narrative(parts: list[str], narr: dict) -> None:
             f'<bv-diagram type="{type_}"{title_attr}><pre><code>'
             f'{escape_html_text(d["content"])}</code></pre></bv-diagram>'
         )
+
+
+def _uniquify_id(rule_id: str, seen: set[str]) -> str:
+    """Suffix `rule_id` with -2, -3, ... until it doesn't collide with
+    any entry already in `seen`, then record it."""
+    candidate = rule_id
+    suffix = 2
+    while candidate in seen:
+        candidate = f"{rule_id}-{suffix}"
+        suffix += 1
+    seen.add(candidate)
+    return candidate
 
 
 def _append_facts(parts: list[str], facts: list[dict]) -> None:
@@ -1171,21 +1354,20 @@ def _append_facts(parts: list[str], facts: list[dict]) -> None:
         )
 
 
-def _append_extra_rules(parts: list[str], rules: list[dict]) -> None:
-    seen_ids: set[str] = set()
+def _append_extra_rules(
+    parts: list[str], rules: list[dict], rule_ids: Optional[set[str]] = None
+) -> None:
+    """Emit orphan-routed rules. Shares the `rule_ids` seen-set with
+    `_append_narrative` so canonical + orphan rules get unique ids
+    across the whole topic (case 10)."""
+    if rule_ids is None:
+        rule_ids = set()
     for rule in rules:
-        rule_id = rule.get("id", slugify_rule_id(rule.get("text", ""), "r"))
-        # Re-uniquify against any ids already emitted (canonical rules
-        # use their own seen-set; cross-section dedup is best-effort).
-        original = rule_id
-        suffix = 2
-        while rule_id in seen_ids:
-            rule_id = f"{original}-{suffix}"
-            suffix += 1
-        seen_ids.add(rule_id)
+        base_id = rule.get("id", slugify_rule_id(rule.get("text", ""), "r"))
+        rid = _uniquify_id(base_id, rule_ids)
         sev_attr = f' severity="{rule["severity"]}"' if "severity" in rule else ""
         parts.append(
-            f'<bv-rule{sev_attr} id="{escape_html_text(rule_id)}">'
+            f'<bv-rule{sev_attr} id="{escape_html_text(rid)}">'
             f'{escape_html_text(rule["text"])}</bv-rule>'
         )
 
@@ -1238,15 +1420,28 @@ def _today_utc() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 
 
-def _classify_entry(basename: str) -> str:
+def _classify_entry(rel: str, tree_files: set[str]) -> str:
     """Returns 'manifest', 'derived', or 'topic'. Called for files
-    NOT in _archived/ (filtered upstream)."""
+    NOT in _archived/ (filtered upstream).
+
+    `.abstract.md` / `.overview.md` sidecars are classified as derived
+    ONLY when the base `<name>.md` sibling exists in the same dir. A
+    standalone `<name>.abstract.md` with no corresponding `<name>.md`
+    is treated as a regular topic — the suffix is then an unfortunate
+    naming coincidence, not a derived-sidecar marker."""
+    basename = rel.rsplit("/", 1)[-1] if "/" in rel else rel
     if basename == MANIFEST_FILE:
         return "manifest"
     if basename == SUMMARY_INDEX_FILE:
         return "derived"
-    if basename.endswith(ABSTRACT_EXTENSION) or basename.endswith(OVERVIEW_EXTENSION):
-        return "derived"
+    sidecar_match = re.match(r"^(.+?)\.(?:abstract|overview)\.md$", basename)
+    if sidecar_match:
+        prefix = rel[: -len(basename)] if "/" in rel else ""
+        sibling_base = f"{prefix}{sidecar_match.group(1)}.md"
+        if sibling_base in tree_files:
+            return "derived"
+        # else: standalone topic that happens to end in .abstract.md /
+        # .overview.md — treat as a regular topic.
     return "topic"
 
 
@@ -1275,10 +1470,21 @@ def _list_tree_files(tree_root: Path) -> list[str]:
     return out
 
 
+def _html_sibling_path(tree_root: Path, rel_md: str) -> Path:
+    """Map `foo/bar.md` -> `tree_root/foo/bar.html`.
+
+    Uses string concatenation rather than `Path.with_suffix(".html")`
+    because `with_suffix` only replaces the LAST dot-suffix — so a
+    legitimate topic filename like `node.js.md` would otherwise map to
+    `node.html` (losing the `.js` segment) and mismatch the
+    `<bv-topic path>` attribute the writer produces."""
+    return tree_root / (rel_md[:-3] + ".html")
+
+
 def _html_sibling_exists(tree_root: Path, rel_md: str) -> bool:
     if not rel_md.endswith(".md"):
         return False
-    return (tree_root / rel_md[:-3]).with_suffix(".html").exists()
+    return _html_sibling_path(tree_root, rel_md).exists()
 
 
 def _move(source: Path, target: Path) -> None:
@@ -1304,11 +1510,12 @@ def _process_file(
     tree_root: Path,
     dry_run: bool,
     rel: str,
+    tree_files: set[str],
 ) -> dict:
     if not basename.endswith(".md") and basename != MANIFEST_FILE:
         return {"outcome": "skipped", "reason": "unsupported-extension", "source_rel_path": rel}
 
-    kind = _classify_entry(basename)
+    kind = _classify_entry(rel, tree_files)
     source_abs = tree_root / rel
     archive_abs = archive_root / rel
 
@@ -1339,6 +1546,22 @@ def _process_file(
         return _archive_failed(source_abs, archive_abs, rel, f"read-error: {e}", dry_run)
 
     if not markdown.strip():
+        # Empty file. If the basename matches a sidecar pattern
+        # (`.abstract.md` / `.overview.md`), treat as derived even
+        # though the sibling base check (case 12) classified it as
+        # topic — empty sidecars are usually pre-allocated stubs
+        # from the curate pipeline, not user-authored content.
+        # Non-sidecar empty files surface as `failed` so the
+        # operator notices unexpected emptiness.
+        if basename.endswith(ABSTRACT_EXTENSION) or basename.endswith(OVERVIEW_EXTENSION):
+            if not dry_run:
+                _move(source_abs, archive_abs)
+            return {
+                "outcome": "archived",
+                "reason": "empty-sidecar",
+                "source_rel_path": rel,
+                "archive_path": str(archive_abs),
+            }
         return _archive_failed(source_abs, archive_abs, rel, "empty-file", dry_run)
 
     mtime_ms = source_abs.stat().st_mtime * 1000.0
@@ -1351,7 +1574,7 @@ def _process_file(
             source_abs, archive_abs, rel, f"convert-error: {e}", dry_run
         )
 
-    html_abs = (tree_root / rel[:-3]).with_suffix(".html")
+    html_abs = _html_sibling_path(tree_root, rel)
     if dry_run:
         entry: dict = {
             "outcome": "migrated",
@@ -1426,7 +1649,9 @@ def run_migration(*, project_root: str, dry_run: bool = False) -> dict:
     )
     report["archive_root"] = str(archive_root)
 
-    for rel in _list_tree_files(tree_root):
+    tree_files_list = _list_tree_files(tree_root)
+    tree_files_set = set(tree_files_list)
+    for rel in tree_files_list:
         basename = rel.rsplit("/", 1)[-1] if "/" in rel else rel
         entry = _process_file(
             archive_root=archive_root,
@@ -1434,18 +1659,41 @@ def run_migration(*, project_root: str, dry_run: bool = False) -> dict:
             tree_root=tree_root,
             dry_run=dry_run,
             rel=rel,
+            tree_files=tree_files_set,
         )
         report["files"].append(entry)
         report["summary"][entry["outcome"]] += 1
+
+    # Persist the pre-existing-HTML preserve list so rollback can avoid
+    # deleting .html files that predated the migration. Written under
+    # the archive root so it travels with the migration artifact.
+    if not dry_run:
+        preserve = sorted(
+            f["source_rel_path"]
+            for f in report["files"]
+            if f.get("reason") == "html-sibling-exists"
+        )
+        if preserve:
+            manifest_path = archive_root / PRE_EXISTING_HTML_MANIFEST
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(
+                json.dumps({"preserve_html_siblings": preserve}, indent=2),
+                encoding="utf-8",
+            )
 
     report["completed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     return report
 
 
-def rollback(*, project_root: str) -> dict:
+def rollback(*, project_root: str, dry_run: bool = False) -> dict:
     """Restore the most recent migration: move every file from the
     latest archive back into the live tree, delete matching `.html`
-    siblings, then remove the archive folder."""
+    siblings (except those that predated the migration — tracked via
+    `_pre_existing_html_siblings.json` in the archive root), then
+    remove the archive folder.
+
+    Honors `dry_run`: classifies what would be restored / deleted /
+    preserved without touching disk."""
     started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     project_path = Path(project_root)
     migrations_dir = project_path / BRV_DIR / MIGRATIONS_DIR
@@ -1465,29 +1713,57 @@ def rollback(*, project_root: str) -> dict:
         )
 
     archive_root = archives[-1]
-    restored = 0
+
+    # Load the pre-existing-HTML preserve list. Migrations before this
+    # field was added won't have the manifest; treat as empty.
+    preserve_html_siblings: set[str] = set()
+    manifest_path = archive_root / PRE_EXISTING_HTML_MANIFEST
+    if manifest_path.exists():
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            preserve_html_siblings = set(data.get("preserve_html_siblings", []))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    restored: list[str] = []
+    deleted_html: list[str] = []
+    preserved_html: list[str] = []
     for archived_file in sorted(archive_root.rglob("*")):
         if not archived_file.is_file():
             continue
         rel = archived_file.relative_to(archive_root).as_posix()
+        # Skip our own preserve-list manifest — it lives in the
+        # archive root, not in the source tree.
+        if rel == PRE_EXISTING_HTML_MANIFEST:
+            continue
         target = tree_root / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(archived_file), str(target))
-        restored += 1
+        if not dry_run:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(archived_file), str(target))
+        restored.append(rel)
 
         if rel.endswith(".md"):
-            html_sibling = (tree_root / rel[:-3]).with_suffix(".html")
+            html_sibling = _html_sibling_path(tree_root, rel)
+            if rel in preserve_html_siblings:
+                preserved_html.append(rel)
+                continue
             if html_sibling.exists():
-                html_sibling.unlink()
+                if not dry_run:
+                    html_sibling.unlink()
+                deleted_html.append(str(html_sibling))
 
-    shutil.rmtree(archive_root)
+    if not dry_run:
+        shutil.rmtree(archive_root)
 
     return {
         "project_root": str(project_path),
         "started_at": started_at,
         "completed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "archive_root": str(archive_root),
-        "restored": restored,
+        "dry_run": dry_run,
+        "restored": len(restored),
+        "deleted_html": deleted_html,
+        "preserved_html": preserved_html,
     }
 
 
@@ -1527,7 +1803,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--rollback",
         action="store_true",
         help="Roll back the most recent migration: restore archived "
-        ".md files and remove generated .html files.",
+        ".md files and remove generated .html files. Pre-existing .html "
+        "siblings recorded in the archive manifest are preserved.",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the interactive confirmation prompt for --rollback. "
+        "Required for non-interactive use; ignored for forward migration.",
     )
     return parser
 
@@ -1537,6 +1820,36 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.rollback:
+        if args.dry_run:
+            preview = rollback(project_root=args.project_root, dry_run=True)
+            print(
+                f"[dry-run] would restore {preview['restored']} file(s) "
+                f"from {preview['archive_root']}\n"
+                f"[dry-run] would delete {len(preview['deleted_html'])} .html "
+                f"sibling(s); preserve {len(preview['preserved_html'])} pre-existing"
+            )
+            return 0
+
+        # Destructive operation — require explicit confirmation unless
+        # --yes was passed or stdin isn't a TTY (assume non-interactive
+        # caller already accepted the risk).
+        if not args.yes and sys.stdin.isatty():
+            preview = rollback(project_root=args.project_root, dry_run=True)
+            print(
+                f"About to roll back migration at {preview['archive_root']}:\n"
+                f"  restore {preview['restored']} file(s) into the live tree\n"
+                f"  delete {len(preview['deleted_html'])} generated .html sibling(s)\n"
+                f"  preserve {len(preview['preserved_html'])} pre-existing .html sibling(s)",
+                file=sys.stderr,
+            )
+            try:
+                resp = input("Proceed? Type 'yes' to confirm: ").strip().lower()
+            except EOFError:
+                resp = ""
+            if resp != "yes":
+                print("Aborted.", file=sys.stderr)
+                return 1
+
         result = rollback(project_root=args.project_root)
         print(
             f"Rolled back from {result['archive_root']}: "
