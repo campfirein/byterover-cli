@@ -80,8 +80,8 @@ describe('Status Command', () => {
     restore()
   })
 
-  function createCommand(): TestableStatusCommand {
-    const command = new TestableStatusCommand(mockConnector, config)
+  function createCommand(...argv: string[]): TestableStatusCommand {
+    const command = new TestableStatusCommand(mockConnector, config, argv)
     stub(command, 'log').callsFake((msg?: string) => {
       if (msg) loggedMessages.push(msg)
     })
@@ -487,6 +487,67 @@ describe('Status Command', () => {
       const [event, payload] = (mockClient.requestWithAck as sinon.SinonStub).firstCall.args
       expect(event).to.equal('status:get')
       expect(payload).to.have.property('cwd', projectRoot)
+    })
+  })
+
+  describe('billing line', () => {
+    it('renders the billing line for a paid team', async () => {
+      mockStatusResponse({
+        authStatus: 'logged_in',
+        billing: {
+          organizationId: 'org-acme',
+          organizationName: 'Acme Corp',
+          remaining: 12_400,
+          source: 'paid',
+          tier: 'PRO',
+          total: 100_000,
+        },
+        contextTreeStatus: 'no_changes',
+        currentDirectory: testDir,
+        projectRoot: testDir,
+        userEmail: 'user@example.com',
+      })
+
+      await createCommand().run()
+
+      expect(loggedMessages.some((m) => m.includes('Billing: Acme Corp (12,400 credits, PRO)'))).to.be.true
+    })
+
+    it('omits the billing line when status.billing is missing', async () => {
+      mockStatusResponse({
+        authStatus: 'logged_in',
+        contextTreeStatus: 'no_changes',
+        currentDirectory: testDir,
+        projectRoot: testDir,
+        userEmail: 'user@example.com',
+      })
+
+      await createCommand().run()
+
+      expect(loggedMessages.some((m) => m.startsWith('Billing:'))).to.be.false
+    })
+
+    it('includes billing in the JSON output', async () => {
+      mockStatusResponse({
+        authStatus: 'logged_in',
+        billing: {source: 'free'},
+        contextTreeStatus: 'no_changes',
+        currentDirectory: testDir,
+        projectRoot: testDir,
+        userEmail: 'user@example.com',
+      })
+      const stdoutChunks: string[] = []
+      stub(process.stdout, 'write').callsFake((chunk: string | Uint8Array) => {
+        stdoutChunks.push(String(chunk))
+        return true
+      })
+
+      await createCommand('--format', 'json').run()
+
+      const parsed = JSON.parse(stdoutChunks.join('').trim()) as {
+        data: {billing?: {source: string}}
+      }
+      expect(parsed.data.billing?.source).to.equal('free')
     })
   })
 })

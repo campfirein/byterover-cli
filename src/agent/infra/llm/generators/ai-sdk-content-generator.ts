@@ -18,6 +18,7 @@ import type {
 import type {ToolCall} from '../../../core/interfaces/message-types.js'
 
 import {StreamChunkType} from '../../../core/interfaces/i-content-generator.js'
+import {createAbortContext, LlmRequestTimeoutError, withRequestTimeout} from './ai-sdk-abort-helper.js'
 import {toAiSdkTools, toModelMessages} from './ai-sdk-message-converter.js'
 
 const DEFAULT_CHARS_PER_TOKEN = 4
@@ -58,6 +59,15 @@ export interface AiSdkContentGeneratorConfig {
   excludeSamplingParameters?: boolean
   /** AI SDK LanguageModel instance */
   model: LanguageModel
+  /**
+   * Per-request wall-clock timeout in milliseconds. When set, every
+   * `generateContent` / `generateContentStream` call is bounded by an
+   * `AbortSignal` that fires after this duration. A timer-driven abort
+   * surfaces as `LlmRequestTimeoutError` (classified as retryable by
+   * the retry layer). M3 sources this from the `llm.requestTimeoutMs`
+   * setting; absent → no per-request abort.
+   */
+  requestTimeoutMs?: number
 }
 
 /**
@@ -72,11 +82,13 @@ export class AiSdkContentGenerator implements IContentGenerator {
   private readonly charsPerToken: number
   private readonly excludeSamplingParameters: boolean
   private readonly model: LanguageModel
+  private readonly requestTimeoutMs?: number
 
   constructor(config: AiSdkContentGeneratorConfig) {
     this.model = config.model
     this.charsPerToken = config.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN
     this.excludeSamplingParameters = config.excludeSamplingParameters ?? false
+    this.requestTimeoutMs = config.requestTimeoutMs
   }
 
   public estimateTokensSync(content: string): number {
@@ -87,14 +99,17 @@ export class AiSdkContentGenerator implements IContentGenerator {
     const messages = prependCachedSystemMessage(request.systemPrompt, toModelMessages(request.contents))
     const tools = toAiSdkTools(request.tools)
 
-    const result = await generateText({
-      maxOutputTokens: request.config.maxTokens,
-      maxRetries: 0, // RetryableContentGenerator handles retries
-      messages,
-      model: this.model,
-      ...this.buildSamplingParams(request.config),
-      ...(tools && {tools}),
-    })
+    const result = await withRequestTimeout(this.requestTimeoutMs, async (signal) =>
+      generateText({
+        maxOutputTokens: request.config.maxTokens,
+        maxRetries: 0, // RetryableContentGenerator handles retries
+        messages,
+        model: this.model,
+        ...this.buildSamplingParams(request.config),
+        ...(tools && {tools}),
+        ...(signal && {abortSignal: signal}),
+      }),
+    )
 
     // Map AI SDK tool calls to our ToolCall format
     // Preserve thoughtSignature from providerMetadata (required by Gemini 3+ models)
@@ -130,81 +145,105 @@ export class AiSdkContentGenerator implements IContentGenerator {
   public async *generateContentStream(request: GenerateContentRequest): AsyncGenerator<GenerateContentChunk> {
     const messages = prependCachedSystemMessage(request.systemPrompt, toModelMessages(request.contents))
     const tools = toAiSdkTools(request.tools)
+    const abort = createAbortContext(this.requestTimeoutMs)
 
-    const result = streamText({
-      maxOutputTokens: request.config.maxTokens,
-      maxRetries: 0,
-      messages,
-      model: this.model,
-      ...this.buildSamplingParams(request.config),
-      ...(tools && {tools}),
-    })
+    try {
+      const result = streamText({
+        maxOutputTokens: request.config.maxTokens,
+        maxRetries: 0,
+        messages,
+        model: this.model,
+        ...this.buildSamplingParams(request.config),
+        ...(tools && {tools}),
+        ...(abort.signal && {abortSignal: abort.signal}),
+      })
 
-    // Accumulate tool calls during streaming
-    const pendingToolCalls: ToolCall[] = []
+      // Accumulate tool calls during streaming
+      const pendingToolCalls: ToolCall[] = []
 
-    for await (const event of result.fullStream) {
-      switch (event.type) {
-        case 'error': {
-          // Throw the error so RetryableContentGenerator can catch and retry it.
-          // Yielding it as content would swallow the error and prevent retry logic
-          // from working (e.g., for 429 rate limit errors).
-          throw event.error instanceof Error ? event.error : new Error(extractStreamErrorMessage(event.error))
-        }
+      for await (const event of result.fullStream) {
+        // Every chunk is liveness — switch the abort timer from
+        // total-deadline (the default) to idle-deadline so a slow local
+        // model that streams steadily across minutes is not killed for
+        // exceeding `requestTimeoutMs` while chunks are still arriving.
+        abort.recordActivity()
 
-        case 'finish-step': {
-          yield {
-            finishReason: mapFinishReason(event.finishReason, pendingToolCalls.length > 0),
-            isComplete: true,
-            toolCalls: pendingToolCalls.length > 0 ? [...pendingToolCalls] : undefined,
+        switch (event.type) {
+          case 'error': {
+            if (abort.didTimeout() && abort.timeoutMs !== undefined) {
+              throw new LlmRequestTimeoutError(abort.timeoutMs)
+            }
+
+            // Throw the error so RetryableContentGenerator can catch and retry it.
+            // Yielding it as content would swallow the error and prevent retry logic
+            // from working (e.g., for 429 rate limit errors).
+            throw event.error instanceof Error
+              ? event.error
+              : new Error(extractStreamErrorMessage(event.error))
           }
 
-          break
-        }
+          case 'finish-step': {
+            yield {
+              finishReason: mapFinishReason(event.finishReason, pendingToolCalls.length > 0),
+              isComplete: true,
+              toolCalls: pendingToolCalls.length > 0 ? [...pendingToolCalls] : undefined,
+            }
 
-        case 'reasoning-delta': {
-          yield {
-            isComplete: false,
-            reasoning: event.text,
-            reasoningId: event.id,
-            type: StreamChunkType.THINKING,
+            break
           }
 
-          break
-        }
+          case 'reasoning-delta': {
+            yield {
+              isComplete: false,
+              reasoning: event.text,
+              reasoningId: event.id,
+              type: StreamChunkType.THINKING,
+            }
 
-        case 'text-delta': {
-          yield {
-            content: event.text,
-            isComplete: false,
-            type: StreamChunkType.CONTENT,
+            break
           }
 
-          break
-        }
+          case 'text-delta': {
+            yield {
+              content: event.text,
+              isComplete: false,
+              type: StreamChunkType.CONTENT,
+            }
 
-        case 'tool-call': {
-          // Preserve thoughtSignature from providerMetadata (required by Gemini 3+ models)
-          const meta = event.providerMetadata as Record<string, Record<string, unknown>> | undefined
-          const thoughtSig = meta?.google?.thoughtSignature
-          pendingToolCalls.push({
-            function: {
-              arguments: JSON.stringify(event.input),
-              name: event.toolName,
-            },
-            id: event.toolCallId,
-            ...(typeof thoughtSig === 'string' && {thoughtSignature: thoughtSig}),
-            type: 'function',
-          })
+            break
+          }
 
-          break
-        }
+          case 'tool-call': {
+            // Preserve thoughtSignature from providerMetadata (required by Gemini 3+ models)
+            const meta = event.providerMetadata as Record<string, Record<string, unknown>> | undefined
+            const thoughtSig = meta?.google?.thoughtSignature
+            pendingToolCalls.push({
+              function: {
+                arguments: JSON.stringify(event.input),
+                name: event.toolName,
+              },
+              id: event.toolCallId,
+              ...(typeof thoughtSig === 'string' && {thoughtSignature: thoughtSig}),
+              type: 'function',
+            })
 
-        default: {
-          // Ignore other events (tool-input-start/delta/end, source, file, etc.)
-          break
+            break
+          }
+
+          default: {
+            // Ignore other events (tool-input-start/delta/end, source, file, etc.)
+            break
+          }
         }
       }
+    } catch (error) {
+      if (abort.didTimeout() && abort.timeoutMs !== undefined && !(error instanceof LlmRequestTimeoutError)) {
+        throw new LlmRequestTimeoutError(abort.timeoutMs)
+      }
+
+      throw error
+    } finally {
+      abort.cleanup()
     }
   }
 

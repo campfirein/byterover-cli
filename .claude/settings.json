@@ -24,7 +24,7 @@
       "mcp__linear__save_milestone",
       "mcp__linear__update_document",
       "mcp__linear__save_comment",
-      "mcp__linear__list_teams",
+      "mcp__claude_ai_Linear__list_teams",
       "Bash(gh api:*)"
     ]
   }

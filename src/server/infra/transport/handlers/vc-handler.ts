@@ -557,11 +557,17 @@ export class VcHandler {
       }
 
       if (error instanceof Error && 'code' in error && error.code === 'NotFoundError') {
-        // Distinguish empty repo from branch-not-found
-        const commits = await this.gitService.log({depth: 1, directory})
-        if (commits.length === 0) {
+        // After ENG-2835 the gitService.checkout no longer throws NotFoundError on the
+        // source ref's listFiles snapshot; the catch only sees target-ref-missing.
+        // Two flavors of that: (a) user typoed the target name — emit BRANCH_NOT_FOUND;
+        // (b) user asked to checkout the branch they are already on but the branch is
+        // unborn (e.g. fresh `brv vc init && brv vc checkout main`) — emit NO_COMMITS
+        // with the actionable message. The pre-ENG-2835 proxy used commit count, which
+        // collapsed (a) and (b) into the same answer when HEAD was unborn; comparing
+        // target name against the current branch separates them cleanly.
+        if (data.branch === previousBranch) {
           throw new VcError(
-            `Your current branch does not have any commits yet. Run 'brv vc add' and 'brv vc commit' first.`,
+            `Your current branch '${data.branch}' does not have any commits yet. Run 'brv vc add' and 'brv vc commit' first, or pull from a remote.`,
             VcErrorCode.NO_COMMITS,
           )
         }

@@ -20,6 +20,7 @@ export const perplexityProvider: ProviderModule = {
 
     return new AiSdkContentGenerator({
       model: provider(config.model),
+      requestTimeoutMs: config.requestTimeoutMs,
     })
   },
   defaultModel: 'sonar-pro',

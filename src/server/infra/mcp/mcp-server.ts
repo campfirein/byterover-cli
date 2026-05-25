@@ -177,7 +177,11 @@ export class ByteRoverMcpServer {
   /**
    * Stops the MCP server.
    *
-   * Disconnects from the brv instance.
+   * Order: stop background work first (reconnector, heartbeat), then drop
+   * the daemon connection so any in-flight tool handler awaiting daemon work
+   * surfaces a clean MCP error response, THEN close the MCP SDK server so
+   * those error responses still travel back to the parent before the stdio
+   * transport seals.
    */
   async stop(): Promise<void> {
     // Cancel auto-reconnection
@@ -190,10 +194,16 @@ export class ByteRoverMcpServer {
       this.heartbeatInterval = undefined
     }
 
+    // Disconnect daemon first — in-flight tool handlers reject with a clean
+    // "Connection lost" error that can still be delivered over the open MCP
+    // transport (see task-result-waiter onStateChange handler).
     if (this.client) {
       await this.client.disconnect()
       this.client = undefined
     }
+
+    // Then close the MCP SDK server (final stdio teardown).
+    await this.server.close()
   }
 
   /**

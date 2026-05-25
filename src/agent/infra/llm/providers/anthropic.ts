@@ -23,6 +23,7 @@ export const anthropicProvider: ProviderModule = {
       charsPerToken: 3.5,
       excludeSamplingParameters: !modelAcceptsSamplingParameters(config.model),
       model: provider(config.model),
+      requestTimeoutMs: config.requestTimeoutMs,
     })
   },
   defaultModel: 'claude-sonnet-4-5-20250929',

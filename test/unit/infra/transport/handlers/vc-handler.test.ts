@@ -3045,6 +3045,58 @@ describe('VcHandler', () => {
       }
     })
 
+    it('should throw BRANCH_NOT_FOUND (not NO_COMMITS) when target ref missing from unborn HEAD', async () => {
+      // Typo case: target name differs from the current branch, so the catch is
+      // unambiguously "user gave a name we cannot resolve". Must surface as
+      // BRANCH_NOT_FOUND even when the local repo has zero commits.
+      const deps = makeDeps(sandbox, projectPath)
+      deps.gitService.getCurrentBranch.resolves('main')
+      deps.gitService.log.resolves([])
+      const notFoundError = Object.assign(new Error('Could not find origin/zorqplex_nonexistent_4242.'), {
+        code: 'NotFoundError',
+      })
+      deps.gitService.checkout.rejects(notFoundError)
+      makeVcHandler(deps).setup()
+
+      try {
+        await deps.requestHandlers[VcEvents.CHECKOUT]({branch: 'zorqplex_nonexistent_4242'}, CLIENT_ID)
+        expect.fail('Expected error')
+      } catch (error) {
+        expect(error).to.be.instanceOf(VcError)
+        if (error instanceof VcError) {
+          expect(error.code).to.equal(VcErrorCode.BRANCH_NOT_FOUND)
+          expect(error.message).to.include('zorqplex_nonexistent_4242')
+          expect(error.message).to.not.include('does not have any commits yet')
+        }
+      }
+    })
+
+    it('should throw NO_COMMITS when checking out the current unborn branch by name', async () => {
+      // Same-branch case: user is on `main` but `main` is unborn (e.g. fresh
+      // `brv vc init` with no commits, no fetched ref). `brv vc checkout main`
+      // throws NotFoundError because the target does not resolve, but the user
+      // is already on that branch — telling them "use checkout -b" is wrong.
+      // Surface as NO_COMMITS with the actionable message.
+      const deps = makeDeps(sandbox, projectPath)
+      deps.gitService.getCurrentBranch.resolves('main')
+      const notFoundError = Object.assign(new Error('Could not find main.'), {code: 'NotFoundError'})
+      deps.gitService.checkout.rejects(notFoundError)
+      makeVcHandler(deps).setup()
+
+      try {
+        await deps.requestHandlers[VcEvents.CHECKOUT]({branch: 'main'}, CLIENT_ID)
+        expect.fail('Expected error')
+      } catch (error) {
+        expect(error).to.be.instanceOf(VcError)
+        if (error instanceof VcError) {
+          expect(error.code).to.equal(VcErrorCode.NO_COMMITS)
+          expect(error.message).to.include('main')
+          expect(error.message).to.include('does not have any commits yet')
+          expect(error.message).to.not.include('checkout -b')
+        }
+      }
+    })
+
     it('should throw UNCOMMITTED_CHANGES when checkout would overwrite dirty files', async () => {
       const deps = makeDeps(sandbox, projectPath)
       deps.gitService.getCurrentBranch.resolves('main')

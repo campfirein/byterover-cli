@@ -54,14 +54,14 @@ export function ContextDetailPanel({ onToggleHistory }: ContextDetailPanelProps)
     return selectedNode.children ?? []
   }, [selectedNode, nodes])
 
-  const blobPaths = useMemo(
-    () => folderChildren.filter((n) => n.type === 'blob').map((n) => n.path),
+  const metadataPaths = useMemo(
+    () => folderChildren.map((n) => n.path),
     [folderChildren],
   )
 
   const {data: metadataResponse} = useGetContextFileMetadata({
-    enabled: blobPaths.length > 0,
-    paths: blobPaths,
+    enabled: metadataPaths.length > 0,
+    paths: metadataPaths,
   })
 
   const folderNodes: FolderNode[] = useMemo(() => {

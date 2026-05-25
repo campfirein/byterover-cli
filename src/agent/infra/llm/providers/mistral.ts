@@ -20,6 +20,7 @@ export const mistralProvider: ProviderModule = {
 
     return new AiSdkContentGenerator({
       model: provider(config.model),
+      requestTimeoutMs: config.requestTimeoutMs,
     })
   },
   defaultModel: 'mistral-large-latest',

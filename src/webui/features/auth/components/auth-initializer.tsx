@@ -5,9 +5,11 @@ import {useEffect} from 'react'
 
 import {AuthEvents, type AuthStateChangedEvent} from '../../../../shared/transport/events'
 import {useModelStore} from '../../../features/model/stores/model-store'
+import {getActiveProviderConfigQueryOptions} from '../../../features/provider/api/get-active-provider-config'
+import {getProvidersQueryOptions} from '../../../features/provider/api/get-providers'
 import {useProviderStore} from '../../../features/provider/stores/provider-store'
 import {useTransportStore} from '../../../stores/transport-store'
-import {getAuthStateQueryOptions, useGetAuthState} from '../api/get-auth-state'
+import {AUTH_STATE_QUERY_ROOT, useGetAuthState} from '../api/get-auth-state'
 import {useAuthStore} from '../stores/auth-store'
 
 /**
@@ -62,10 +64,12 @@ export function AuthInitializer({children}: {children: ReactNode}) {
       if (!data.isAuthorized) {
         useProviderStore.getState().reset()
         useModelStore.getState().reset()
+        queryClient.invalidateQueries({queryKey: getProvidersQueryOptions().queryKey})
+        queryClient.invalidateQueries({queryKey: getActiveProviderConfigQueryOptions().queryKey})
       }
 
       if (data.isAuthorized) {
-        queryClient.invalidateQueries({queryKey: getAuthStateQueryOptions().queryKey}).catch(() => {})
+        queryClient.invalidateQueries({queryKey: AUTH_STATE_QUERY_ROOT}).catch(() => {})
       }
     })
 
@@ -77,7 +81,7 @@ export function AuthInitializer({children}: {children: ReactNode}) {
     if (connectionState !== 'connected') return
     if (reconnectCount === 0) return
 
-    queryClient.invalidateQueries({queryKey: getAuthStateQueryOptions().queryKey}).catch(() => {})
+    queryClient.invalidateQueries({queryKey: AUTH_STATE_QUERY_ROOT}).catch(() => {})
   }, [apiClient, connectionState, queryClient, reconnectCount])
 
   return <>{children}</>

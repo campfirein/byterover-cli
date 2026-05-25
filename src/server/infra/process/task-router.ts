@@ -61,6 +61,7 @@ import {transportLog} from '../../utils/process-logger.js'
 import {isValidTaskType} from '../../utils/type-guards.js'
 import {resolveProject} from '../project/resolve-project.js'
 import {broadcastToProjectRoom} from './broadcast-utils.js'
+import {TaskHeartbeatManager} from './task-heartbeat-manager.js'
 import {buildTaskHistoryEntry} from './task-history-entry-builder.js'
 
 type LlmEventName = (typeof TransportLlmEventList)[number]
@@ -118,6 +119,14 @@ type TaskRouterOptions = {
    * only — keeping pre-M2.09 unit tests unaffected.
    */
   getTaskHistoryStore?: (projectPath: string) => ITaskHistoryStore
+  /**
+   * Optional daemon-side liveness manager. When provided, the router
+   * registers each task on `task:started`, resets the timer on every
+   * task-scoped emission, and clears it on the three terminal events.
+   * The manager fires `TaskEvents.HEARTBEAT` during quiet periods so
+   * the CLI can detect a stuck daemon without a wall-clock timer.
+   */
+  heartbeatManager?: TaskHeartbeatManager
   /** Resolves project's review-disabled flag at task-create. Optional; missing → undefined → enabled. */
   isReviewDisabled?: IsReviewDisabledResolver
   /** Lifecycle hooks for task events (e.g. CurateLogHandler). */
@@ -303,6 +312,7 @@ export class TaskRouter {
   private flushTimer: ReturnType<typeof setTimeout> | undefined
   private readonly getAgentForProject: (projectPath?: string) => string | undefined
   private readonly getTaskHistoryStore: TaskRouterOptions['getTaskHistoryStore']
+  private readonly heartbeatManager: TaskHeartbeatManager | undefined
   private readonly isReviewDisabled: IsReviewDisabledResolver | undefined
   private readonly lifecycleHooks: ITaskLifecycleHook[]
   private readonly preDispatchCheck: TaskRouterOptions['preDispatchCheck']
@@ -319,6 +329,7 @@ export class TaskRouter {
     this.agentPool = options.agentPool
     this.getAgentForProject = options.getAgentForProject
     this.getTaskHistoryStore = options.getTaskHistoryStore
+    this.heartbeatManager = options.heartbeatManager
     this.isReviewDisabled = options.isReviewDisabled
     this.lifecycleHooks = options.lifecycleHooks ?? []
     this.preDispatchCheck = options.preDispatchCheck
@@ -359,6 +370,8 @@ export class TaskRouter {
 
     // Notify hooks (fire-and-forget)
     this.notifyHooksError(taskId, error.message, task).catch(() => {})
+
+    this.heartbeatManager?.recordTermination(taskId)
   }
 
   getDebugState(): {
@@ -649,6 +662,7 @@ export class TaskRouter {
     this.tasks.delete(taskId)
     this.notifyHooksCancelled(taskId, task).catch(() => {})
 
+    this.heartbeatManager?.recordTermination(taskId)
     return {success: true}
   }
 
@@ -681,6 +695,8 @@ export class TaskRouter {
     if (task) {
       this.notifyHooksCancelled(taskId, task).catch(() => {})
     }
+
+    this.heartbeatManager?.recordTermination(taskId)
   }
 
   private async handleTaskClearCompleted(
@@ -785,6 +801,8 @@ export class TaskRouter {
     if (task) {
       this.notifyHooksCompleted(taskId, result, task).catch(() => {})
     }
+
+    this.heartbeatManager?.recordTermination(taskId)
   }
 
   /**
@@ -1232,6 +1250,8 @@ export class TaskRouter {
     if (task) {
       this.notifyHooksError(taskId, error.message, task).catch(() => {})
     }
+
+    this.heartbeatManager?.recordTermination(taskId)
   }
 
   private async handleTaskGet(data: TaskGetRequest, clientId: string): Promise<TaskGetResponse> {
@@ -1547,6 +1567,10 @@ export class TaskRouter {
         },
         task.clientId,
       )
+
+      // Begin liveness ticker for the CLI heartbeat watcher (M6 T1).
+      // Cleared on the three terminal events; reset on every LlmEvent forward.
+      this.heartbeatManager?.register(taskId, task.clientId, task.projectPath)
     } else {
       // No task context — cannot determine project room, skip broadcast
       transportLog(`Task started but no task context found: ${taskId}`)
@@ -1781,6 +1805,10 @@ export class TaskRouter {
       {taskId, ...rest},
       task.clientId,
     )
+
+    // Reset the heartbeat timer — every forwarded LLM event counts as
+    // activity so a noisy task never triggers a redundant `task:heartbeat`.
+    this.heartbeatManager?.recordActivity(taskId)
   }
 
   /**

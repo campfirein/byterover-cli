@@ -229,6 +229,10 @@ npm run lint && npm run typecheck && npm run build && npm test
    - Description explaining **what** and **why**
    - Link to related issues
 
+#### CI for fork PRs
+
+CI does not run automatically on PRs from forks because some build steps need access to a private dependency. A maintainer will review the diff and apply the `safe-to-test` label to trigger validation. The label is automatically removed when you push new commits — a maintainer will re-review and re-apply it. No action from you is required; this is just a heads-up so the initial absence of checks isn't surprising.
+
 ### PR Checklist
 
 - [ ] Code follows the project's style guidelines

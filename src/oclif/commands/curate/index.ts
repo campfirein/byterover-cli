@@ -10,6 +10,7 @@ import {BRV_DIR, CONTEXT_TREE_DIR} from '../../../server/constants.js'
 import {ProviderConfigResponse, TransportStateEventNames} from '../../../server/core/domain/transport/index.js'
 import {extractCurateOperations} from '../../../server/utils/curate-result-parser.js'
 import {TaskEvents} from '../../../shared/transport/events/index.js'
+import {printBillingLine} from '../../lib/billing-line.js'
 import {buildCliMetadata} from '../../lib/build-cli-metadata.js'
 import {
   type DaemonClientOptions,
@@ -19,8 +20,16 @@ import {
   providerMissingMessage,
   withDaemonRetry,
 } from '../../lib/daemon-client.js'
+import {ensureBillingFunds} from '../../lib/insufficient-credits.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
-import {DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, MIN_TIMEOUT_SECONDS, type ToolCallRecord, waitForTaskCompletion} from '../../lib/task-client.js'
+import {
+  DEFAULT_TIMEOUT_SECONDS,
+  MAX_TIMEOUT_SECONDS,
+  MIN_TIMEOUT_SECONDS,
+  type ToolCallRecord,
+  waitForTaskCompletion,
+} from '../../lib/task-client.js'
+import {TIMEOUT_DEPRECATION_HELP, warnIfTimeoutFlagUsed} from '../../lib/timeout-deprecation.js'
 
 /** Parsed flags type */
 type CurateFlags = {
@@ -91,7 +100,7 @@ Bad examples:
     }),
     timeout: Flags.integer({
       default: DEFAULT_TIMEOUT_SECONDS,
-      description: 'Maximum seconds to wait for task completion',
+      description: TIMEOUT_DEPRECATION_HELP,
       max: MAX_TIMEOUT_SECONDS,
       min: MIN_TIMEOUT_SECONDS,
     }),
@@ -111,6 +120,12 @@ Bad examples:
       timeout: rawFlags.timeout,
     }
     const format: 'json' | 'text' = flags.format ?? 'text'
+
+    warnIfTimeoutFlagUsed({
+      defaultValue: DEFAULT_TIMEOUT_SECONDS,
+      log: (message) => this.log(message),
+      userValue: rawFlags.timeout,
+    })
 
     if (!this.validateInput(args, flags, format)) return
 
@@ -145,7 +160,23 @@ Bad examples:
             throw new Error(providerMissingMessage(active.activeProvider, active.authMethod))
           }
 
-          await this.submitTask({client, cliMetadata, content: resolvedContent, flags, format, projectRoot, taskType, worktreeRoot})
+          await this.submitTask({
+            client,
+            cliMetadata,
+            content: resolvedContent,
+            flags,
+            format,
+            projectRoot,
+            taskType,
+            worktreeRoot,
+          })
+          const billing = await printBillingLine({client, format, log: (msg) => this.log(msg)})
+
+          if (billing) {
+            await ensureBillingFunds({billing, client})
+          }
+
+          await this.submitTask({client, content: resolvedContent, flags, format, projectRoot, taskType, worktreeRoot})
         },
         {
           ...this.getDaemonClientOptions(),
@@ -318,10 +349,6 @@ Bad examples:
     }
 
     if (flags.detach) {
-      if (flags.timeout !== DEFAULT_TIMEOUT_SECONDS && format !== 'json') {
-        this.log('Note: --timeout has no effect with --detach')
-      }
-
       const ack = await client.requestWithAck<TaskAck>(TaskEvents.CREATE, taskPayload)
       const {logId} = ack
 
@@ -389,7 +416,6 @@ Bad examples:
             }
           },
           taskId,
-          timeoutMs: (flags.timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
         },
         (msg) => this.log(msg),
       )

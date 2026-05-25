@@ -19,6 +19,7 @@ export const googleProvider: ProviderModule = {
 
     return new AiSdkContentGenerator({
       model: provider(config.model),
+      requestTimeoutMs: config.requestTimeoutMs,
     })
   },
   defaultModel: 'gemini-3-flash-preview',

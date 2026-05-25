@@ -17,8 +17,8 @@ class TestableProviderListCommand extends ProviderList {
     this.mockConnector = mockConnector
   }
 
-  protected override async fetchProviders() {
-    return super.fetchProviders({
+  protected override async fetchAll() {
+    return super.fetchAll({
       maxRetries: 1,
       retryDelayMs: 0,
       transportConnector: this.mockConnector,
@@ -98,6 +98,20 @@ describe('Provider List Command', () => {
     ;(mockClient.requestWithAck as sinon.SinonStub).resolves({providers})
   }
 
+  function mockByteRoverContext(
+    providers: Record<string, unknown>[],
+    teams: Record<string, unknown>[],
+    billing: Record<string, unknown>,
+  ): void {
+    const requestStub = mockClient.requestWithAck as sinon.SinonStub
+    requestStub.callsFake(async (event: string) => {
+      if (event === 'provider:list') return {providers}
+      if (event === 'team:list') return {teams}
+      if (event === 'billing:resolve') return {billing}
+      return {}
+    })
+  }
+
   // ==================== List Providers ====================
 
   describe('list providers', () => {
@@ -165,6 +179,62 @@ describe('Provider List Command', () => {
       const descriptionLine = loggedMessages[headerIndex + 1]
       expect(descriptionLine).to.include('Claude models by Anthropic')
       expect(descriptionLine?.startsWith('    ')).to.be.true
+    })
+
+    it('should list teams under a connected ByteRover provider with billing markers', async () => {
+      mockByteRoverContext(
+        [
+          {description: 'ByteRover hosted models', id: 'byterover', isConnected: true, isCurrent: true, name: 'ByteRover'},
+          {id: 'openai', isConnected: false, isCurrent: false, name: 'OpenAI'},
+        ],
+        [
+          {avatarUrl: '', displayName: 'Acme Corp', id: 'org-acme', isDefault: false, name: 'acme'},
+          {avatarUrl: '', displayName: 'Personal Labs', id: 'org-personal', isDefault: false, name: 'personal'},
+          {avatarUrl: '', displayName: 'Contractor Co', id: 'org-contract', isDefault: false, name: 'contract'},
+        ],
+        {organizationId: 'org-acme', organizationName: 'Acme Corp', remaining: 50_000, source: 'paid', tier: 'PRO', total: 100_000},
+      )
+
+      await createCommand().run()
+
+      expect(loggedMessages.some((m) => m.toLowerCase().includes('teams:'))).to.be.true
+      const acmeLine = loggedMessages.find((m) => m.includes('Acme Corp'))
+      expect(acmeLine, 'expected Acme Corp line').to.exist
+      expect(acmeLine!.toLowerCase()).to.include('billing')
+      expect(loggedMessages.some((m) => m.includes('Personal Labs'))).to.be.true
+      expect(loggedMessages.some((m) => m.includes('Contractor Co'))).to.be.true
+    })
+
+    it('should mark the resolved billing team', async () => {
+      mockByteRoverContext(
+        [{id: 'byterover', isConnected: true, isCurrent: true, name: 'ByteRover'}],
+        [
+          {avatarUrl: '', displayName: 'Acme Corp', id: 'org-acme', isDefault: false, name: 'acme'},
+          {avatarUrl: '', displayName: 'Beta Labs', id: 'org-beta', isDefault: false, name: 'beta'},
+        ],
+        {organizationId: 'org-acme', organizationName: 'Acme Corp', remaining: 50_000, source: 'paid', tier: 'PRO', total: 100_000},
+      )
+
+      await createCommand().run()
+
+      const acmeLine = loggedMessages.find((m) => m.includes('Acme Corp'))
+      expect(acmeLine!.toLowerCase()).to.include('billing')
+    })
+
+    it('should not list teams when ByteRover is not connected', async () => {
+      mockListResponse([{id: 'byterover', isConnected: false, isCurrent: false, name: 'ByteRover'}])
+
+      await createCommand().run()
+
+      expect(loggedMessages.some((m) => m.toLowerCase().includes('teams:'))).to.be.false
+    })
+
+    it('should not list teams for non-ByteRover providers', async () => {
+      mockListResponse([{id: 'openai', isConnected: true, isCurrent: true, name: 'OpenAI'}])
+
+      await createCommand().run()
+
+      expect(loggedMessages.some((m) => m.toLowerCase().includes('teams:'))).to.be.false
     })
 
     it('should skip the description line when description is empty', async () => {

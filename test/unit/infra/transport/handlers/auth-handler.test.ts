@@ -6,6 +6,7 @@ import {restore, stub} from 'sinon'
 import type {IAuthService} from '../../../../../src/server/core/interfaces/auth/i-auth-service.js'
 import type {ICallbackHandler} from '../../../../../src/server/core/interfaces/auth/i-callback-handler.js'
 import type {ITokenStore} from '../../../../../src/server/core/interfaces/auth/i-token-store.js'
+import type {IProviderConfigStore} from '../../../../../src/server/core/interfaces/i-provider-config-store.js'
 import type {IBrowserLauncher} from '../../../../../src/server/core/interfaces/services/i-browser-launcher.js'
 import type {IUserService} from '../../../../../src/server/core/interfaces/services/i-user-service.js'
 import type {IAuthStateStore} from '../../../../../src/server/core/interfaces/state/i-auth-state-store.js'
@@ -15,6 +16,7 @@ import type {ITransportServer} from '../../../../../src/server/core/interfaces/t
 import {AuthToken} from '../../../../../src/server/core/domain/entities/auth-token.js'
 import {BrvConfig} from '../../../../../src/server/core/domain/entities/brv-config.js'
 import {User} from '../../../../../src/server/core/domain/entities/user.js'
+import {TransportDaemonEventNames} from '../../../../../src/server/core/domain/transport/schemas.js'
 import {AuthHandler, type AuthHandlerDeps} from '../../../../../src/server/infra/transport/handlers/auth-handler.js'
 import {AuthEvents} from '../../../../../src/shared/transport/events/auth-events.js'
 
@@ -80,11 +82,31 @@ function createTestBrvConfig(): BrvConfig {
 
 // ==================== Tests ====================
 
+function createMockProviderConfigStore(
+  options: {isConnected?: boolean} = {},
+): SinonStubbedInstance<IProviderConfigStore> {
+  return {
+    connectProvider: stub().resolves(),
+    disconnectProvider: stub().resolves(),
+    getActiveModel: stub().resolves(),
+    getActiveProvider: stub().resolves(''),
+    getFavoriteModels: stub().resolves([]),
+    getRecentModels: stub().resolves([]),
+    isProviderConnected: stub().resolves(options.isConnected ?? false),
+    read: stub().resolves(),
+    setActiveModel: stub().resolves(),
+    setActiveProvider: stub().resolves(),
+    toggleFavorite: stub().resolves(),
+    write: stub().resolves(),
+  } as unknown as SinonStubbedInstance<IProviderConfigStore>
+}
+
 describe('AuthHandler — setupExternalAuthSync', () => {
   let transport: ReturnType<typeof createMockTransport>
   let authStateStore: SinonStubbedInstance<IAuthStateStore>
   let userService: SinonStubbedInstance<IUserService>
   let projectConfigStore: SinonStubbedInstance<IProjectConfigStore>
+  let providerConfigStore: SinonStubbedInstance<IProviderConfigStore>
   let capturedAuthChanged: AuthChangedCallback | undefined
   let capturedAuthExpired: AuthExpiredCallback | undefined
 
@@ -116,6 +138,8 @@ describe('AuthHandler — setupExternalAuthSync', () => {
       write: stub().resolves(),
     } as unknown as SinonStubbedInstance<IProjectConfigStore>
 
+    providerConfigStore = createMockProviderConfigStore()
+
     capturedAuthChanged = capturedAuthExpired = undefined // eslint-disable-line no-multi-assign
   })
 
@@ -123,7 +147,7 @@ describe('AuthHandler — setupExternalAuthSync', () => {
     restore()
   })
 
-  function createHandler(): void {
+  function createHandler(overrides: Partial<AuthHandlerDeps> = {}): void {
     const deps: AuthHandlerDeps = {
       authService: {
         exchangeCodeForToken: stub(),
@@ -139,6 +163,7 @@ describe('AuthHandler — setupExternalAuthSync', () => {
         waitForCallback: stub().resolves({code: 'test'}),
       } as unknown as ICallbackHandler,
       projectConfigStore,
+      providerConfigStore,
       resolveProjectPath: stub().returns('/test/project'),
       tokenStore: {
         clear: stub().resolves(),
@@ -147,6 +172,7 @@ describe('AuthHandler — setupExternalAuthSync', () => {
       } as unknown as ITokenStore,
       transport,
       userService,
+      ...overrides,
     }
     new AuthHandler(deps).setup()
   }
@@ -248,6 +274,60 @@ describe('AuthHandler — setupExternalAuthSync', () => {
     })
   })
 
+  describe('logout disconnects byterover', () => {
+    it('disconnects byterover and broadcasts provider:updated when logout fires and byterover was connected', async () => {
+      providerConfigStore = createMockProviderConfigStore({isConnected: true})
+      createHandler({providerConfigStore})
+
+      const handler = transport._handlers.get(AuthEvents.LOGOUT)!
+      const result = await handler(undefined, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+      expect(providerConfigStore.disconnectProvider.calledOnceWith('byterover')).to.be.true
+      expect(transport.broadcast.getCalls().some((c) => c.args[0] === TransportDaemonEventNames.PROVIDER_UPDATED)).to.be
+        .true
+    })
+
+    it('does not call disconnectProvider when byterover was not connected', async () => {
+      providerConfigStore = createMockProviderConfigStore({isConnected: false})
+      createHandler({providerConfigStore})
+
+      const handler = transport._handlers.get(AuthEvents.LOGOUT)!
+      const result = await handler(undefined, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+      expect(providerConfigStore.disconnectProvider.called).to.be.false
+      expect(transport.broadcast.getCalls().some((c) => c.args[0] === TransportDaemonEventNames.PROVIDER_UPDATED)).to.be
+        .false
+    })
+
+    it('still succeeds and clears the token when disconnectProvider throws', async () => {
+      providerConfigStore = createMockProviderConfigStore({isConnected: true})
+      providerConfigStore.disconnectProvider.rejects(new Error('disk full'))
+      createHandler({providerConfigStore})
+
+      const handler = transport._handlers.get(AuthEvents.LOGOUT)!
+      const result = await handler(undefined, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+    })
+
+    it('disconnects byterover when the token expires (onAuthExpired)', async () => {
+      providerConfigStore = createMockProviderConfigStore({isConnected: true})
+      createHandler({providerConfigStore})
+
+      capturedAuthExpired!(createValidToken())
+
+      await new Promise((resolve) => {
+        setTimeout(resolve, 10)
+      })
+
+      expect(providerConfigStore.disconnectProvider.calledOnceWith('byterover')).to.be.true
+      expect(transport.broadcast.getCalls().some((c) => c.args[0] === TransportDaemonEventNames.PROVIDER_UPDATED)).to.be
+        .true
+    })
+  })
+
   describe('onAuthChanged — userService failure', () => {
     it('should broadcast auth:stateChanged with isAuthorized=true but no user on network error', async () => {
       userService.getCurrentUser.rejects(new Error('Network error'))
@@ -292,6 +372,7 @@ describe('AuthHandler — setupExternalAuthSync', () => {
           waitForCallback: stub().resolves({code: 'test'}),
         } as unknown as ICallbackHandler,
         projectConfigStore,
+        providerConfigStore,
         resolveProjectPath: stub().returns('/test/project'),
         tokenStore: {
           clear: stub().resolves(),
@@ -380,6 +461,7 @@ describe('AuthHandler — setupExternalAuthSync', () => {
           stop: stub().resolves(), waitForCallback: stub().resolves({code: 'c'}),
         } as unknown as ICallbackHandler,
         projectConfigStore,
+        providerConfigStore: createMockProviderConfigStore(),
         resolveProjectPath: stub().returns('/test'),
         tokenStore: {clear: stub().resolves(), load: stub().resolves(), save: stub().resolves()} as unknown as ITokenStore,
         transport: loginTransport,
@@ -421,6 +503,7 @@ describe('AuthHandler — setupExternalAuthSync', () => {
           stop: stub().resolves(), waitForCallback: stub().resolves({code: 'c'}),
         } as unknown as ICallbackHandler,
         projectConfigStore,
+        providerConfigStore: createMockProviderConfigStore(),
         resolveProjectPath: stub().returns('/test'),
         tokenStore: {clear: stub().resolves(), load: stub().resolves(), save: stub().resolves()} as unknown as ITokenStore,
         transport: loginTransport,

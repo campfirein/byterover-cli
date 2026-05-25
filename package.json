@@ -12,7 +12,7 @@
     "coding-assistant",
     "knowledge-management"
   ],
-  "version": "3.12.0",
+  "version": "3.15.1",
   "author": "ByteRover",
   "bin": {
     "brv": "./bin/run.js"
@@ -34,7 +34,7 @@
     "@ai-sdk/xai": "^2.0.57",
     "@anthropic-ai/sdk": "^0.70.1",
     "@campfirein/brv-transport-client": "github:campfirein/brv-transport-client#1.1.0",
-    "@campfirein/byterover-packages": "github:campfirein/byterover-packages#1.0.4",
+    "@campfirein/byterover-packages": "github:campfirein/byterover-packages#1.0.5",
     "@google/genai": "^1.29.0",
     "@inkjs/ui": "^2.0.0",
     "@inquirer/prompts": "^7.9.0",
@@ -163,7 +163,7 @@
       ],
       "command_not_found": "./dist/oclif/hooks/command_not_found/handle-invalid-commands",
       "error": "./dist/oclif/hooks/error/clean-errors",
-      "postrun": "./dist/oclif/hooks/postrun/restart-after-update"
+      "postrun": "./dist/oclif/hooks/postrun/after-update"
     },
     "plugins": [
       "@oclif/plugin-help",

@@ -6,6 +6,7 @@ import {randomUUID} from 'node:crypto'
 
 import {type ProviderConfigResponse, TransportStateEventNames} from '../../server/core/domain/transport/schemas.js'
 import {TaskEvents} from '../../shared/transport/events/index.js'
+import {printBillingLine} from '../lib/billing-line.js'
 import {buildCliMetadata} from '../lib/build-cli-metadata.js'
 import {
   type DaemonClientOptions,
@@ -15,8 +16,15 @@ import {
   providerMissingMessage,
   withDaemonRetry,
 } from '../lib/daemon-client.js'
+import {ensureBillingFunds} from '../lib/insufficient-credits.js'
 import {writeJsonResponse} from '../lib/json-response.js'
-import {DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, MIN_TIMEOUT_SECONDS, waitForTaskCompletion} from '../lib/task-client.js'
+import {
+  DEFAULT_TIMEOUT_SECONDS,
+  MAX_TIMEOUT_SECONDS,
+  MIN_TIMEOUT_SECONDS,
+  waitForTaskCompletion,
+} from '../lib/task-client.js'
+import {TIMEOUT_DEPRECATION_HELP, warnIfTimeoutFlagUsed} from '../lib/timeout-deprecation.js'
 
 /** Parsed flags type */
 type QueryFlags = {
@@ -55,7 +63,7 @@ Bad:
     }),
     timeout: Flags.integer({
       default: DEFAULT_TIMEOUT_SECONDS,
-      description: 'Maximum seconds to wait for task completion',
+      description: TIMEOUT_DEPRECATION_HELP,
       max: MAX_TIMEOUT_SECONDS,
       min: MIN_TIMEOUT_SECONDS,
     }),
@@ -70,6 +78,12 @@ Bad:
     const {args, flags: rawFlags, metadata} = await this.parse(Query)
     const flags = rawFlags as QueryFlags
     const format = (flags.format ?? 'text') as 'json' | 'text'
+
+    warnIfTimeoutFlagUsed({
+      defaultValue: DEFAULT_TIMEOUT_SECONDS,
+      log: (message) => this.log(message),
+      userValue: rawFlags.timeout as number | undefined,
+    })
 
     if (!this.validateInput(args.query, format)) return
 
@@ -97,13 +111,18 @@ Bad:
             throw new Error(providerMissingMessage(active.activeProvider, active.authMethod))
           }
 
+          const billing = await printBillingLine({client, format, log: (msg) => this.log(msg)})
+
+          if (billing) {
+            await ensureBillingFunds({billing, client})
+          }
+
           await this.submitTask({
             client,
             cliMetadata,
             format,
             projectRoot,
             query: args.query,
-            timeoutMs: (flags.timeout ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
             worktreeRoot,
           })
         },
@@ -142,10 +161,9 @@ Bad:
     format: 'json' | 'text'
     projectRoot?: string
     query: string
-    timeoutMs?: number
     worktreeRoot?: string
   }): Promise<void> {
-    const {client, cliMetadata, format, projectRoot, query, timeoutMs, worktreeRoot} = props
+    const {client, cliMetadata, format, projectRoot, query, worktreeRoot} = props
     const taskId = randomUUID()
     const taskPayload = {
       cli_metadata: cliMetadata,
@@ -229,7 +247,6 @@ Bad:
           }
         },
         taskId,
-        timeoutMs,
       },
       (msg) => this.log(msg),
     )

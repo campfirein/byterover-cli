@@ -8,6 +8,7 @@ import { formatError } from '../../../lib/error-messages'
 import { useGetVcDiffs } from '../api/get-vc-diffs'
 import { DiffFileHeader } from './diff-file-header'
 import { DiffViewer } from './diff-viewer'
+import { FileMetaPanel } from './file-meta-panel'
 
 /**
  * How long to keep a single loading overlay visible after batch data arrives,
@@ -61,34 +62,38 @@ export function MultiDiffView({ emptyMessage, files, onOpenFile, onStageToggle, 
   const overlayVisible = (isPending && !data) || computeMasked
 
   return (
-    <div className="bg-card relative flex h-full flex-col overflow-auto rounded-md">
+    <div className="relative flex h-full flex-col overflow-auto">
       {data && (
         <>
-          <div className="border-border bg-muted flex items-center gap-2 border-b px-4 py-2 text-sm font-semibold">
+          <div className="flex items-center gap-2 px-1 py-2 text-sm font-semibold">
             <span className="text-foreground">{title}</span>
             <span className="text-muted-foreground">{files.length} file{files.length === 1 ? '' : 's'}</span>
           </div>
 
-          <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3">
             {data.diffs.map((diff) => {
               const file = files.find((f) => f.path === diff.path)
               if (!file) return null
               return (
                 <div className="flex flex-col" key={`${side}:${diff.path}`}>
+                  {file.agentMeta && <FileMetaPanel agentMeta={file.agentMeta} />}
                   <DiffFileHeader
+                    className={file.agentMeta ? 'border-t' : 'rounded-t-md'}
                     file={file}
                     onOpenFile={() => onOpenFile(file)}
                     onStageToggle={() => onStageToggle(file)}
                   />
-                  <DiffViewer
-                    filename={diff.path}
-                    hideSummary
-                    newContent={diff.newContent}
-                    oldContent={diff.oldContent}
-                    showDiffOnly
-                    showLoadingOverlay={false}
-                    viewMode="split"
-                  />
+                  <div className="overflow-hidden rounded-b-md">
+                    <DiffViewer
+                      filename={diff.path}
+                      hideSummary
+                      newContent={diff.newContent}
+                      oldContent={diff.oldContent}
+                      showDiffOnly
+                      showLoadingOverlay={false}
+                      viewMode="split"
+                    />
+                  </div>
                 </div>
               )
             })}

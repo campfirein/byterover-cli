@@ -233,7 +233,7 @@ export function useActivityLogs(): UseActivityLogsReturn {
         if (task.reviewNotification) {
           const {pendingCount, reviewUrl} = task.reviewNotification
           const fileLabel = pendingCount === 1 ? 'file needs' : 'files need'
-          content += `\n\n⚠ ${pendingCount} ${fileLabel} review: ${reviewUrl}`
+          content += `\n\n⚠ ${pendingCount} ${fileLabel} review` + (reviewUrl ? `: ${reviewUrl}` : '')
         }
 
         const activityLog: ActivityLog = {

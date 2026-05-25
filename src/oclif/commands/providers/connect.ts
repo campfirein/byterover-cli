@@ -2,9 +2,14 @@ import {input, password, select, Separator} from '@inquirer/prompts'
 import {Args, Command, Flags} from '@oclif/core'
 import chalk from 'chalk'
 
-import type {ProviderDTO} from '../../../shared/transport/types/dto.js'
+import type {ProviderDTO, TeamDTO} from '../../../shared/transport/types/dto.js'
 
 import {OAUTH_CALLBACK_TIMEOUT_MS} from '../../../shared/constants/oauth.js'
+import {
+  BillingEvents,
+  type BillingSetPinnedTeamRequest,
+  type BillingSetPinnedTeamResponse,
+} from '../../../shared/transport/events/billing-events.js'
 import {
   ModelEvents,
   type ModelListRequest,
@@ -22,6 +27,7 @@ import {
   type ProviderSubmitOAuthCodeResponse,
   type ProviderValidateApiKeyResponse,
 } from '../../../shared/transport/events/provider-events.js'
+import {TeamEvents, type TeamListResponse} from '../../../shared/transport/events/team-events.js'
 import {type DaemonClientOptions, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
 import {
@@ -32,6 +38,12 @@ import {
   wizardSelectTheme,
 } from '../../lib/prompt-utils.js'
 import {createSpinner} from '../../lib/spinner.js'
+
+const BYTEROVER_PROVIDER_ID = 'byterover'
+
+type ConnectInfo =
+  | {kind: 'apikey'; model?: string; providerId: string; providerName: string}
+  | {kind: 'oauth'; providerName: string; showInstructions: boolean}
 
 export default class ProviderConnect extends Command {
   public static args = {
@@ -46,6 +58,7 @@ export default class ProviderConnect extends Command {
     '<%= config.bin %> providers connect anthropic --api-key sk-xxx',
     '<%= config.bin %> providers connect openai --oauth',
     '<%= config.bin %> providers connect byterover',
+    '<%= config.bin %> providers connect byterover --team acme',
     '<%= config.bin %> providers connect openai-compatible --base-url http://localhost:11434/v1 --api-key sk-xxx',
   ]
   public static flags = {
@@ -77,6 +90,26 @@ export default class ProviderConnect extends Command {
       default: false,
       description: 'Connect via OAuth (browser-based)',
     }),
+    team: Flags.string({
+      description: 'Pin this project to a billing team (byterover only). Accepts team name or slug.',
+    }),
+  }
+
+  protected async applyTeamPin(team: string, options?: DaemonClientOptions): Promise<TeamDTO> {
+    const teams = await this.fetchTeams(options)
+    const match = this.matchTeam(teams, team)
+    if (!match) {
+      const list = teams.length === 0 ? '' : ` Available: ${teams.map((t) => t.displayName).join(', ')}.`
+      throw new Error(`No team matched "${team}".${list}`)
+    }
+
+    await this.setBillingPin(match.id, options)
+    return match
+  }
+
+  protected buildPinPayload(team: TeamDTO | undefined): Record<string, unknown> {
+    if (!team) return {}
+    return {team: {cleared: false, displayName: team.displayName, organizationId: team.id}}
   }
 
   protected async connectProvider(
@@ -229,7 +262,26 @@ export default class ProviderConnect extends Command {
     return providers
   }
 
-  // All prompt methods emit a blank line before rendering for visual spacing between wizard steps.
+  protected async fetchTeams(options?: DaemonClientOptions): Promise<TeamDTO[]> {
+    return withDaemonRetry(async (client) => {
+      const response = await client.requestWithAck<TeamListResponse>(TeamEvents.LIST)
+      if (response.error) throw new Error(response.error)
+      return response.teams ?? []
+    }, options)
+  }
+
+  protected logPinResult(team: TeamDTO | undefined): void {
+    if (!team) return
+    this.log(`ByteRover usage on this project will be billed to ${team.displayName}.`)
+  }
+
+  protected matchTeam(teams: readonly TeamDTO[], value: string): TeamDTO | undefined {
+    const lower = value.toLowerCase()
+    return (
+      teams.find((t) => t.displayName.toLowerCase() === lower) ??
+      teams.find((t) => t.name.toLowerCase() === lower)
+    )
+  }
 
   protected async promptForApiKey(providerName: string, apiKeyUrl?: string, signal?: AbortSignal): Promise<string> {
     this.log()
@@ -364,6 +416,36 @@ export default class ProviderConnect extends Command {
     )
   }
 
+  protected renderConnectSuccess(params: {
+    connectInfo: ConnectInfo
+    format: 'json' | 'text'
+    pinnedTeam: TeamDTO | undefined
+    providerId: string
+  }): void {
+    const {connectInfo, format, pinnedTeam, providerId} = params
+
+    if (format === 'json') {
+      const data: Record<string, unknown> = connectInfo.kind === 'oauth'
+        ? {providerId}
+        : {model: connectInfo.model, providerId: connectInfo.providerId, providerName: connectInfo.providerName}
+      writeJsonResponse({command: 'providers connect', data: {...data, ...this.buildPinPayload(pinnedTeam)}, success: true})
+      return
+    }
+
+    if (connectInfo.kind === 'oauth') {
+      if (!connectInfo.showInstructions) {
+        this.log(`Connected to ${connectInfo.providerName} via OAuth`)
+      }
+    } else {
+      this.log(`Connected to ${connectInfo.providerName} (${connectInfo.providerId})`)
+      if (connectInfo.model) {
+        this.log(`Model set to: ${connectInfo.model}`)
+      }
+    }
+
+    this.logPinResult(pinnedTeam)
+  }
+
   public async run(): Promise<void> {
     const {args, flags} = await this.parse(ProviderConnect)
     const providerId = args.provider
@@ -402,6 +484,7 @@ export default class ProviderConnect extends Command {
         code: flags.code,
         model: flags.model,
         oauth: flags.oauth,
+        team: flags.team,
       },
       format,
     )
@@ -498,10 +581,11 @@ export default class ProviderConnect extends Command {
       code: string | undefined
       model: string | undefined
       oauth: boolean
+      team: string | undefined
     },
     format: 'json' | 'text',
   ): Promise<void> {
-    const {apiKey, baseUrl, code, model, oauth} = flags
+    const {apiKey, baseUrl, code, model, oauth, team} = flags
 
     if (oauth && apiKey) {
       const msg = 'Cannot use --oauth and --api-key together'
@@ -525,28 +609,36 @@ export default class ProviderConnect extends Command {
       return
     }
 
+    if (team !== undefined && providerId !== BYTEROVER_PROVIDER_ID) {
+      const msg = `--team is only supported for the "${BYTEROVER_PROVIDER_ID}" provider.`
+      if (format === 'json') {
+        writeJsonResponse({command: 'providers connect', data: {error: msg}, success: false})
+      } else {
+        this.log(msg)
+      }
+
+      return
+    }
+
     try {
+      let connectInfo: ConnectInfo
       if (oauth) {
         const onProgress = format === 'text' ? (msg: string) => this.log(msg) : undefined
         const result = await this.connectProviderOAuth({code, providerId}, undefined, onProgress)
-
-        if (format === 'json') {
-          writeJsonResponse({command: 'providers connect', data: {providerId}, success: true})
-        } else if (!result.showInstructions) {
-          this.log(`Connected to ${result.providerName} via OAuth`)
-        }
+        connectInfo = {kind: 'oauth', providerName: result.providerName, showInstructions: result.showInstructions}
       } else {
         const result = await this.connectProvider({apiKey, baseUrl, model, providerId})
-
-        if (format === 'json') {
-          writeJsonResponse({command: 'providers connect', data: result, success: true})
-        } else {
-          this.log(`Connected to ${result.providerName} (${result.providerId})`)
-          if (result.model) {
-            this.log(`Model set to: ${result.model}`)
-          }
+        connectInfo = {
+          kind: 'apikey',
+          model: result.model,
+          providerId: result.providerId,
+          providerName: result.providerName,
         }
       }
+
+      const pinnedTeam = team === undefined ? undefined : await this.applyTeamPin(team)
+
+      this.renderConnectSuccess({connectInfo, format, pinnedTeam, providerId})
     } catch (error) {
       const errorMessage =
         error instanceof Error
@@ -558,6 +650,21 @@ export default class ProviderConnect extends Command {
         this.log(errorMessage)
       }
     }
+  }
+
+  protected async setBillingPin(teamId: string | undefined, options?: DaemonClientOptions): Promise<void> {
+    await withDaemonRetry(async (client, projectRoot) => {
+      if (!projectRoot) throw new Error('Failed to resolve project path for billing pin.')
+      const request: BillingSetPinnedTeamRequest =
+        teamId === undefined ? {projectPath: projectRoot} : {projectPath: projectRoot, teamId}
+      const response = await client.requestWithAck<BillingSetPinnedTeamResponse>(
+        BillingEvents.SET_PINNED_TEAM,
+        request,
+      )
+      if (!response.success) {
+        throw new Error(response.error ?? 'Failed to update billing pin.')
+      }
+    }, options)
   }
 
   /* eslint-disable no-await-in-loop -- intentional retry loop for interactive auth */

@@ -36,19 +36,35 @@ export class BrvApiClient {
     data?: TRequest,
     options?: RequestOptions,
   ): Promise<TResponse> {
+    if (!this.socket.connected) {
+      throw new Error(`Socket not connected — cannot send ${event}`)
+    }
+
     return new Promise<TResponse>((resolve, reject) => {
       let didFinish = false
       const timeout = options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MS
       const timeoutId = globalThis.setTimeout(() => {
+        if (didFinish) return
         didFinish = true
+        this.socket.off('disconnect', onDisconnect)
         reject(new Error(`Request timed out after ${timeout}ms`))
       }, timeout)
+
+      const onDisconnect = () => {
+        if (didFinish) return
+        didFinish = true
+        globalThis.clearTimeout(timeoutId)
+        reject(new Error(`Socket disconnected before ${event} acked`))
+      }
+
+      this.socket.once('disconnect', onDisconnect)
 
       this.socket.emit(event, data, (response: AckResponse<TResponse>) => {
         if (didFinish) return
 
         didFinish = true
         globalThis.clearTimeout(timeoutId)
+        this.socket.off('disconnect', onDisconnect)
 
         if (response.success) {
           resolve(response.data)

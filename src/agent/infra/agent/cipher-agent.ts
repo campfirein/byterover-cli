@@ -21,6 +21,7 @@ import type {ToolProvider} from '../tools/tool-provider.js'
 import type {AgentConfig} from './agent-schemas.js'
 import type {ProviderUpdateConfig} from './provider-update-config.js'
 
+import {SETTINGS_KEYS} from '../../../server/core/domain/entities/settings.js'
 import {TransportStateEventNames} from '../../../server/core/domain/transport/schemas.js'
 import {agentLog} from '../../../server/utils/process-logger.js'
 import {getEffectiveMaxInputTokens, resolveRegistryProvider} from '../../core/domain/llm/index.js'
@@ -36,6 +37,7 @@ import {MemoryDeduplicator} from '../memory/memory-deduplicator.js'
 import {createCurateService} from '../sandbox/curate-service.js'
 import {SessionCompressor} from '../session/session-compressor.js'
 import {SessionManager} from '../session/session-manager.js'
+import {getAgentSettingValue} from '../settings/agent-settings-snapshot.js'
 import {TransportEventBridge} from '../transport/transport-event-bridge.js'
 import {AgentError} from './agent-error.js'
 import {BaseAgent} from './base-agent.js'
@@ -619,8 +621,10 @@ export class CipherAgent extends BaseAgent implements ICipherAgent {
       providerApiKey: providerUpdate.providerApiKey,
       providerBaseUrl: providerUpdate.providerBaseUrl,
       providerHeaders: providerUpdate.providerHeaders,
+      requestTimeoutMs: getAgentSettingValue(SETTINGS_KEYS.LLM_REQUEST_TIMEOUT_MS),
       siteName: this.config.siteName,
       temperature: this.config.llm.temperature,
+      timeout: getAgentSettingValue(SETTINGS_KEYS.LLM_ITERATION_BUDGET_MS),
       verbose: this.config.llm.verbose,
     }
 
@@ -745,8 +749,10 @@ export class CipherAgent extends BaseAgent implements ICipherAgent {
       providerApiKey: this.config.providerApiKey,
       providerBaseUrl: this.config.providerBaseUrl,
       providerHeaders: this.config.providerHeaders,
+      requestTimeoutMs: getAgentSettingValue(SETTINGS_KEYS.LLM_REQUEST_TIMEOUT_MS),
       siteName: this.config.siteName,
       temperature: this.config.llm.temperature,
+      timeout: getAgentSettingValue(SETTINGS_KEYS.LLM_ITERATION_BUDGET_MS),
       verbose: this.config.llm.verbose,
     }
 

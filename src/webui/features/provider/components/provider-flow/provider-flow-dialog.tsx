@@ -1,21 +1,27 @@
 import {Dialog, DialogContent} from '@campfirein/byterover-packages/components/dialog'
+import {useQueryClient} from '@tanstack/react-query'
 import {LoaderCircle} from 'lucide-react'
-import {useCallback, useRef, useState} from 'react'
+import {useCallback, useEffect, useRef, useState} from 'react'
 import {toast} from 'sonner'
 
 import type {ModelDTO, ProviderDTO} from '../../../../../shared/transport/events'
 
 import {formatError} from '../../../../lib/error-messages'
+import {useTransportStore} from '../../../../stores/transport-store'
 import {useAuthStore} from '../../../auth/stores/auth-store'
 import {useSetActiveModel} from '../../../model/api/set-active-model'
 import {TourStepBadge} from '../../../onboarding/components/tour-step-badge'
 import {useAwaitOAuthCallback} from '../../api/await-oauth-callback'
 import {useConnectProvider} from '../../api/connect-provider'
 import {useDisconnectProvider} from '../../api/disconnect-provider'
-import {useGetProviders} from '../../api/get-providers'
+import {getPinnedTeam} from '../../api/get-pinned-team'
+import {getProvidersQueryOptions, useGetProviders} from '../../api/get-providers'
+import {listBillingUsage} from '../../api/list-billing-usage'
+import {listTeams} from '../../api/list-teams'
 import {useSetActiveProvider} from '../../api/set-active-provider'
 import {useStartOAuth} from '../../api/start-oauth'
 import {useValidateApiKey} from '../../api/validate-api-key'
+import {hasPaidTeam} from '../../utils/has-paid-team'
 import {ApiKeyStep} from './api-key-step'
 import {AuthMethodStep} from './auth-method-step'
 import {BaseUrlStep} from './base-url-step'
@@ -23,6 +29,7 @@ import {LoginPromptStep} from './login-prompt-step'
 import {ModelSelectStep} from './model-select-step'
 import {type ProviderActionId, ProviderActionStep} from './provider-action-step'
 import {ProviderSelectStep} from './provider-select-step'
+import {TeamSelectStep} from './team-select-step'
 
 type FlowStep =
   | 'api_key'
@@ -33,6 +40,7 @@ type FlowStep =
   | 'model_select'
   | 'provider_actions'
   | 'select'
+  | 'team_select'
 
 const BYTEROVER_PROVIDER_ID = 'byterover'
 
@@ -77,6 +85,8 @@ export function ProviderFlowDialog({onOpenChange, onProviderActivated, open, tou
   const oauthPopupRef = useRef<ReturnType<typeof globalThis.open>>(null)
 
   const isAuthorized = useAuthStore((s) => s.isAuthorized)
+  const projectPath = useTransportStore((s) => s.selectedProject)
+  const queryClient = useQueryClient()
   const {data} = useGetProviders()
   const connectMutation = useConnectProvider()
   const disconnectMutation = useDisconnectProvider()
@@ -87,6 +97,11 @@ export function ProviderFlowDialog({onOpenChange, onProviderActivated, open, tou
   const setActiveModelMutation = useSetActiveModel()
 
   const providers = data?.providers ?? []
+
+  useEffect(() => {
+    if (!open) return
+    queryClient.invalidateQueries({queryKey: getProvidersQueryOptions().queryKey})
+  }, [open, queryClient])
 
   const reset = useCallback(() => {
     setStep('select')
@@ -135,7 +150,27 @@ export function ProviderFlowDialog({onOpenChange, onProviderActivated, open, tou
         await setActiveMutation.mutateAsync({providerId: provider.id})
         toast.success(`Connected to ${provider.name}`)
         onProviderActivated?.()
-        resetAndClose()
+
+        const pinned = await getPinnedTeam(projectPath)
+        const pinnedTeamId = pinned.teamId
+
+        if (pinnedTeamId) {
+          const teamsResponse = await listTeams()
+          const teamName = teamsResponse.teams?.find((t) => t.id === pinnedTeamId)?.displayName
+          toast.success(`ByteRover usage will be billed to ${teamName ?? 'your previously selected team'}.`)
+          resetAndClose()
+          return
+        }
+
+        const usageData = await listBillingUsage().catch(() => {})
+
+        if (!hasPaidTeam(usageData?.usage)) {
+          toast.success('ByteRover usage uses your free monthly credits.')
+          resetAndClose()
+          return
+        }
+
+        setStep('team_select')
       } catch (error_) {
         toast.error(formatError(error_, 'Connection failed'))
         setStep('select')
@@ -159,22 +194,20 @@ export function ProviderFlowDialog({onOpenChange, onProviderActivated, open, tou
         return
       }
 
-      // ByteRover + already current → done
+      // ByteRover + already current → jump straight to the team picker so
+      // re-opening the dialog from the trigger gets the user to billing config.
       if (provider.id === BYTEROVER_PROVIDER_ID && provider.isCurrent) {
-        onProviderActivated?.()
-        resetAndClose()
+        setStep('team_select')
         return
       }
 
-      // Already connected → show actions
-      if (provider.isConnected) {
+      if (provider.id === BYTEROVER_PROVIDER_ID) {
         setStep('provider_actions')
         return
       }
 
-      // ByteRover + not connected → connect + activate directly
-      if (provider.id === BYTEROVER_PROVIDER_ID) {
-        await connectByteRover(provider)
+      if (provider.isConnected) {
+        setStep('provider_actions')
         return
       }
 
@@ -243,12 +276,21 @@ export function ProviderFlowDialog({onOpenChange, onProviderActivated, open, tou
 
       switch (actionId) {
         case 'activate': {
+          if (selectedProvider.id === BYTEROVER_PROVIDER_ID && !selectedProvider.isConnected) {
+            await connectByteRover(selectedProvider)
+            break
+          }
+
           setStep('connecting')
           try {
             await setActiveMutation.mutateAsync({providerId: selectedProvider.id})
             toast.success(`Activated ${selectedProvider.name}`)
             onProviderActivated?.()
-            resetAndClose()
+            if (selectedProvider.id === BYTEROVER_PROVIDER_ID) {
+              setStep('team_select')
+            } else {
+              resetAndClose()
+            }
           } catch (error_) {
             setError(formatError(error_, 'Failed'))
             setStep('provider_actions')
@@ -294,7 +336,15 @@ export function ProviderFlowDialog({onOpenChange, onProviderActivated, open, tou
         }
       }
     },
-    [disconnectMutation, handleOAuth, onProviderActivated, resetAndClose, selectedProvider, setActiveMutation],
+    [
+      connectByteRover,
+      disconnectMutation,
+      handleOAuth,
+      onProviderActivated,
+      resetAndClose,
+      selectedProvider,
+      setActiveMutation,
+    ],
   )
 
   const handleBaseUrlSubmit = useCallback((url: string) => {
@@ -482,6 +532,22 @@ export function ProviderFlowDialog({onOpenChange, onProviderActivated, open, tou
         return <ProviderSelectStep onSelect={(p) => handleProviderSelect(p)} providers={providers} />
       }
 
+      case 'team_select': {
+        return (
+          <TeamSelectStep
+            onBack={() => {
+              setStep('select')
+              setSelectedProvider(undefined)
+              setError(undefined)
+            }}
+            onComplete={() => {
+              onProviderActivated?.()
+              resetAndClose()
+            }}
+          />
+        )
+      }
+
       default: {
         return null
       }
@@ -493,7 +559,11 @@ export function ProviderFlowDialog({onOpenChange, onProviderActivated, open, tou
       <DialogContent
         className="flex h-150 flex-col sm:max-w-lg"
         showCloseButton={
-          step === 'select' || step === 'model_select' || step === 'connecting' || step === 'login_prompt'
+          step === 'select' ||
+          step === 'model_select' ||
+          step === 'connecting' ||
+          step === 'login_prompt' ||
+          step === 'team_select'
         }
       >
         {tourStepLabel && <TourStepBadge label={tourStepLabel} />}

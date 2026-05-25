@@ -20,6 +20,7 @@ export const deepinfraProvider: ProviderModule = {
 
     return new AiSdkContentGenerator({
       model: provider(config.model),
+      requestTimeoutMs: config.requestTimeoutMs,
     })
   },
   defaultModel: 'meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8',

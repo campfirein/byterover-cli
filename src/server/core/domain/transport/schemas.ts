@@ -332,6 +332,8 @@ export const TransportAgentEventNames = {
  */
 export const TransportStateEventNames = {
   GET_AUTH: 'state:getAuth',
+  GET_BILLING_CONFIG: 'state:getBillingConfig',
+  GET_PAID_ORGANIZATIONS: 'state:getPaidOrganizations',
   GET_PROJECT_CONFIG: 'state:getProjectConfig',
   GET_PROVIDER_CONFIG: 'state:getProviderConfig',
 } as const
@@ -341,8 +343,27 @@ export const TransportStateEventNames = {
  * Used to notify agent child processes of global state changes.
  */
 export const TransportDaemonEventNames = {
+  BILLING_PIN_CHANGED: 'billing:pinChanged',
   PROVIDER_UPDATED: 'provider:updated',
 } as const
+
+export interface BillingStateRequest {
+  projectPath: string
+}
+
+export interface BillingStateResponse {
+  pinnedTeamId?: string
+}
+
+export interface BillingPinChangedPayload {
+  projectPath: string
+  teamId?: string
+}
+
+export interface PaidOrganizationsResponse {
+  error?: string
+  organizationIds: string[]
+}
 
 /**
  * Response payload for GET_PROVIDER_CONFIG — shared between daemon and agent process.

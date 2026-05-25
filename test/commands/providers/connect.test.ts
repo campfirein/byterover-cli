@@ -6,6 +6,8 @@ import {expect} from 'chai'
 import sinon, {restore, stub} from 'sinon'
 
 import ProviderConnect from '../../../src/oclif/commands/providers/connect.js'
+import {BillingEvents} from '../../../src/shared/transport/events/billing-events.js'
+import {TeamEvents} from '../../../src/shared/transport/events/team-events.js'
 import {STUB_BYTEROVER_AUTH_ERROR} from '../../helpers/provider-fixtures.js'
 
 // ==================== TestableProviderConnectCommand ====================
@@ -16,6 +18,14 @@ class TestableProviderConnectCommand extends ProviderConnect {
   constructor(argv: string[], mockConnector: () => Promise<ConnectionResult>, config: Config) {
     super(argv, config)
     this.mockConnector = mockConnector
+  }
+
+  protected override async applyTeamPin(team: string) {
+    return super.applyTeamPin(team, {
+      maxRetries: 1,
+      retryDelayMs: 0,
+      transportConnector: this.mockConnector,
+    })
   }
 
   protected override async connectProvider(params: {
@@ -46,6 +56,14 @@ class TestableProviderConnectCommand extends ProviderConnect {
       onProgress,
     )
   }
+}
+
+function stubByteRoverConnect(mockClient: sinon.SinonStubbedInstance<ITransportClient>): void {
+  const requestStub = mockClient.requestWithAck as sinon.SinonStub
+  requestStub
+    .withArgs('provider:list')
+    .resolves({providers: [{id: 'byterover', isConnected: false, name: 'ByteRover', requiresApiKey: false}]})
+  requestStub.withArgs('provider:connect').resolves({success: true})
 }
 
 // ==================== Tests ====================
@@ -681,6 +699,67 @@ describe('Provider Connect Command', () => {
       const json = parseJsonOutput()
       expect(json.success).to.be.false
       expect(json.data).to.have.property('error')
+    })
+  })
+
+  describe('--team flag', () => {
+    it('connects byterover and pins the matching team by display name', async () => {
+      stubByteRoverConnect(mockClient)
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      requestStub.withArgs(TeamEvents.LIST).resolves({
+        teams: [
+          {avatarUrl: '', displayName: 'Acme Corp', id: 'org-acme', isDefault: false, name: 'acme'},
+        ],
+      })
+      requestStub.withArgs(BillingEvents.SET_PINNED_TEAM).resolves({success: true})
+
+      await createCommand('byterover', '--team', 'acme corp').run()
+
+      const setCall = requestStub.getCalls().find((c) => c.args[0] === BillingEvents.SET_PINNED_TEAM)
+      expect(setCall, 'expected SET_PINNED_TEAM call').to.exist
+      expect(setCall!.args[1]).to.deep.equal({projectPath: '/test/project', teamId: 'org-acme'})
+      expect(loggedMessages.some((m) => m.includes('Connected to ByteRover'))).to.be.true
+      expect(
+        loggedMessages.some((m) => m.includes('ByteRover usage on this project will be billed to Acme Corp')),
+      ).to.be.true
+    })
+
+    it('errors before connecting when --team is used with a non-byterover provider', async () => {
+      await createCommand('openai', '--team', 'acme').run()
+
+      expect(mockClient.requestWithAck.called).to.be.false
+      expect(loggedMessages.some((m) => m.toLowerCase().includes('byterover'))).to.be.true
+    })
+
+    it('reports a no-match error after a successful connect', async () => {
+      stubByteRoverConnect(mockClient)
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      requestStub.withArgs(TeamEvents.LIST).resolves({teams: []})
+
+      await createCommand('byterover', '--team', 'unknown').run()
+
+      const setCall = requestStub.getCalls().find((c) => c.args[0] === BillingEvents.SET_PINNED_TEAM)
+      expect(setCall, 'expected no SET_PINNED_TEAM call').to.not.exist
+      expect(loggedMessages.some((m) => m.toLowerCase().includes('no team matched'))).to.be.true
+    })
+
+    it('emits a JSON success payload that includes the team field', async () => {
+      stubByteRoverConnect(mockClient)
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      requestStub.withArgs(TeamEvents.LIST).resolves({
+        teams: [{avatarUrl: '', displayName: 'Acme Corp', id: 'org-acme', isDefault: false, name: 'acme'}],
+      })
+      requestStub.withArgs(BillingEvents.SET_PINNED_TEAM).resolves({success: true})
+
+      await createJsonCommand('byterover', '--team', 'acme').run()
+
+      const json = parseJsonOutput()
+      expect(json.success).to.be.true
+      expect(json.data).to.have.property('team').that.deep.includes({
+        cleared: false,
+        displayName: 'Acme Corp',
+        organizationId: 'org-acme',
+      })
     })
   })
 })

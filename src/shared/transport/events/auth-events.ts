@@ -14,6 +14,10 @@ export const AuthEvents = {
   UPDATED: 'auth:updated',
 } as const
 
+export interface AuthGetStateRequest {
+  projectPath: string
+}
+
 export interface AuthGetStateResponse {
   authToken?: AuthTokenDTO
   brvConfig?: BrvConfigDTO

@@ -14,6 +14,7 @@ import {pullCommand} from './pull.js'
 import {pushCommand} from './push.js'
 import {queryCommand} from './query.js'
 import {resetCommand} from './reset.js'
+import {settingsCommand} from './settings.js'
 import {sourceCommand} from './source.js'
 import {spaceCommand} from './space.js'
 import {statusCommand} from './status.js'
@@ -61,6 +62,9 @@ export const load: () => SlashCommand[] = () => [
 
   // Context tree management
   resetCommand,
+
+  // Operational settings
+  settingsCommand,
 
   // Session management
   newCommand,

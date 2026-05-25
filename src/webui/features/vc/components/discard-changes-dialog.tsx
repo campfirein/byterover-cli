@@ -45,8 +45,8 @@ export function DiscardChangesDialog({files, onOpenChange, open}: DiscardChanges
             {isSingle ? (
               <>
                 Unstaged changes in{' '}
-                <code className="bg-muted rounded px-1.5 py-0.5 text-sm">{files[0].path}</code> will be lost and cannot
-                be restored.
+                <code className="bg-muted rounded px-1.5 py-0.5 text-sm break-all">{files[0].path}</code> will be lost
+                and cannot be restored.
               </>
             ) : (
               'Unstaged changes in the selected files will be lost and cannot be restored.'

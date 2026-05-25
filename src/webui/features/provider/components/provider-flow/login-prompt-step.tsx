@@ -4,7 +4,8 @@ import {useQueryClient} from '@tanstack/react-query'
 import {ChevronLeft, ExternalLink, LoaderCircle} from 'lucide-react'
 import {useEffect, useRef, useState} from 'react'
 
-import {getAuthStateQueryOptions} from '../../../auth/api/get-auth-state'
+import {useTransportStore} from '../../../../stores/transport-store'
+import {AUTH_STATE_QUERY_ROOT, getAuthStateQueryOptions} from '../../../auth/api/get-auth-state'
 import {login, subscribeToLoginCompleted} from '../../../auth/api/login'
 import {useAuthStore} from '../../../auth/stores/auth-store'
 import {isSafeHttpUrl} from '../../../auth/utils/is-safe-http-url'
@@ -50,6 +51,7 @@ export function LoginPromptStep({onAuthenticated, onBack, popup}: LoginPromptSte
   const queryClient = useQueryClient()
   const isAuthorized = useAuthStore((s) => s.isAuthorized)
   const setLoggingIn = useAuthStore((s) => s.setLoggingIn)
+  const selectedProject = useTransportStore((s) => s.selectedProject)
   const [state, setState] = useState<InnerState>({type: 'starting'})
   const [retryCount, setRetryCount] = useState(0)
   const didStartRef = useRef(false)
@@ -115,7 +117,7 @@ export function LoginPromptStep({onAuthenticated, onBack, popup}: LoginPromptSte
 
     const unsubscribe = subscribeToLoginCompleted((data) => {
       if (data.success && data.user) {
-        queryClient.invalidateQueries({queryKey: getAuthStateQueryOptions().queryKey})
+        queryClient.invalidateQueries({queryKey: AUTH_STATE_QUERY_ROOT})
       } else {
         setState({message: data.error ?? 'Authentication failed', type: 'error'})
       }
@@ -133,10 +135,10 @@ export function LoginPromptStep({onAuthenticated, onBack, popup}: LoginPromptSte
 
     async function poll() {
       try {
-        const result = await queryClient.fetchQuery(getAuthStateQueryOptions())
+        const result = await queryClient.fetchQuery(getAuthStateQueryOptions(selectedProject))
         if (cancelled) return
         if (result.isAuthorized) {
-          queryClient.invalidateQueries({queryKey: getAuthStateQueryOptions().queryKey})
+          queryClient.invalidateQueries({queryKey: AUTH_STATE_QUERY_ROOT})
           setLoggingIn(false)
         }
       } catch {
@@ -149,7 +151,7 @@ export function LoginPromptStep({onAuthenticated, onBack, popup}: LoginPromptSte
       cancelled = true
       globalThis.clearInterval(intervalId)
     }
-  }, [queryClient, setLoggingIn, state.type])
+  }, [queryClient, selectedProject, setLoggingIn, state.type])
 
   function retry() {
     // Clear the guard and bump `retryCount` so the start effect re-runs —

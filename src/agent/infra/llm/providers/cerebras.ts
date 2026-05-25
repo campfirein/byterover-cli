@@ -25,6 +25,7 @@ export const cerebrasProvider: ProviderModule = {
 
     return new AiSdkContentGenerator({
       model: provider(config.model),
+      requestTimeoutMs: config.requestTimeoutMs,
     })
   },
   defaultModel: 'gpt-oss-120b',

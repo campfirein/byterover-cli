@@ -26,7 +26,12 @@ import {join} from 'node:path'
 
 import type {ISearchKnowledgeService} from '../../../agent/infra/sandbox/tools-sdk.js'
 import type {BrvConfig} from '../../core/domain/entities/brv-config.js'
-import type {ProviderConfigResponse, TaskExecute} from '../../core/domain/transport/schemas.js'
+import type {
+  BillingPinChangedPayload,
+  BillingStateResponse,
+  ProviderConfigResponse,
+  TaskExecute,
+} from '../../core/domain/transport/schemas.js'
 import type {IRuntimeSignalStore} from '../../core/interfaces/storage/i-runtime-signal-store.js'
 
 import {SESSIONS_DIR} from '../../../agent/core/domain/session/session-metadata.js'
@@ -34,6 +39,7 @@ import {CipherAgent} from '../../../agent/infra/agent/index.js'
 import {FileSystemService} from '../../../agent/infra/file-system/file-system-service.js'
 import {FolderPackService} from '../../../agent/infra/folder-pack/folder-pack-service.js'
 import {SessionMetadataStore} from '../../../agent/infra/session/session-metadata-store.js'
+import {loadAgentSettingsSnapshot} from '../../../agent/infra/settings/agent-settings-snapshot.js'
 import {FileKeyStorage} from '../../../agent/infra/storage/file-key-storage.js'
 import {runWithReviewDisabled} from '../../../agent/infra/tools/implementations/curate-tool-task-context.js'
 import {createSearchKnowledgeService} from '../../../agent/infra/tools/implementations/search-knowledge-service.js'
@@ -157,7 +163,7 @@ async function activateExistingSession(sessionId: string, providerId: string): P
  */
 let cachedSessionKey = ''
 let cachedBrvConfig: BrvConfig | undefined
-let cachedTeamId = ''
+let cachedPinnedOrgId: string | undefined
 let cachedSpaceId = ''
 let cachedActiveProvider = ''
 let cachedActiveModel = ''
@@ -223,16 +229,18 @@ async function start(): Promise<void> {
     sessionKey?: string
   }
 
-  const [configResult, authResult, providerResult] = await Promise.all([
+  const [configResult, authResult, providerResult, billingResult] = await Promise.all([
     transport.requestWithAck<ProjectConfigResponse>(TransportStateEventNames.GET_PROJECT_CONFIG, {projectPath}),
     transport.requestWithAck<AuthResponse>(TransportStateEventNames.GET_AUTH),
     transport.requestWithAck<ProviderConfigResponse>(TransportStateEventNames.GET_PROVIDER_CONFIG),
+    transport.requestWithAck<BillingStateResponse>(TransportStateEventNames.GET_BILLING_CONFIG, {projectPath}),
+    loadAgentSettingsSnapshot(transport),
   ])
 
   cachedBrvConfig = configResult.brvConfig
-  cachedTeamId = configResult.teamId ?? ''
   cachedSpaceId = configResult.spaceId ?? ''
   cachedSessionKey = authResult.sessionKey ?? ''
+  cachedPinnedOrgId = billingResult.pinnedTeamId
 
   agentLog('Initial config loaded from state server')
 
@@ -242,7 +250,6 @@ async function start(): Promise<void> {
     (data) => {
       if (data.projectPath !== projectPath) return
       if (data.brvConfig) cachedBrvConfig = data.brvConfig
-      if (data.teamId !== undefined) cachedTeamId = data.teamId
       if (data.spaceId !== undefined) cachedSpaceId = data.spaceId
     },
   )
@@ -254,6 +261,11 @@ async function start(): Promise<void> {
   transport.on(TransportDaemonEventNames.PROVIDER_UPDATED, () => {
     providerConfigDirty = true
     providerFetchRetries = 0
+  })
+
+  transport.on<BillingPinChangedPayload>(TransportDaemonEventNames.BILLING_PIN_CHANGED, (data) => {
+    if (data.projectPath !== projectPath) return
+    cachedPinnedOrgId = data.teamId
   })
 
   // 4. Provider config resolved by daemon (API key, base URL, headers, etc.)
@@ -298,7 +310,7 @@ async function start(): Promise<void> {
     projectIdProvider: () => PROJECT,
     sessionKeyProvider: () => cachedSessionKey,
     spaceIdProvider: () => cachedSpaceId,
-    teamIdProvider: () => cachedTeamId,
+    teamIdProvider: () => cachedPinnedOrgId ?? '',
     transportClient: transport,
   })
 
@@ -447,7 +459,8 @@ async function executeTask(
   storagePath: string,
   runtimeSignalStore: IRuntimeSignalStore,
 ): Promise<void> {
-  const {clientCwd, clientId, content, files, folderPath, force, reviewDisabled, taskId, trigger, type, worktreeRoot} = task
+  const {clientCwd, clientId, content, files, folderPath, force, reviewDisabled, taskId, trigger, type, worktreeRoot} =
+    task
   if (!transport || !agent) return
 
   // Search tasks are pure BM25 retrieval — no LLM, no provider needed.
@@ -485,12 +498,11 @@ async function executeTask(
       // Refresh config from state server to pick up changes from init/space-switch
       // (they write directly to disk, bypassing the agent's cached state)
       try {
-        const configResult = await transport.requestWithAck<{brvConfig?: BrvConfig; spaceId?: string; teamId?: string}>(
+        const configResult = await transport.requestWithAck<{brvConfig?: BrvConfig; spaceId?: string}>(
           TransportStateEventNames.GET_PROJECT_CONFIG,
           {projectPath},
         )
         if (configResult.brvConfig) cachedBrvConfig = configResult.brvConfig
-        if (configResult.teamId !== undefined) cachedTeamId = configResult.teamId
         if (configResult.spaceId !== undefined) cachedSpaceId = configResult.spaceId
       } catch {
         agentLog('Failed to refresh config before task execution')
@@ -659,7 +671,13 @@ async function executeTask(
       // the response as soon as the agent body finishes.
       agentLog(`task:completed taskId=${taskId}`)
       try {
-        transport.request(TransportTaskEventNames.COMPLETED, {clientId, ...(logId ? {logId} : {}), projectPath, result, taskId})
+        transport.request(TransportTaskEventNames.COMPLETED, {
+          clientId,
+          ...(logId ? {logId} : {}),
+          projectPath,
+          result,
+          taskId,
+        })
       } catch (error) {
         agentLog(
           `task:completed send failed taskId=${taskId}: ${error instanceof Error ? error.message : String(error)}`,

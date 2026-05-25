@@ -1,7 +1,14 @@
+# SECURITY: this workflow uses `pull_request_target`, which runs in the
+# base-repo context with access to repository secrets even for PRs from forks.
+# Every job MUST keep the `if:` guard below - it short-circuits fork PRs that
+# have not been authorized by a maintainer applying the `safe-to-test` label.
+# The label is auto-removed on every push by `.github/workflows/pr-label-cleanup.yml`
+# so authorization is strictly per-commit.
 name: PR Validation
 
 on:
-  pull_request:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
     branches:
       - main
       - 'release/**'
@@ -20,9 +27,14 @@ env:
 
 jobs:
   install:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository ||
+      contains(github.event.pull_request.labels.*.name, 'safe-to-test')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -41,9 +53,14 @@ jobs:
 
   lint:
     needs: install
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository ||
+      contains(github.event.pull_request.labels.*.name, 'safe-to-test')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -55,9 +72,14 @@ jobs:
 
   build:
     needs: install
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository ||
+      contains(github.event.pull_request.labels.*.name, 'safe-to-test')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -69,9 +91,14 @@ jobs:
 
   test:
     needs: install
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository ||
+      contains(github.event.pull_request.labels.*.name, 'safe-to-test')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}

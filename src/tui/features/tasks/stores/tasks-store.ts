@@ -25,7 +25,7 @@ export interface TaskErrorData {
 
 export interface ReviewNotification {
   pendingCount: number
-  reviewUrl: string
+  reviewUrl?: string
 }
 
 export interface Task {

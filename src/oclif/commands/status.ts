@@ -11,6 +11,7 @@ import {
 } from '../../shared/transport/events/status-events.js'
 import {buildCliMetadata} from '../lib/build-cli-metadata.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../lib/daemon-client.js'
+import {formatBillingLine} from '../lib/format-billing-line.js'
 import {writeJsonResponse} from '../lib/json-response.js'
 
 export default class Status extends Command {
@@ -143,6 +144,10 @@ export default class Status extends Command {
       this.log(`Space: ${status.teamName}/${status.spaceName}`)
     } else {
       this.log('Space: Not connected')
+    }
+
+    if (status.billing) {
+      this.log(formatBillingLine(status.billing))
     }
 
     // Context tree status

@@ -27,6 +27,7 @@ export const deepseekProvider: ProviderModule = {
 
     return new AiSdkContentGenerator({
       model: provider.chatModel(config.model),
+      requestTimeoutMs: config.requestTimeoutMs,
     })
   },
   defaultModel: 'deepseek-chat',

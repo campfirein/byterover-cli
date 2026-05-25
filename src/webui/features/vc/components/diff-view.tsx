@@ -6,6 +6,7 @@ import { formatError } from '../../../lib/error-messages'
 import { useGetVcDiff } from '../api/get-vc-diff'
 import { DiffFileHeader } from './diff-file-header'
 import { DiffViewer } from './diff-viewer'
+import { FileMetaPanel } from './file-meta-panel'
 
 interface DiffViewProps {
   file: ChangeFile
@@ -45,7 +46,9 @@ export function DiffView({ file, onOpenFile, onStageToggle }: DiffViewProps) {
 
   return (
     <div className="bg-card flex h-full flex-col overflow-auto rounded-md">
+      {file.agentMeta && <FileMetaPanel agentMeta={file.agentMeta} />}
       <DiffFileHeader
+        className={file.agentMeta ? 'border-t' : undefined}
         file={file}
         onOpenFile={() => onOpenFile(file)}
         onStageToggle={() => onStageToggle(file)}

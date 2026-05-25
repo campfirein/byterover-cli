@@ -42,10 +42,12 @@ export interface BrvConfigDTO {
 // ============================================================================
 
 export interface TeamDTO {
+  avatarUrl: string
   displayName: string
   id: string
   isDefault: boolean
   name: string
+  slug: string
 }
 
 export interface SpaceDTO {
@@ -72,6 +74,75 @@ export interface ConnectorDTO {
   connectorType: ConnectorType
   defaultType: ConnectorType
   supportedTypes: ConnectorType[]
+}
+
+// ============================================================================
+// Billing DTOs
+// ============================================================================
+
+/**
+ * Mirror of the upstream ByteRover billing API
+ * (`GET /api/v1/billing/usage/{organizationId}/by-projects`).
+ *
+ * Field shape is preserved so the daemon can pass through without remapping.
+ */
+export type BillingTier = 'FREE' | 'PRO' | 'TEAM'
+
+export interface BillingOrganizationTierDTO {
+  /** True while the org is in a trial window for `tier`. */
+  isTrialing: boolean
+  organizationId: string
+  tier: BillingTier
+}
+
+/**
+ * Per-organization billing usage. Joins `/billing/usages` org entries with
+ * `/billing/organizations/tiers` so consumers see one DTO per org.
+ */
+export interface BillingUsageDTO {
+  /** Add-on credits remaining beyond the base `limit`. */
+  addOnRemaining: number
+  /** True while the org is in a trial window for `tier`. */
+  isTrialing: boolean
+  /** Base compute-unit limit for the current billing period. */
+  limit: number
+  /** True when the organization has consumed >= `totalLimit`. */
+  limitExceeded: boolean
+  organizationId: string
+  /** Display name from the billing service (typically matches the team display name). */
+  organizationName: string
+  /** Free-form status string from the billing service (e.g. 'ACTIVE', 'SUSPENDED'). */
+  organizationStatus: string
+  /** Percentage of `totalLimit` consumed (0–100). */
+  percentUsed: number
+  /** Compute units still available this period (counting add-ons). */
+  remaining: number
+  /** Defaults to `FREE` when the tiers endpoint omits the org. */
+  tier: BillingTier
+  /** `limit + addOnRemaining` — total credits available this period. */
+  totalLimit: number
+  /** Compute units consumed so far this period. */
+  used: number
+}
+
+/**
+ * Free-tier limit for users without a paid organization. Daily and monthly
+ * caps are reported separately so the UI can surface whichever is closer to
+ * exhaustion.
+ */
+export interface BillingFreeUserLimitWindowDTO {
+  limit: number
+  limitExceeded: boolean
+  percentUsed: number
+  remaining: number
+  used: number
+}
+
+export interface BillingFreeUserLimitDTO {
+  daily: BillingFreeUserLimitWindowDTO
+  /** True when either window is exhausted. Mirrors the upstream top-level field. */
+  limitExceeded: boolean
+  monthly: BillingFreeUserLimitWindowDTO
 }
 
 // ============================================================================
@@ -152,6 +223,21 @@ export interface ProjectLocationDTO {
 // ============================================================================
 // Status DTOs
 // ============================================================================
+
+export type StatusBillingSource = 'free' | 'other-provider' | 'paid'
+
+export type StatusBillingDTO =
+  | {activeProvider?: string; source: 'other-provider'}
+  | {
+      organizationId: string
+      organizationName?: string
+      remaining?: number
+      source: 'paid'
+      tier?: BillingTier
+      total?: number
+    }
+  | {remaining?: number; source: 'free'; total?: number}
+
 export interface StatusDTO {
   /** Current state of the background abstract generation queue, if active */
   abstractQueue?: {
@@ -161,6 +247,8 @@ export interface StatusDTO {
     processing: boolean
   }
   authStatus: 'expired' | 'logged_in' | 'not_logged_in' | 'unknown'
+  /** Resolved billing source for the byterover provider (omitted on transport/billing failure). */
+  billing?: StatusBillingDTO
   contextTreeChanges?: ContextTreeChanges
   /** Absolute path to the context tree directory (e.g., '/Users/foo/project/.brv/context-tree') */
   contextTreeDir?: string

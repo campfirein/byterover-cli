@@ -5,7 +5,7 @@ import {restore, type SinonStub, stub} from 'sinon'
 import type {ProviderModelInfo} from '../../../../src/server/core/interfaces/i-provider-model-fetcher.js'
 import type {ModelsDevClient} from '../../../../src/server/infra/http/models-dev-client.js'
 
-import {ChatBasedModelFetcher, CODEX_FALLBACK_MODELS, OpenAIModelFetcher} from '../../../../src/server/infra/http/provider-model-fetchers.js'
+import {ChatBasedModelFetcher, CODEX_FALLBACK_MODELS, OpenAICompatibleModelFetcher, OpenAIModelFetcher} from '../../../../src/server/infra/http/provider-model-fetchers.js'
 
 function makeAxiosErr(status: number): Error {
   const err = new Error(`HTTP ${status}`)
@@ -255,4 +255,87 @@ describe('OpenAIModelFetcher', () => {
       expect(body.model).to.equal('default')
     })
     })
+
+  describe('OpenAICompatibleModelFetcher.fetchModels dedup', () => {
+    afterEach(() => {
+      restore()
+    })
+
+    it('dedupes by id when upstream returns duplicate entries', async () => {
+      stub(axios, 'get').resolves({
+        data: {
+          data: [
+            {id: 'openai/gpt-oss-120b'},
+            {id: 'openai/gpt-oss-120b'},
+            {id: 'openai/gpt-oss-20b'},
+            {id: 'openai/gpt-oss-20b'},
+          ],
+        },
+        status: 200,
+      })
+      const fetcher = new OpenAICompatibleModelFetcher('https://example.test/v1', 'OpenAI Compatible')
+
+      const models = await fetcher.fetchModels('sk-test')
+      const ids = models.map((m) => m.id)
+
+      expect(ids).to.deep.equal(['openai/gpt-oss-120b', 'openai/gpt-oss-20b'])
+    })
+
+    it('keeps the first occurrence when ids collide', async () => {
+      /* eslint-disable camelcase */
+      stub(axios, 'get').resolves({
+        data: {
+          data: [
+            {context_length: 128_000, id: 'mistral-large', name: 'mistral-large'},
+            {context_length: 999_999, id: 'mistral-large', name: 'mistral-large'},
+          ],
+        },
+        status: 200,
+      })
+      /* eslint-enable camelcase */
+      const fetcher = new OpenAICompatibleModelFetcher('https://example.test/v1', 'OpenAI Compatible')
+
+      const models = await fetcher.fetchModels('sk-test')
+
+      expect(models).to.have.lengthOf(1)
+      expect(models[0].contextLength).to.equal(128_000)
+    })
+
+    it('skips entries with neither id nor name', async () => {
+      stub(axios, 'get').resolves({
+        data: {
+          data: [
+            {id: 'a-model'},
+            {description: 'orphan with no id or name'},
+            {id: '', name: ''},
+            {id: 'b-model'},
+          ],
+        },
+        status: 200,
+      })
+      const fetcher = new OpenAICompatibleModelFetcher('https://example.test/v1', 'OpenAI Compatible')
+
+      const models = await fetcher.fetchModels('sk-test')
+
+      expect(models.map((m) => m.id)).to.deep.equal(['a-model', 'b-model'])
+    })
+
+    it('passes through unique ids unchanged', async () => {
+      stub(axios, 'get').resolves({
+        data: {
+          data: [
+            {id: 'b-model'},
+            {id: 'a-model'},
+            {id: 'c-model'},
+          ],
+        },
+        status: 200,
+      })
+      const fetcher = new OpenAICompatibleModelFetcher('https://example.test/v1', 'OpenAI Compatible')
+
+      const models = await fetcher.fetchModels('sk-test')
+
+      expect(models.map((m) => m.id)).to.deep.equal(['a-model', 'b-model', 'c-model'])
+    })
+  })
 })

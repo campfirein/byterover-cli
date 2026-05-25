@@ -426,18 +426,22 @@ export class OpenAICompatibleModelFetcher implements IProviderModelFetcher {
       ? responseData
       : (responseData.data ?? responseData.models ?? [])
 
-    const models: ProviderModelInfo[] = modelList.map((model) => {
+    const uniqueModels = new Map<string, ProviderModelInfo>()
+    for (const model of modelList) {
       const id = String(model.id ?? model.name ?? '')
-
-      return {
+      if (!id) continue
+      if (uniqueModels.has(id)) continue
+      uniqueModels.set(id, {
         contextLength: typeof model.context_length === 'number' ? model.context_length : 128_000,
         id,
         isFree: false,
         name: id,
         pricing: {inputPerM: 0, outputPerM: 0},
         provider: this.providerName,
-      }
-    })
+      })
+    }
+
+    const models: ProviderModelInfo[] = [...uniqueModels.values()]
 
     // Sort by ID
     models.sort((a, b) => a.id.localeCompare(b.id))

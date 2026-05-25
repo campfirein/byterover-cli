@@ -91,6 +91,7 @@ export const openaiProvider: ProviderModule = {
 
     return new AiSdkContentGenerator({
       model: provider.responses(config.model),
+      requestTimeoutMs: config.requestTimeoutMs,
     })
   },
   defaultModel: 'gpt-4.1',

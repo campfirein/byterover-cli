@@ -28,6 +28,7 @@ export const ENVIRONMENT: Environment = isEnvironment(envValue) ? envValue : 'de
 type EnvironmentConfig = {
   analyticsBaseUrl: string
   authorizationUrl: string
+  billingBaseUrl: string
   clientId: string
   cogitBaseUrl: string
   gitRemoteBaseUrl: string
@@ -91,6 +92,9 @@ export const getCurrentConfig = (): EnvironmentConfig => {
   const cogitBaseUrl = readRequiredEnv('BRV_COGIT_BASE_URL')
   assertRootDomain('BRV_COGIT_BASE_URL', cogitBaseUrl)
 
+  const billingBaseUrl = readRequiredEnv('BRV_BILLING_BASE_URL')
+  assertRootDomain('BRV_BILLING_BASE_URL', billingBaseUrl)
+
   const oidcBase = `${iamBaseUrl}${API_V1_PATH}/oidc`
 
   // M4.2: BRV_ANALYTICS_BASE_URL overrides the default dev-beta endpoint
@@ -103,6 +107,7 @@ export const getCurrentConfig = (): EnvironmentConfig => {
   return {
     analyticsBaseUrl,
     authorizationUrl: `${oidcBase}/authorize`,
+    billingBaseUrl,
     clientId: DEFAULTS.clientId,
     cogitBaseUrl,
     gitRemoteBaseUrl: readRequiredEnv('BRV_GIT_REMOTE_BASE_URL'),

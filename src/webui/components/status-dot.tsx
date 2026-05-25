@@ -1,6 +1,6 @@
 import {cn} from '@campfirein/byterover-packages/lib/utils'
 
-type Tone = 'amber' | 'destructive' | 'info' | 'success'
+export type Tone = 'amber' | 'destructive' | 'info' | 'success'
 
 type Props = {
   className?: string

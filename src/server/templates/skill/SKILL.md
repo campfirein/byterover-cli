@@ -9,10 +9,10 @@ Use the `brv` CLI to manage your project's long-term memory.
 Install: `npm install -g byterover-cli`
 Knowledge is stored in `.brv/context-tree/` as human-readable Markdown files.
 
-**No authentication needed.** `brv query`, `brv curate`, and `brv vc` (local version control) work out of the box. Login is only required for remote sync (`brv vc push`/`brv vc pull`).
+**No authentication needed.** `brv query`, `brv swarm query`, `brv curate`, and `brv vc` (local version control) work out of the box. Login is only required for remote sync (`brv vc push`/`brv vc pull`).
 
 ## Workflow
-1.  **Before Thinking:** Run `brv query` to understand existing patterns.
+1.  **Before Thinking:** Run `brv query` and `brv swarm query` in parallel to understand existing patterns.
 2.  **After Implementing:** Run `brv curate` to save new patterns/decisions.
 
 ## Commands
@@ -321,7 +321,7 @@ brv vc clone https://byterover.dev/<team>/<space>.git
 ```
 
 ### 8. Swarm Query
-**Overview:** Search across all active memory providers simultaneously — ByteRover context tree, Obsidian vault, Local Markdown folders, GBrain, and Memory Wiki. Results are fused via Reciprocal Rank Fusion (RRF) and ranked by provider weight and relevance. No LLM call — pure algorithmic search.
+**Overview:** Search across all active memory providers simultaneously — ByteRover context tree, Obsidian vault, Local Markdown folders, GBrain, and Memory Wiki. Results are fused via Reciprocal Rank Fusion (RRF) and ranked by provider weight and relevance. No LLM call — pure algorithmic search. When multiple memory providers are configured, run `brv swarm query` alongside `brv query` to broaden recall at near-zero token cost.
 
 **Use this skill when:**
 - You need to search across multiple knowledge sources at once

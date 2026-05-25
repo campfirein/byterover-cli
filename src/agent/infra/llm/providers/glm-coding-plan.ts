@@ -26,6 +26,7 @@ export const glmCodingPlanProvider: ProviderModule = {
 
     return new AiSdkContentGenerator({
       model: provider.chatModel(config.model),
+      requestTimeoutMs: config.requestTimeoutMs,
     })
   },
   defaultModel: 'glm-4.7',
