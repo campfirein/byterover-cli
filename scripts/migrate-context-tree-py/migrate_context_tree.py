@@ -751,13 +751,23 @@ def _parse_narrative(body: str) -> Tuple[dict, dict, list[str]]:
     # Walk every `### X` subsection. Use \Z for end-of-string under
     # multiline mode — `$` would match end-of-line and produce empty
     # subsection bodies.
+    #
+    # Same fence-mask + back-to-back-H2 treatment as the outer narrative
+    # regex: a fenced `### Foo` line inside `### Structure`'s body would
+    # otherwise truncate Structure and emit a phantom subsection routed
+    # via the case-8 heuristic. Lookahead also upgraded from `\n##\s`
+    # to `^##\s[^#]` (multiline) so a `### Structure` followed
+    # IMMEDIATELY by another H2 (no blank line) terminates correctly —
+    # consistent with `_parse_section` and the outer `_parse_narrative`.
+    section_masked = _mask_fenced_blocks(section)
     sub_iter = re.finditer(
-        r"(?m)^###\s+(.+?)\s*$\n([\s\S]*?)(?=^###\s|\n##\s|\Z)", section
+        r"(?m)^###\s+(.+?)\s*$\n([\s\S]*?)(?=^###\s|^##\s[^#]|\Z)",
+        section_masked,
     )
     for sm in sub_iter:
         label = sm.group(1).strip()
         lower = label.lower()
-        sub_body = sm.group(2).strip()
+        sub_body = section[sm.start(2):sm.end(2)].strip()
         if not sub_body:
             continue
 
