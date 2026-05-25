@@ -4,12 +4,12 @@ export const WebuiEvents = {
 } as const
 
 export type WebuiGetPortResponse =
-  | {conflictPort: number; reason: 'port_in_use'}
-  | {port: number}
-  | {reason: 'not_started'}
+  | {conflictPort: number; status: 'port_in_use'}
+  | {port: number; status: 'ok'}
+  | {status: 'not_started'}
 
 export interface WebuiSetPortRequest {
   port: number
 }
 
-export type WebuiSetPortResponse = {conflictPort: number; reason: 'port_in_use'} | {port: number}
+export type WebuiSetPortResponse = {conflictPort: number; status: 'port_in_use'} | {port: number; status: 'ok'}

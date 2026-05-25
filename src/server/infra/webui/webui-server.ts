@@ -3,7 +3,7 @@ import type {Express} from 'express'
 import {createServer, type Server as HttpServer} from 'node:http'
 
 import {TRANSPORT_HOST} from '../../constants.js'
-import {WebUiPortInUseError} from '../../core/domain/errors/webui-error.js'
+import {WebUiPortInUseError, WebUiServerAlreadyRunningError} from '../../core/domain/errors/webui-error.js'
 
 /**
  * Standalone HTTP server for the web UI.
@@ -29,13 +29,14 @@ export class WebUiServer {
 
   async start(port: number): Promise<void> {
     if (this.running) {
-      throw new Error('Web UI server is already running')
+      throw new WebUiServerAlreadyRunningError()
     }
 
     return new Promise((resolve, reject) => {
       this.httpServer = createServer(this.app)
 
       this.httpServer.on('error', (err: NodeJS.ErrnoException) => {
+        this.httpServer = undefined
         if (err.code === 'EADDRINUSE') {
           reject(new WebUiPortInUseError(port))
         } else {

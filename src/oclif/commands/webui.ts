@@ -54,13 +54,13 @@ export default class Webui extends Command {
   }
 
   private resolvePortOrExit(result: WebuiGetPortResponse | WebuiSetPortResponse): number {
-    if ('port' in result) return result.port
-    if (result.reason === 'port_in_use') {
-      this.error(
+    if (result.status === 'ok') return result.port
+    if (result.status === 'port_in_use') {
+      return this.error(
         `Web UI port ${result.conflictPort} is already in use. Run \`brv webui --port <port>\` to choose a different port.`,
       )
     }
 
-    this.error('Web UI did not start. Run `brv restart` and try again.')
+    return this.error('Web UI did not start. Run `brv restart` and try again.')
   }
 }

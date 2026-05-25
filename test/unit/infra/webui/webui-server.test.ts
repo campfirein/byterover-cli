@@ -2,7 +2,7 @@ import {expect} from 'chai'
 import express from 'express'
 import {createServer} from 'node:http'
 
-import {WebUiPortInUseError} from '../../../../src/server/core/domain/errors/webui-error.js'
+import {WebUiPortInUseError, WebUiServerAlreadyRunningError} from '../../../../src/server/core/domain/errors/webui-error.js'
 import {WebUiServer} from '../../../../src/server/infra/webui/webui-server.js'
 
 describe('WebUiServer', () => {
@@ -60,6 +60,7 @@ describe('WebUiServer', () => {
       }
 
       expect(server.isRunning()).to.be.false
+      expect(server.getPort()).to.be.undefined
     } finally {
       blockingServer.close()
     }
@@ -72,8 +73,7 @@ describe('WebUiServer', () => {
       await server.start(0)
       expect.fail('Expected start to reject')
     } catch (error) {
-      expect(error).to.be.an.instanceOf(Error)
-      expect((error as Error).message).to.include('already running')
+      expect(error).to.be.an.instanceOf(WebUiServerAlreadyRunningError)
     }
   })
 

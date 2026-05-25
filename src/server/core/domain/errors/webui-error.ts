@@ -14,3 +14,10 @@ export class WebUiPortInUseError extends WebUiError {
     this.port = port
   }
 }
+
+export class WebUiServerAlreadyRunningError extends WebUiError {
+  public constructor() {
+    super('Web UI server is already running')
+    this.name = 'WebUiServerAlreadyRunningError'
+  }
+}
