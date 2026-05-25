@@ -81,4 +81,21 @@ describe('WebUiServer', () => {
     server = new WebUiServer(express())
     await server.stop() // should not throw
   })
+
+  it('should ignore post-startup error emissions so stop() still cleans up', async () => {
+    server = new WebUiServer(express())
+    await server.start(0)
+    const boundPort = server.getPort()
+    expect(boundPort).to.be.a('number')
+
+    const internal = server as unknown as {httpServer?: {emit(event: string, err: Error): boolean}}
+    internal.httpServer?.emit('error', Object.assign(new Error('ECONNRESET'), {code: 'ECONNRESET'}))
+
+    expect(server.isRunning()).to.be.true
+    expect(server.getPort()).to.equal(boundPort)
+
+    await server.stop()
+    expect(server.isRunning()).to.be.false
+    expect(server.getPort()).to.be.undefined
+  })
 })

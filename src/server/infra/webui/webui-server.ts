@@ -34,17 +34,16 @@ export class WebUiServer {
 
     return new Promise((resolve, reject) => {
       this.httpServer = createServer(this.app)
+      let resolved = false
 
       this.httpServer.on('error', (err: NodeJS.ErrnoException) => {
+        if (resolved) return
         this.httpServer = undefined
-        if (err.code === 'EADDRINUSE') {
-          reject(new WebUiPortInUseError(port))
-        } else {
-          reject(err)
-        }
+        reject(err.code === 'EADDRINUSE' ? new WebUiPortInUseError(port) : err)
       })
 
       this.httpServer.listen(port, TRANSPORT_HOST, () => {
+        resolved = true
         const addr = this.httpServer?.address()
         this.port = typeof addr === 'object' && addr !== null ? addr.port : port
         this.running = true
