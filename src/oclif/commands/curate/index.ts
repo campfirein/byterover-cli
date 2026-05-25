@@ -10,6 +10,7 @@ import {ProviderConfigResponse, TransportStateEventNames} from '../../../server/
 import {extractCurateOperations} from '../../../server/utils/curate-result-parser.js'
 import {TaskEvents} from '../../../shared/transport/events/index.js'
 import {printBillingLine} from '../../lib/billing-line.js'
+import {runCancelBranchWithRetry} from '../../lib/cancel-task.js'
 import {
   type DaemonClientOptions,
   formatConnectionError,
@@ -71,6 +72,10 @@ Bad examples:
     '<%= config.bin %> curate view --status completed --since 1h',
   ]
   public static flags = {
+    cancel: Flags.string({
+      description: 'Cancel a running task by id. Short-circuits the create flow — no new task is created.',
+      exclusive: ['files', 'folder', 'detach'],
+    }),
     detach: Flags.boolean({
       default: false,
       description: 'Queue task and exit without waiting for completion',
@@ -113,6 +118,19 @@ Bad examples:
     }
     const format: 'json' | 'text' = flags.format ?? 'text'
 
+    if (rawFlags.cancel) {
+      const ok = await runCancelBranchWithRetry({
+        command: 'curate',
+        daemonClientOptions: this.getDaemonClientOptions(),
+        format,
+        log: (msg) => this.log(msg),
+        onTransportError: (error) => this.reportError(error, format),
+        taskId: rawFlags.cancel,
+      })
+      if (!ok) this.exit(1)
+      return
+    }
+
     warnIfTimeoutFlagUsed({
       defaultValue: DEFAULT_TIMEOUT_SECONDS,
       log: (message) => this.log(message),
@@ -129,6 +147,7 @@ Bad examples:
     const taskType = flags.folder?.length ? 'curate-folder' : 'curate'
 
     let providerContext: ProviderErrorContext | undefined
+    let wasCancelled = false
 
     try {
       await withDaemonRetry(
@@ -154,7 +173,16 @@ Bad examples:
             await ensureBillingFunds({billing, client})
           }
 
-          await this.submitTask({client, content: resolvedContent, flags, format, projectRoot, taskType, worktreeRoot})
+          const result = await this.submitTask({
+            client,
+            content: resolvedContent,
+            flags,
+            format,
+            projectRoot,
+            taskType,
+            worktreeRoot,
+          })
+          if (result.wasCancelled) wasCancelled = true
         },
         {
           ...this.getDaemonClientOptions(),
@@ -167,7 +195,13 @@ Bad examples:
       )
     } catch (error) {
       this.reportError(error, format, providerContext)
+      return
     }
+
+    // Throw the SIGINT-conventional exit AFTER the daemon-retry try/catch so
+    // the ExitError isn't swallowed by reportError. Routine completions and
+    // errors fall through here naturally.
+    if (wasCancelled) this.exit(130)
   }
 
   /**
@@ -309,7 +343,7 @@ Bad examples:
     projectRoot?: string
     taskType: string
     worktreeRoot?: string
-  }): Promise<void> {
+  }): Promise<{wasCancelled: boolean}> {
     const {client, content, flags, format, projectRoot, taskType, worktreeRoot} = props
     const hasFolders = Boolean(flags.folder?.length)
     const taskId = randomUUID()
@@ -339,11 +373,26 @@ Bad examples:
         this.log(`✓ Context queued for processing.${suffix}`)
       }
     } else {
+      let wasCancelled = false
       const completionPromise = waitForTaskCompletion(
         {
           client,
           command: 'curate',
           format,
+          onCancelled: ({taskId: tid}) => {
+            wasCancelled = true
+            if (format === 'json') {
+              // success: false because the JSON top-level field tracks the exit
+              // code (130 on cancel). Cancellation semantics live in data.status.
+              writeJsonResponse({
+                command: 'curate',
+                data: {event: 'cancelled', message: 'Curate cancelled', status: 'cancelled', taskId: tid},
+                success: false,
+              })
+            } else {
+              this.log(`✗ Curate cancelled (Task: ${tid})`)
+            }
+          },
           onCompleted: ({logId, pendingReview, taskId: tid, toolCalls}) => {
             const changes = this.composeChangesFromToolCalls(toolCalls)
             // Per-file detail is best-effort enrichment; server notify is authoritative
@@ -397,7 +446,10 @@ Bad examples:
       )
       await client.requestWithAck<TaskAck>(TaskEvents.CREATE, taskPayload)
       await completionPromise
+      return {wasCancelled}
     }
+
+    return {wasCancelled: false}
   }
 
   private validateInput(args: {context?: string}, flags: CurateFlags, format: 'json' | 'text'): boolean {

@@ -158,4 +158,184 @@ describe('Dream Command', () => {
       expect(mockClient.disconnect.calledOnce).to.be.true
     })
   })
+
+  // ==================== --cancel flag (T2.4) ====================
+
+  describe('--cancel flag', () => {
+    // eslint-disable-next-line unicorn/consistent-function-scoping -- captures mockClient from outer beforeEach
+    function stubCancelResponse(response: {error?: string; success: boolean}): void {
+      ;(mockClient.requestWithAck as sinon.SinonStub).callsFake(async (event: string) => {
+        if (event === 'task:cancel') return response
+        return {activeProvider: 'anthropic'}
+      })
+    }
+
+    it('short-circuits the dream flow: emits task:cancel only, never starts a dream', async () => {
+      stubCancelResponse({success: true})
+
+      await createCommand('--cancel', 'task-A').run()
+
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      const eventNames = requestStub.getCalls().map((c) => c.args[0])
+      expect(eventNames).to.deep.equal(['task:cancel'])
+      expect(requestStub.firstCall.args[1]).to.deep.equal({taskId: 'task-A'})
+    })
+
+    it('prints "Cancelled <id>" on success (text format)', async () => {
+      stubCancelResponse({success: true})
+
+      await createCommand('--cancel', 'task-B').run()
+
+      expect(loggedMessages).to.include('Cancelled task-B')
+    })
+
+    it('prints failure line with daemon-reported reason and exits non-zero (text)', async () => {
+      stubCancelResponse({error: 'Task not found', success: false})
+
+      let exitError: unknown
+      try {
+        await createCommand('--cancel', 'task-X').run()
+      } catch (error) {
+        exitError = error
+      }
+
+      expect(loggedMessages.some((m) => m.includes('Failed to cancel task-X') && m.includes('Task not found'))).to.be.true
+      expect(exitError).to.not.equal(undefined)
+    })
+
+    it('emits the project JSON envelope (success)', async () => {
+      stubCancelResponse({success: true})
+
+      await createJsonCommand('--cancel', 'task-J').run()
+
+      const json = parseJsonOutput()
+      expect(json.command).to.equal('dream')
+      expect(json.success).to.equal(true)
+      expect(json.data).to.deep.include({status: 'cancelled', taskId: 'task-J'})
+    })
+
+    it('emits the project JSON envelope (failure)', async () => {
+      stubCancelResponse({error: 'Task not found', success: false})
+
+      try {
+        await createJsonCommand('--cancel', 'task-K').run()
+      } catch {
+        // ExitError
+      }
+
+      const json = parseJsonOutput()
+      expect(json.command).to.equal('dream')
+      expect(json.success).to.equal(false)
+      expect(json.data).to.deep.include({error: 'Task not found', status: 'error', taskId: 'task-K'})
+    })
+
+    it('rejects --cancel together with --force (mutually exclusive)', async () => {
+      stubCancelResponse({success: true})
+
+      let parseError: unknown
+      try {
+        await createCommand('--cancel', 'task-Z', '--force').run()
+      } catch (error) {
+        parseError = error
+      }
+
+      expect(parseError).to.not.equal(undefined)
+      expect((mockClient.requestWithAck as sinon.SinonStub).called).to.equal(false)
+    })
+
+    it('rejects --cancel together with --undo (mutually exclusive)', async () => {
+      stubCancelResponse({success: true})
+
+      let parseError: unknown
+      try {
+        await createCommand('--cancel', 'task-Z', '--undo').run()
+      } catch (error) {
+        parseError = error
+      }
+
+      expect(parseError).to.not.equal(undefined)
+      expect((mockClient.requestWithAck as sinon.SinonStub).called).to.equal(false)
+    })
+
+    it('rejects --cancel together with --detach (mutually exclusive)', async () => {
+      stubCancelResponse({success: true})
+
+      let parseError: unknown
+      try {
+        await createCommand('--cancel', 'task-Z', '--detach').run()
+      } catch (error) {
+        parseError = error
+      }
+
+      expect(parseError).to.not.equal(undefined)
+      expect((mockClient.requestWithAck as sinon.SinonStub).called).to.equal(false)
+    })
+
+    it('allows --cancel alongside --timeout (timeout has no effect on the cancel branch)', async () => {
+      stubCancelResponse({success: true})
+
+      let parseError: unknown
+      try {
+        await createCommand('--cancel', 'task-T', '--timeout', '60').run()
+      } catch (error) {
+        parseError = error
+      }
+
+      expect(parseError).to.equal(undefined)
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      const eventNames = requestStub.getCalls().map((c) => c.args[0])
+      expect(eventNames).to.deep.equal(['task:cancel'])
+    })
+  })
+
+  // ==================== Remote cancel during foreground wait (N-2) ====================
+
+  describe('remote cancel during foreground wait', () => {
+    // eslint-disable-next-line unicorn/consistent-function-scoping -- captures mockClient from outer beforeEach
+    function simulateRemoteCancel(): void {
+      const eventHandlers = new Map<string, (data: unknown) => void>()
+      ;(mockClient.on as sinon.SinonStub).callsFake((event: string, handler: (data: unknown) => void) => {
+        eventHandlers.set(event, handler)
+        return () => {}
+      })
+      ;(mockClient.requestWithAck as sinon.SinonStub).callsFake(async (event: string, data: unknown) => {
+        if (event === 'state:getProviderConfig') return {activeProvider: 'anthropic'}
+        const {taskId} = data as {taskId: string}
+        setImmediate(() => {
+          eventHandlers.get('task:cancelled')?.({taskId})
+        })
+        return {logId: 'log-1'}
+      })
+    }
+
+    it('prints the cancelled line and exits non-zero (text)', async () => {
+      simulateRemoteCancel()
+
+      let exitError: unknown
+      try {
+        await createCommand().run()
+      } catch (error) {
+        exitError = error
+      }
+
+      expect(loggedMessages.some((m) => m.includes('Dream cancelled'))).to.be.true
+      expect(exitError).to.not.equal(undefined)
+    })
+
+    it('emits a cancelled JSON envelope and exits non-zero (json)', async () => {
+      simulateRemoteCancel()
+
+      try {
+        await createJsonCommand().run()
+      } catch {
+        // ExitError on this.exit(130)
+      }
+
+      const json = parseJsonOutput()
+      expect(json.command).to.equal('dream')
+      // success: false tracks the non-zero exit code; cancellation semantics live in data.status.
+      expect(json.success).to.equal(false)
+      expect(json.data).to.deep.include({event: 'cancelled', status: 'cancelled'})
+    })
+  })
 })

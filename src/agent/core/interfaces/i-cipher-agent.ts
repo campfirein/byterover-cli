@@ -84,6 +84,16 @@ export interface ICipherAgent {
   cancel(): Promise<boolean>
 
   /**
+   * Cancels a specific in-flight task by fanning the cancel across all live
+   * sessions. Idempotent: a second call for the same taskId returns false
+   * because the controller has already been aborted and removed.
+   *
+   * @param taskId - Task identifier (matches the taskId passed to run/streamRun)
+   * @returns true when any session held a controller for the task; false otherwise
+   */
+  cancelTask(taskId: string): Promise<boolean>
+
+  /**
    * Create a task-scoped child session for parallel execution.
    * The session gets its own sandbox, context manager, and LLM service.
    *

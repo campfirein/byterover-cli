@@ -82,14 +82,23 @@ export interface TaskErrorResult {
   toolCalls: ToolCallRecord[]
 }
 
+/**
+ * Subset of ITransportClient used by waitForTaskCompletion + installSigintCancel.
+ * Narrow on purpose so test stubs can satisfy the contract structurally without
+ * an `as unknown as ITransportClient` cast.
+ */
+export type WaitForTaskClient = Pick<ITransportClient, 'on' | 'onStateChange' | 'request'>
+
 /** Options for waitForTaskCompletion */
 export interface WaitForTaskOptions {
   /** Client to subscribe events on */
-  client: ITransportClient
+  client: WaitForTaskClient
   /** Command name for JSON output */
   command: string
   /** Output format */
   format: 'json' | 'text'
+  /** Called on task:cancelled (terminal). Optional; defaults to a no-op so legacy callers stay compatible. */
+  onCancelled?: (result: {taskId: string; toolCalls: ToolCallRecord[]}) => void
   /** Called on task:completed */
   onCompleted: (result: TaskCompletionResult) => void
   /** Called on task:error */
@@ -165,6 +174,50 @@ export function formatToolDisplay(toolName: string, args: Record<string, unknown
 }
 
 /**
+ * Install a SIGINT handler that turns Ctrl-C into a graceful cancel for the
+ * current foreground task. First Ctrl-C emits `task:cancel` and writes a hint
+ * to stderr (so JSON stdout stays clean). Second Ctrl-C hard-exits with code
+ * 130 — the conventional SIGINT exit code.
+ *
+ * Returns an unsubscribe function so callers can remove the handler in their
+ * cleanup path. Always uninstall to keep the signal stack clean for any work
+ * that runs after wait returns (e.g., subsequent commands in the same process).
+ */
+function installSigintCancel(deps: {client: Pick<ITransportClient, 'request'>; taskId: string}): () => void {
+  let cancelRequested = false
+
+  const onSigint = (): void => {
+    if (cancelRequested) {
+      // eslint-disable-next-line n/no-process-exit, unicorn/no-process-exit
+      process.exit(130)
+      return
+    }
+
+    cancelRequested = true
+    process.stderr.write('\nCancelling task... (Ctrl-C again to force exit)\n')
+    // Fire-and-forget; we await the daemon's task:cancelled broadcast in the
+    // wait loop. The daemon may also respond with success/false on a stale id;
+    // we ignore that here because the wait loop times out or sees a terminal
+    // event either way. Wrapped in try/catch so a synchronously-throwing
+    // transport (already-disconnected socket, etc.) doesn't propagate out of
+    // the signal handler and crash the process with an uncaught exception.
+    try {
+      deps.client.request(TaskEvents.CANCEL, {taskId: deps.taskId})
+    } catch (error) {
+      // Transport unavailable — the wait loop will time out or see a
+      // disconnect event and surface that path instead. Log the swallowed
+      // throw to stderr so a genuine bug (bad payload, transport regression)
+      // leaves a breadcrumb instead of failing silently.
+      const message = error instanceof Error ? error.message : String(error)
+      process.stderr.write(`[brv] cancel request failed locally: ${message}\n`)
+    }
+  }
+
+  process.on('SIGINT', onSigint)
+  return () => process.off('SIGINT', onSigint)
+}
+
+/**
  * Wait for task completion by subscribing to all events (same as TUI useTaskSubscriptions).
  * In text mode: streams tool calls and thinking in real-time via log().
  * In JSON mode: streams each event as a separate JSON line.
@@ -173,7 +226,7 @@ export function formatToolDisplay(toolName: string, args: Record<string, unknown
  * allowing withDaemonRetry to handle reconnection.
  */
 export function waitForTaskCompletion(options: WaitForTaskOptions, log: (msg: string) => void): Promise<void> {
-  const {client, command, format, onCompleted, onError, onResponse, taskId} = options
+  const {client, command, format, onCancelled, onCompleted, onError, onResponse, taskId} = options
   const isText = format === 'text'
 
   return new Promise((resolve, reject) => {
@@ -390,21 +443,17 @@ export function waitForTaskCompletion(options: WaitForTaskOptions, log: (msg: st
         }
       }),
 
-      // Task cancelled — terminal state, mirrors the daemon-side stop list
-      // in M6 T1. Dispose without rejecting so a user-cancelled task closes
-      // cleanly and no phantom "Daemon is unresponsive" fires afterward.
+      // Task cancelled (terminal) — broadcast by the daemon in response to
+      // either a foreground Ctrl-C (handler below) or a remote --cancel from
+      // another terminal. Treated as a terminal event so the wait loop
+      // unblocks instead of hanging and no phantom "Daemon is unresponsive"
+      // fires afterward. The per-command `onCancelled` callback owns the
+      // user-facing message (success flag, exit code semantics).
       client.on<{taskId: string}>(TaskEvents.CANCELLED, (payload) => {
         if (payload.taskId !== taskId || completed) return
         completed = true
         cleanup()
-        if (!isText) {
-          writeJsonResponse({
-            command,
-            data: {event: 'cancelled', status: 'cancelled', taskId},
-            success: true,
-          })
-        }
-
+        onCancelled?.({taskId, toolCalls})
         resolve()
       }),
 
@@ -437,6 +486,7 @@ export function waitForTaskCompletion(options: WaitForTaskOptions, log: (msg: st
       () => {
         if (disconnectTimer) clearTimeout(disconnectTimer)
       },
+      installSigintCancel({client, taskId}),
     ]
 
     const cleanup = (): void => {

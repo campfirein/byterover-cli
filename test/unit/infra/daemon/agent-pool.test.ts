@@ -295,6 +295,42 @@ describe('AgentPool', () => {
     })
   })
 
+  describe('cancelQueuedTask (T1.3)', () => {
+    it('removes a queued task and returns true', async () => {
+      const transportServer = makeStubTransportServer()
+      const {pool} = createPool({maxConcurrentTasks: 1, transportServer})
+
+      await pool.submitTask(makeTask({projectPath: '/app', taskId: 't1'}))
+      await pool.submitTask(makeTask({projectPath: '/app', taskId: 't2-queued'}))
+
+      const removed = pool.cancelQueuedTask('t2-queued')
+      expect(removed).to.equal(true)
+
+      // Draining the queue now should not dispatch t2 (it was removed)
+      pool.notifyTaskCompleted('/app')
+      const dispatchedTaskIds = transportServer.sendTo.getCalls()
+        .filter((c) => c.args[1] === 'task:execute')
+        .map((c) => (c.args[2] as {taskId: string}).taskId)
+      expect(dispatchedTaskIds).to.not.include('t2-queued')
+    })
+
+    it('returns false when the task is not in any queue', () => {
+      const {pool} = createPool()
+
+      const removed = pool.cancelQueuedTask('unknown')
+      expect(removed).to.equal(false)
+    })
+
+    it('returns false for a task that is currently in flight (not queued)', async () => {
+      const {pool} = createPool({maxConcurrentTasks: 1})
+
+      await pool.submitTask(makeTask({projectPath: '/app', taskId: 't-running'}))
+
+      const removed = pool.cancelQueuedTask('t-running')
+      expect(removed).to.equal(false)
+    })
+  })
+
   describe('pool capacity', () => {
     it('should return pool_full error when pool is full and new project needs agent', async () => {
       const {pool} = createPool({maxSize: 2})
