@@ -1000,8 +1000,16 @@ def _diagrams_section_span(body: str) -> Optional[tuple[int, int]]:
         return None
     section_start = nar.start(1)
     section = masked[nar.start(1):nar.end(1)]
+    # Inner `### Diagrams` lookahead uses the same `(?m)^###\s|^##\s[^#]`
+    # multiline anchoring as every other section walker in this file —
+    # benign in practice (the outer regex already bounded `section` so
+    # no `##` line appears in it), but keeps the pattern uniform with
+    # `_parse_narrative`, `_parse_section`, `_list_orphan_sections`,
+    # and the inner narrative iterator.
     m_dia = re.search(
-        r"###\s*Diagrams\s*\n([\s\S]*?)(?=\n###\s|\n##\s|$)", section, re.IGNORECASE
+        r"(?ms)###\s*Diagrams\s*\n([\s\S]*?)(?=^###\s|^##\s[^#]|\Z)",
+        section,
+        re.IGNORECASE,
     )
     if not m_dia:
         return None
@@ -1454,18 +1462,46 @@ def _extract_snippets_from_body(body: str) -> list[str]:
     """
     if "\n---\n" not in body:
         return []
-    s = body
+    # Mask fenced blocks before running the canonical/orphan section
+    # strips so a literal `## X` line inside a code fence (anywhere in
+    # the body) doesn't terminate a strip pattern early or get caught
+    # as an orphan section. Strip operates on the original `body` via
+    # the masked spans — we accumulate "stripped" spans and rebuild
+    # the residual text from `body` so fenced content survives intact.
+    masked = _mask_fenced_blocks(body)
+    drop_spans: list[tuple[int, int]] = []
     for heading in ("Relations", "Reason", "Raw Concept", "Narrative", "Facts"):
         pattern = re.compile(
-            rf"##\s*{re.escape(heading)}[\s\S]*?(?=\n##\s|\n---\n|$)", re.IGNORECASE
+            rf"(?ms)##\s*{re.escape(heading)}[\s\S]*?(?=^##\s[^#]|\n---\n|\Z)",
+            re.IGNORECASE,
         )
-        s = pattern.sub("", s).strip()
+        for m in pattern.finditer(masked):
+            drop_spans.append((m.start(), m.end()))
     # Strip orphan `## X` sections too — those are routed via the
     # heuristic elsewhere and must not be re-counted as snippets here.
-    s = _SECTION_REGEX.sub("", s).strip()
+    for m in _SECTION_REGEX.finditer(masked):
+        drop_spans.append((m.start(), m.end()))
+
+    # Merge overlapping spans, then rebuild residual text from `body`
+    # by skipping the dropped spans.
+    drop_spans.sort()
+    merged: list[tuple[int, int]] = []
+    for s_start, s_end in drop_spans:
+        if merged and s_start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], s_end))
+        else:
+            merged.append((s_start, s_end))
+    pieces: list[str] = []
+    cursor = 0
+    for s_start, s_end in merged:
+        pieces.append(body[cursor:s_start])
+        cursor = s_end
+    pieces.append(body[cursor:])
+    residual = "".join(pieces).strip()
+
     snippets = [
         snippet.strip()
-        for snippet in re.split(r"(?:^|\n)---\n", s)
+        for snippet in re.split(r"(?:^|\n)---\n", residual)
         if snippet.strip() and snippet.strip() != "No context available."
     ]
     return snippets
