@@ -102,6 +102,11 @@ PRE_EXISTING_HTML_MANIFEST = "_pre_existing_html_siblings.json"
 # else is treated as an orphan section and routed through the heading-
 # name heuristic map below.
 KNOWN_SECTION_HEADINGS = {"Reason", "Raw Concept", "Narrative", "Facts", "Relations"}
+# Case-folded view of `KNOWN_SECTION_HEADINGS` for filters that need
+# to match a heading regardless of casing — keeps the orphan-section
+# walker (which is case-blind) consistent with the canonical-heading
+# loops that use `re.IGNORECASE`.
+KNOWN_SECTION_HEADINGS_LOWER = {h.lower() for h in KNOWN_SECTION_HEADINGS}
 
 # Diagram type enum from `<bv-diagram type>` schema.
 DIAGRAM_TYPES = {"mermaid", "plantuml", "ascii", "dot", "graphviz", "other"}
@@ -437,7 +442,10 @@ def _list_orphan_sections(body: str) -> list[dict]:
     out: list[dict] = []
     for m in _SECTION_REGEX.finditer(masked):
         heading = m.group(1).strip()
-        if heading in KNOWN_SECTION_HEADINGS:
+        # Case-insensitive match so a `## reason` (lowercase) is still
+        # treated as canonical, matching the canonical-heading loops
+        # that use `re.IGNORECASE` for the same reason.
+        if heading.lower() in KNOWN_SECTION_HEADINGS_LOWER:
             continue
         content = body[m.start(2):m.end(2)].strip()
         if not content:
@@ -1488,7 +1496,12 @@ def _extract_snippets_from_body(body: str) -> list[str]:
     # vanishes from the residual). Mirror `_list_orphan_sections`'s
     # filter to skip them.
     for m in _SECTION_REGEX.finditer(masked):
-        if m.group(1).strip() in KNOWN_SECTION_HEADINGS:
+        # Case-insensitive match so `## reason` (lowercase) is still
+        # treated as canonical, consistent with the canonical loops'
+        # `re.IGNORECASE`. Otherwise a lowercase canonical heading
+        # adjacent to a `---` snippet would yield an unterminated
+        # orphan span that swallows the snippet on merge.
+        if m.group(1).strip().lower() in KNOWN_SECTION_HEADINGS_LOWER:
             continue
         drop_spans.append((m.start(), m.end()))
 
