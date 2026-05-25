@@ -29,6 +29,7 @@ import {spawnSync} from 'node:child_process'
 import {randomUUID} from 'node:crypto'
 import {existsSync, mkdtempSync, readFileSync} from 'node:fs'
 import {rm} from 'node:fs/promises'
+import {createServer as createHttpServer, type Server as HttpServer} from 'node:http'
 import {createServer, type Server as NetServer} from 'node:net'
 import {tmpdir} from 'node:os'
 import {dirname, join, resolve} from 'node:path'
@@ -240,13 +241,50 @@ async function startDropProxy(): Promise<{close: () => Promise<void>; port: numb
   })
 }
 
+/**
+ * Minimal HTTP backend that responds 200 to anything. Used as Phase B of
+ * scenario 5 to simulate "backend came back up" on the same port the
+ * drop-proxy was using - so the daemon (still pointed at that URL) sees
+ * a successful flush and the M4.5 backoff policy resets
+ * `consecutive_failures` to 0.
+ */
+async function startAcceptProxy(port: number): Promise<{close: () => Promise<void>}> {
+  return new Promise((res, rej) => {
+    const server: HttpServer = createHttpServer((_req, response) => {
+      response.writeHead(200, {'content-type': 'application/json'})
+      response.end('{"ok":true}')
+    })
+    server.on('error', rej)
+    server.listen(port, '127.0.0.1', () => {
+      res({
+        close: () =>
+          new Promise<void>((closeRes) => {
+            server.close(() => closeRes())
+          }),
+      })
+    })
+  })
+}
+
 function analyticsStatusJson(env: NodeJS.ProcessEnv): Record<string, unknown> | undefined {
-  const result = spawnSync('brv', ['analytics', 'status', '--format', 'json'], {env, timeout: 15_000})
+  const result = spawnSync(process.execPath, [BRV_BIN, 'analytics', 'status', '--format', 'json'], {
+    env,
+    timeout: 15_000,
+  })
   if (result.status !== 0) return undefined
   try {
     return JSON.parse(result.stdout.toString()) as Record<string, unknown>
   } catch {
     return undefined
+  }
+}
+
+function readBackoffFailures(env: NodeJS.ProcessEnv): {failures: number; state: string} {
+  const status = analyticsStatusJson(env)
+  const backoff = (status?.data as undefined | {backoff?: Record<string, unknown>})?.backoff
+  return {
+    failures: (backoff?.consecutive_failures as number | undefined) ?? -1,
+    state: (backoff?.state as string | undefined) ?? 'unknown',
   }
 }
 
@@ -430,19 +468,29 @@ describe('M4.7 analytics e2e (real CLI, real daemon, real backend)', function ()
   })
 
   describe('5 down (drop-proxy)', () => {
-    let proxy: undefined | {close: () => Promise<void>; port: number}
+    let dropProxy: undefined | {close: () => Promise<void>; port: number}
+    let acceptProxy: undefined | {close: () => Promise<void>}
 
     afterEach(async () => {
-      if (proxy) {
-        await proxy.close()
-        proxy = undefined
+      if (acceptProxy) {
+        await acceptProxy.close()
+        acceptProxy = undefined
+      }
+
+      if (dropProxy) {
+        await dropProxy.close()
+        dropProxy = undefined
       }
     })
 
-    it('failed flush advances backoff counters', async function () {
-      this.timeout(120_000)
-      proxy = await startDropProxy()
-      const backend = `http://127.0.0.1:${proxy.port}`
+    it('failed flush advances backoff counters AND backend-up resets them', async function () {
+      // Phase A (~35s drop wait) + Phase B (~35s accept wait) + boot/emit + slack.
+      this.timeout(180_000)
+
+      // -------- Phase A: backend down --------
+      dropProxy = await startDropProxy()
+      const {port} = dropProxy
+      const backend = `http://127.0.0.1:${port}`
       const scenario = makeScenarioEnv(backend)
       currentScenario = scenario
       cleanupDirs.push(scenario.dataDir, scenario.home)
@@ -461,12 +509,33 @@ describe('M4.7 analytics e2e (real CLI, real daemon, real backend)', function ()
       }
 
       expect(maxAttempts, 'daemon never attempted to flush against drop-proxy').to.be.greaterThan(0)
+      const downState = readBackoffFailures(scenario.env)
+      expect(
+        downState.failures,
+        `expected backoff.consecutive_failures > 0 (state=${downState.state})`,
+      ).to.be.greaterThan(0)
 
-      const status = analyticsStatusJson(scenario.env)
-      const backoff = (status?.data as undefined | {backoff?: Record<string, unknown>})?.backoff
-      const failures = (backoff?.consecutive_failures as number | undefined) ?? 0
-      const state = (backoff?.state as string | undefined) ?? 'unknown'
-      expect(failures, `expected backoff.consecutive_failures > 0 (state=${state})`).to.be.greaterThan(0)
+      // -------- Phase B: backend back up, observe recovery --------
+      // Free the port so the accept-proxy can bind it. Daemon URL doesn't
+      // change - the next flush tick will hit the new server on same port.
+      await dropProxy.close()
+      dropProxy = undefined
+      acceptProxy = await startAcceptProxy(port)
+
+      // Emit one fresh event so the queue is non-empty after Phase A wipes.
+      // M4.5 backoff is exponential, so a single 30s tick may not trigger
+      // the next retry attempt - poll up to 90s for `consecutive_failures`
+      // to drop back to 0 (covers up to ~3 backoff windows).
+      expect((await emitEvents(1, scenario.env)).failed).to.equal(0)
+      const recovered = await waitFor(() => readBackoffFailures(scenario.env).failures === 0, 90_000, 2000)
+
+      const upState = readBackoffFailures(scenario.env)
+      expect(
+        recovered,
+        `expected backoff.consecutive_failures to reset to 0 within 90s (was ${downState.failures}, now ${upState.failures}, state=${upState.state})`,
+      ).to.equal(true)
+      const sentAfter = countStatus(jsonlPath(scenario.dataDir), 'sent')
+      expect(sentAfter, 'expected >=1 sent row after backend recovery').to.be.at.least(1)
     })
   })
 
