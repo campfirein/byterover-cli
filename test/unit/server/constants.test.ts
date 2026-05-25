@@ -51,4 +51,14 @@ describe('CONTEXT_TREE_GITIGNORE_PATTERNS', () => {
       expect(CONTEXT_TREE_GITIGNORE_PATTERNS).to.not.include('$RECYCLE.BIN/')
     })
   })
+
+  // Phase 9.5.11 — VC tree-replace ops (checkout, reset, clone, merge)
+  // were the recurring vanish vector for `.brv/context-tree/channel/<id>/meta.json`.
+  // Excluding `/channel/` from cogit-sync prevents that class of data loss.
+  // Cross-host channel sync flows over the libp2p bridge, not VC.
+  describe('channel state (Phase 9.5.11)', () => {
+    it('excludes /channel/ so VC tree-replace operations cannot wipe channel meta', () => {
+      expect(CONTEXT_TREE_GITIGNORE_PATTERNS).to.include('/channel/')
+    })
+  })
 })

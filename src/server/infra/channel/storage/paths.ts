@@ -4,7 +4,10 @@ import {join} from 'node:path'
  * Canonical channel-protocol on-disk layout per CHANNEL_PROTOCOL.md §4.2
  * and §11 (Phase 9 transcript-storage migration).
  *
- *   # Curated channel state (cogit-synced)
+ *   # Channel state (LOCAL-ONLY since Phase 9.5.11; cogit-excluded via
+ *   # `/channel/` in CONTEXT_TREE_GITIGNORE_PATTERNS — VC tree-replace
+ *   # ops were the recurring "context-tree/channel/ vanishes" vector.
+ *   # Cross-host channel sync now flows over the libp2p bridge.)
  *   <projectRoot>/.brv/context-tree/channel/<channelId>/
  *     meta.json                          (mutable; atomic rename writes)
  *     artifacts/<artifactId>             (files agents produced)

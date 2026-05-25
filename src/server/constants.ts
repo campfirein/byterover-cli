@@ -194,6 +194,10 @@ export const CONTEXT_TREE_GITIGNORE_PATTERNS = [
   '.#*',
   '*.bak',
   '*.tmp',
+
+  // Channel state — local-only (libp2p bridge handles cross-host sync;
+  // VC tree-replace ops were the recurring vanish vector — Phase 9.5.11)
+  '/channel/',
 ]
 
 export const CONTEXT_TREE_GITIGNORE_HEADER = '# Derived artifacts — do not track'
