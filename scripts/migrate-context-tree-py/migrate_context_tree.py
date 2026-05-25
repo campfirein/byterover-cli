@@ -367,12 +367,18 @@ def rel_path_to_topic_path(rel_path: str) -> str:
 
 _SECTION_REGEX = re.compile(r"^##\s+([^\n]+?)\s*$([\s\S]*?)(?=^##\s|\Z)", re.MULTILINE)
 
-# Case 6: line-anchor the optional **Title** prefix so a `**bold**` mid-
-# sentence preceding a fence doesn't become a spurious diagram title.
-# The title line must start at column 0 (or right after a newline) and
-# be immediately followed by the fence opener.
+# Case 6: line-anchor the optional **Title** prefix AND require it to
+# be immediately followed by the fence opener (no blank line between).
+# `[ \t]*\n` lets trailing horizontal whitespace pass but blocks a
+# blank line — a `**bold**\n\n```` block almost never intends the
+# bold line as the diagram's title.
+#
+# Both ``` and ~~~ fence styles are matched here, mirroring
+# _FENCE_MASK_REGEX below — a `~~~mermaid` block is both masked from
+# section detection AND promoted to <bv-diagram> rather than vanishing.
+# Capture groups: 1=title (opt), 2=fence marker, 3=lang, 4=content.
 _FENCED_BLOCK_REGEX = re.compile(
-    r"(?:(?:^|\n)\*\*(.+?)\*\*\s*\n)?```(\w*)\n([\s\S]*?)```"
+    r"(?:(?:^|\n)\*\*(.+?)\*\*[ \t]*\n)?(```|~~~)(\w*)\n([\s\S]*?)\2"
 )
 
 # Case 5 (rules splitter) and case 5 (section regex) both need to ignore
@@ -517,11 +523,16 @@ def _html_related_paths(values: list[str]) -> list[str]:
 def _parse_section(body: str, heading: str) -> Optional[str]:
     """Extract the content body of a named `## Heading` section.
 
-    Case 5 — same fence-masking as `_list_orphan_sections`. The regex
-    walks the masked text to find boundaries, then content is sliced
-    from the original body so fenced code survives."""
+    Case 5 — fence-masking so a literal `## ...` line inside a code
+    block doesn't terminate the section. Content is sliced from the
+    ORIGINAL body using the matched span so fences survive intact.
+
+    Back-to-back H2 anchoring — `(?m)^##\\s[^#]` so a section like
+    `## Reason\\n## Facts` (no blank line) terminates correctly. The
+    previous `\\n##` literal required a leading newline and absorbed
+    the trailing `\\n`, causing one section to swallow the next."""
     pattern = re.compile(
-        rf"##\s*{re.escape(heading)}\s*\n([\s\S]*?)(?=\n##\s|\n---\n|$)",
+        rf"(?ms)##\s*{re.escape(heading)}\s*\n([\s\S]*?)(?=^##\s[^#]|\n---\n|\Z)",
         re.IGNORECASE,
     )
     masked = _mask_fenced_blocks(body)
@@ -694,14 +705,20 @@ def _parse_narrative(body: str) -> Tuple[dict, dict, list[str]]:
     # before the next H2, which meant back-to-back `## A\n## B`
     # consumed the `\n` and never matched — Narrative swallowed the
     # whole rest of the document.
+    #
+    # Runs against a fence-masked body so a literal `## ...` line
+    # inside a fenced code block within Narrative doesn't terminate
+    # the section prematurely. Content is sliced from the original
+    # body via the matched span so fences survive intact.
     pattern = re.compile(
         r"(?ms)##\s*Narrative\s*\n([\s\S]*?)(?=^##\s[^#]|\n---\n|\Z)",
         re.IGNORECASE,
     )
-    m = pattern.search(body)
+    masked = _mask_fenced_blocks(body)
+    m = pattern.search(masked)
     if not m:
         return {}, {}, warnings
-    section = m.group(1)
+    section = body[m.start(1):m.end(1)]
     narrative: dict = {}
     extras: dict = {}
 
@@ -741,10 +758,11 @@ def _parse_narrative(body: str) -> Tuple[dict, dict, list[str]]:
             continue
         if lower == "diagrams":
             diagrams: list[dict] = []
+            # Groups: 1=title (opt), 2=fence marker (```/~~~), 3=lang, 4=content
             for bm in _FENCED_BLOCK_REGEX.finditer(sub_body):
                 entry: dict = {
-                    "content": bm.group(3).rstrip(),
-                    "type": bm.group(2) or "ascii",
+                    "content": bm.group(4).rstrip(),
+                    "type": bm.group(3) or "ascii",
                 }
                 if bm.group(1):
                     entry["title"] = bm.group(1)
@@ -907,6 +925,7 @@ def _extract_all_fenced_blocks(body: str, exclude_spans: list[tuple[int, int]]) 
     are skipped to avoid double emission.
     """
     out: list[dict] = []
+    # Groups: 1=title (opt), 2=fence marker (```/~~~), 3=lang, 4=content
     for bm in _FENCED_BLOCK_REGEX.finditer(body):
         block_start = bm.start()
         skip = False
@@ -917,8 +936,8 @@ def _extract_all_fenced_blocks(body: str, exclude_spans: list[tuple[int, int]]) 
         if skip:
             continue
         entry: dict = {
-            "content": bm.group(3).rstrip(),
-            "type": normalize_diagram_type(bm.group(2) or ""),
+            "content": bm.group(4).rstrip(),
+            "type": normalize_diagram_type(bm.group(3) or ""),
         }
         if bm.group(1):
             entry["title"] = bm.group(1)
@@ -930,16 +949,21 @@ def _diagrams_section_span(body: str) -> Optional[tuple[int, int]]:
     """Return (start, end) span of the `## Narrative > ### Diagrams`
     subsection in `body`, for fenced-block dedup. Same `(?m)^##\\s[^#]`
     anchoring as `_parse_narrative` so back-to-back H2s terminate
-    correctly."""
+    correctly, and same fence-masking so a literal `## ...` line inside
+    a code fence within Narrative doesn't truncate the section and
+    miscompute the dedup span — which would otherwise let extracted-
+    via-Narrative diagrams reappear as duplicate emissions in
+    `_extract_all_fenced_blocks`."""
+    masked = _mask_fenced_blocks(body)
     nar = re.search(
         r"(?ms)##\s*Narrative\s*\n([\s\S]*?)(?=^##\s[^#]|\n---\n|\Z)",
-        body,
+        masked,
         re.IGNORECASE,
     )
     if not nar:
         return None
     section_start = nar.start(1)
-    section = nar.group(1)
+    section = masked[nar.start(1):nar.end(1)]
     m_dia = re.search(
         r"###\s*Diagrams\s*\n([\s\S]*?)(?=\n###\s|\n##\s|$)", section, re.IGNORECASE
     )
@@ -1546,22 +1570,14 @@ def _process_file(
         return _archive_failed(source_abs, archive_abs, rel, f"read-error: {e}", dry_run)
 
     if not markdown.strip():
-        # Empty file. If the basename matches a sidecar pattern
-        # (`.abstract.md` / `.overview.md`), treat as derived even
-        # though the sibling base check (case 12) classified it as
-        # topic — empty sidecars are usually pre-allocated stubs
-        # from the curate pipeline, not user-authored content.
-        # Non-sidecar empty files surface as `failed` so the
-        # operator notices unexpected emptiness.
-        if basename.endswith(ABSTRACT_EXTENSION) or basename.endswith(OVERVIEW_EXTENSION):
-            if not dry_run:
-                _move(source_abs, archive_abs)
-            return {
-                "outcome": "archived",
-                "reason": "empty-sidecar",
-                "source_rel_path": rel,
-                "archive_path": str(archive_abs),
-            }
+        # We're here only when `_classify_entry` returned "topic" —
+        # for sidecar-named files (`.abstract.md` / `.overview.md`)
+        # the base sibling did NOT exist (case 12). Be consistent
+        # with case-12's contract: a non-empty standalone sidecar
+        # migrates as a real topic, so an empty one is a real topic
+        # with empty content. Surface it as `failed` rather than
+        # silently archiving — the operator can decide whether to
+        # delete it or fill it in.
         return _archive_failed(source_abs, archive_abs, rel, "empty-file", dry_run)
 
     mtime_ms = source_abs.stat().st_mtime * 1000.0
@@ -1651,6 +1667,27 @@ def run_migration(*, project_root: str, dry_run: bool = False) -> dict:
 
     tree_files_list = _list_tree_files(tree_root)
     tree_files_set = set(tree_files_list)
+
+    # Compute the preserve list BEFORE archiving anything. This is the
+    # set of .md topics whose .html siblings already exist in the live
+    # tree — rollback must skip deleting these to avoid destroying
+    # pre-existing HTML. Writing the manifest up front (rather than at
+    # the end) means a Ctrl+C / OOM / power loss mid-migration still
+    # leaves a usable preserve list on disk; rollback won't accidentally
+    # delete pre-existing siblings just because the script was killed.
+    pre_existing_preserve = sorted(
+        rel
+        for rel in tree_files_list
+        if rel.endswith(".md") and _html_sibling_exists(tree_root, rel)
+    )
+    if not dry_run and pre_existing_preserve:
+        manifest_path = archive_root / PRE_EXISTING_HTML_MANIFEST
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps({"preserve_html_siblings": pre_existing_preserve}, indent=2),
+            encoding="utf-8",
+        )
+
     for rel in tree_files_list:
         basename = rel.rsplit("/", 1)[-1] if "/" in rel else rel
         entry = _process_file(
@@ -1663,23 +1700,6 @@ def run_migration(*, project_root: str, dry_run: bool = False) -> dict:
         )
         report["files"].append(entry)
         report["summary"][entry["outcome"]] += 1
-
-    # Persist the pre-existing-HTML preserve list so rollback can avoid
-    # deleting .html files that predated the migration. Written under
-    # the archive root so it travels with the migration artifact.
-    if not dry_run:
-        preserve = sorted(
-            f["source_rel_path"]
-            for f in report["files"]
-            if f.get("reason") == "html-sibling-exists"
-        )
-        if preserve:
-            manifest_path = archive_root / PRE_EXISTING_HTML_MANIFEST
-            manifest_path.parent.mkdir(parents=True, exist_ok=True)
-            manifest_path.write_text(
-                json.dumps({"preserve_html_siblings": preserve}, indent=2),
-                encoding="utf-8",
-            )
 
     report["completed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     return report
@@ -1714,16 +1734,32 @@ def rollback(*, project_root: str, dry_run: bool = False) -> dict:
 
     archive_root = archives[-1]
 
-    # Load the pre-existing-HTML preserve list. Migrations before this
-    # field was added won't have the manifest; treat as empty.
+    # Load the pre-existing-HTML preserve list. Missing or corrupt
+    # manifest: warn loudly on stderr rather than silently treating
+    # preserve as empty. A silent fallback would let rollback delete
+    # pre-existing .html siblings after a Ctrl+C'd migration — the
+    # exact failure mode this whole mechanism was designed to prevent.
     preserve_html_siblings: set[str] = set()
     manifest_path = archive_root / PRE_EXISTING_HTML_MANIFEST
     if manifest_path.exists():
         try:
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
             preserve_html_siblings = set(data.get("preserve_html_siblings", []))
-        except (json.JSONDecodeError, OSError):
-            pass
+        except (json.JSONDecodeError, OSError) as e:
+            print(
+                f"warning: preserve-list manifest at {manifest_path} is "
+                f"unreadable ({e}); pre-existing .html siblings will NOT "
+                f"be protected during rollback",
+                file=sys.stderr,
+            )
+    else:
+        print(
+            f"warning: no preserve-list manifest at {manifest_path} — "
+            f"either this archive predates the manifest feature or the "
+            f"prior migration was interrupted before it was written. "
+            f"Pre-existing .html siblings will NOT be protected.",
+            file=sys.stderr,
+        )
 
     restored: list[str] = []
     deleted_html: list[str] = []
@@ -1822,11 +1858,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.rollback:
         if args.dry_run:
             preview = rollback(project_root=args.project_root, dry_run=True)
+            # Send the dry-run preview to stderr too — keeps the
+            # destructive-action UX consistent: anything that's NOT
+            # the final outcome statement goes to stderr.
             print(
                 f"[dry-run] would restore {preview['restored']} file(s) "
                 f"from {preview['archive_root']}\n"
                 f"[dry-run] would delete {len(preview['deleted_html'])} .html "
-                f"sibling(s); preserve {len(preview['preserved_html'])} pre-existing"
+                f"sibling(s); preserve {len(preview['preserved_html'])} pre-existing",
+                file=sys.stderr,
             )
             return 0
 
@@ -1842,8 +1882,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                 f"  preserve {len(preview['preserved_html'])} pre-existing .html sibling(s)",
                 file=sys.stderr,
             )
+            # Write the prompt to stderr and read from stdin directly so
+            # the prompt sits in the same stream as the preview. `input()`
+            # writes to stdout, which mixes streams when stderr is piped.
+            sys.stderr.write("Proceed? Type 'yes' to confirm: ")
+            sys.stderr.flush()
             try:
-                resp = input("Proceed? Type 'yes' to confirm: ").strip().lower()
+                resp = sys.stdin.readline().strip().lower()
             except EOFError:
                 resp = ""
             if resp != "yes":
