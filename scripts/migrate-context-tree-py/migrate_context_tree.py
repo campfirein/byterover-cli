@@ -279,25 +279,51 @@ def split_rules_block(rules_text: str) -> list[dict]:
     if not trimmed:
         return []
 
-    # Detect bullet style on the ORIGINAL (not flattened) text so
-    # multi-line items with indented continuations are kept together
-    # (codex finding — line-flat splitter drops continuations).
-    has_bullets = bool(re.search(r"(?m)^[-*+]\s+\S", trimmed))
-    has_numbered = bool(re.search(r"(?m)^\d+\.\s+\S", trimmed))
+    # Detect bullet / numbered / Rule-prefix / paragraph style on a
+    # FENCE-MASKED copy so a `- some code` line or a `Rule 1:` comment
+    # inside a fenced code sample within `### Rules` doesn't flip the
+    # detector and spawn spurious rule entries. Item extraction still
+    # operates on the original text (the bullet collector is fence-
+    # blind, but if the detector says "no bullets" we never enter that
+    # branch — masking the detector is sufficient).
+    masked = _mask_fenced_blocks(trimmed)
+    has_bullets = bool(re.search(r"(?m)^[-*+]\s+\S", masked))
+    has_numbered = bool(re.search(r"(?m)^\d+\.\s+\S", masked))
 
     items: list[str]
     if has_bullets or has_numbered:
         items = _collect_bullet_items_with_continuations(trimmed)
-    elif _RULE_PREFIX_LINE.search(trimmed):
+    elif _RULE_PREFIX_LINE.search(masked):
         # Case 5: split on "Rule N:" prefix occurrences. The first
         # element of `parts` is the text BEFORE the first prefix —
         # almost always an intro paragraph, not a rule. Drop it; if
         # the section is purely intro with no prefixes the paragraph
         # fallback would have handled it instead.
-        parts = _RULE_PREFIX_LINE.split(trimmed)
-        items = [p.strip() for p in parts[1:] if p.strip()]
+        #
+        # Split on the masked text so the prefix positions are aligned
+        # to the original; the split result yields chunks of the
+        # original text via shared offsets (re.split keeps text in the
+        # input string verbatim, so masked == trimmed at non-fenced
+        # positions and trimmed elsewhere — we extract from `trimmed`
+        # by walking the same split points instead of using the
+        # masked-split strings directly).
+        spans: list[tuple[int, int]] = []
+        last = 0
+        for m in _RULE_PREFIX_LINE.finditer(masked):
+            spans.append((last, m.start()))
+            last = m.end()
+        spans.append((last, len(trimmed)))
+        items = [trimmed[s:e].strip() for s, e in spans[1:] if trimmed[s:e].strip()]
     else:
-        items = [p.strip() for p in re.split(r"\n\s*\n", trimmed) if p.strip()]
+        # Paragraph fallback also operates on masked so a blank line
+        # inside fenced code doesn't split paragraphs.
+        spans = []
+        last = 0
+        for m in re.finditer(r"\n\s*\n", masked):
+            spans.append((last, m.start()))
+            last = m.end()
+        spans.append((last, len(trimmed)))
+        items = [trimmed[s:e].strip() for s, e in spans if trimmed[s:e].strip()]
 
     seen_ids: set[str] = set()
     out: list[dict] = []
@@ -1680,7 +1706,13 @@ def run_migration(*, project_root: str, dry_run: bool = False) -> dict:
         for rel in tree_files_list
         if rel.endswith(".md") and _html_sibling_exists(tree_root, rel)
     )
-    if not dry_run and pre_existing_preserve:
+    # Write the manifest unconditionally (even when the preserve list
+    # is empty) so rollback's "no preserve-list manifest" warning only
+    # fires when something genuinely went wrong (archive predates the
+    # feature, prior run was killed before write, manifest was deleted)
+    # — not on the common case of a clean migration with no pre-
+    # existing siblings.
+    if not dry_run:
         manifest_path = archive_root / PRE_EXISTING_HTML_MANIFEST
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(
@@ -1846,7 +1878,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--yes",
         action="store_true",
         help="Skip the interactive confirmation prompt for --rollback. "
-        "Required for non-interactive use; ignored for forward migration.",
+        "REQUIRED when stdin is not a TTY (CI / piped invocations) — "
+        "otherwise --rollback aborts with an error rather than proceeding "
+        "silently. Ignored for forward migration.",
     )
     return parser
 
@@ -1870,10 +1904,21 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
             return 0
 
-        # Destructive operation — require explicit confirmation unless
-        # --yes was passed or stdin isn't a TTY (assume non-interactive
-        # caller already accepted the risk).
-        if not args.yes and sys.stdin.isatty():
+        # Destructive operation — require explicit confirmation. If
+        # stdin is a TTY: interactive prompt. If stdin is NOT a TTY:
+        # require --yes explicitly rather than proceeding silently,
+        # because a typo'd CI command (`--rollback` meant for human
+        # eyes piped through a script) would otherwise destroy the
+        # migration artifact with no chance to abort.
+        if not args.yes:
+            if not sys.stdin.isatty():
+                print(
+                    "error: --rollback requires --yes when stdin is not a "
+                    "TTY (CI / piped invocations). Re-run with --yes if "
+                    "you intend to roll back without an interactive prompt.",
+                    file=sys.stderr,
+                )
+                return 2
             preview = rollback(project_root=args.project_root, dry_run=True)
             print(
                 f"About to roll back migration at {preview['archive_root']}:\n"
