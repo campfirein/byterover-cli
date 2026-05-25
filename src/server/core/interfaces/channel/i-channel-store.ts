@@ -162,6 +162,14 @@ export interface IChannelStore {
   readDeliveries(args: ChannelStoreReadDeliveriesArgs): Promise<TurnDelivery[]>
   readTurn(args: ChannelStoreReadTurnArgs): Promise<ChannelStoreReadTurnResult | undefined>
   /**
+   * Phase 9.5.10 — defensive recovery for the "channel meta vanished but
+   * channel-history survived" case. Writes `meta` under the same per-channel
+   * lock as `createChannel` so the kimi-flagged overwrite race is closed:
+   * if a concurrent createChannel wrote first, this returns 'already-exists'
+   * and leaves the existing meta untouched. Returns 'wrote' on success.
+   */
+  reconstructIfMissing(args: ChannelStoreCreateArgs): Promise<'already-exists' | 'wrote'>
+  /**
    * Slice 9.4 — best-effort GC sweep for a single channel. Removes
    * per-turn NDJSON files whose materialised index entry shows the turn
    * ended more than `retentionDays` ago, then compacts the index.

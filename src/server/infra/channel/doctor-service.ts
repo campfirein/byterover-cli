@@ -118,6 +118,26 @@ export class ChannelDoctorService implements IChannelDoctorService {
       return
     }
 
+    // Phase 9.5.10 Fix B — surface DOCTOR_RECONSTRUCTED_FROM_HISTORY for
+    // channels whose meta.json was rebuilt from channel-history because the
+    // original vanished. The stub carries members:[] (we cannot infer
+    // memberKind/peerId/multiaddr from history), so dispatch will fail
+    // until the operator re-invites participants. The diagnostic message
+    // names each inferred handle so the operator knows whom to re-invite.
+    if (meta.reconstructionStatus === 'reconstructed-from-history') {
+      const handles = meta.inferredHandles ?? []
+      const handlesList = handles.length === 0 ? '(none inferred)' : handles.join(', ')
+      args.diagnostics.push({
+        code: 'DOCTOR_RECONSTRUCTED_FROM_HISTORY',
+        details: {channelId: args.channelId, inferredHandles: handles},
+        message:
+          `Channel ${args.channelId} was rebuilt from turn history after meta.json went missing. ` +
+          `Inferred participants: ${handlesList}. ` +
+          `Recovery: run \`brv channel invite ${args.channelId} <handle> --profile <name>\` for each to restore membership.`,
+        severity: 'warning',
+      })
+    }
+
     // Inspect pool + broker for each member.
     const pending = this.brokerPendingFor(args.channelId)
     if (pending.length > 0) {

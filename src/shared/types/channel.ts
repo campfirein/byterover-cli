@@ -487,6 +487,16 @@ export const ChannelMetaSchema = z.object({
   // Exposed via `brv channel list --json` for operator audit.
   autoProvisionedFrom: z.string().optional(),
   autoProvisionedAt: z.string().datetime().optional(),
+  // Phase 9.5.10 — set by `reconstructMissingMetas` when meta.json was
+  // rebuilt from channel-history because the original vanished. Downstream
+  // (doctor) surfaces this so the operator knows the channel is a stub.
+  reconstructionStatus: z.literal('reconstructed-from-history').optional(),
+  reconstructedAt: z.string().datetime().optional(),
+  // Best-effort participant list inferred from turn_snapshot author +
+  // mentions + delivery_snapshot.memberHandle. Filtered to handles
+  // matching /^@/ (drops the local-user 'you' placeholder). Doctor reads
+  // this to tell the operator whom to re-invite.
+  inferredHandles: z.array(z.string()).optional(),
 })
 export type ChannelMeta = z.infer<typeof ChannelMetaSchema>
 

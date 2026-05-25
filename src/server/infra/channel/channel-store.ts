@@ -345,6 +345,24 @@ export class ChannelStore implements IChannelStore {
     return deliveries.length === 0 ? {events, turn} : {deliveries, events, turn}
   }
 
+  // Phase 9.5.10 Fix A — write a reconstructed meta stub under the SAME
+  // per-channel lock used by `createChannel`. The lock closes the
+  // overwrite/data-loss race kimi flagged (turnId 7h-RAyyU6GEy0mRdjI9ay).
+  // create-vs-reconstruct races resolve in favor of reconstruction: the
+  // stub wins, a subsequent createChannel for the same id fails fast with
+  // "already exists" — operator recovery is via doctor → invite (see
+  // DOCTOR_RECONSTRUCTED_FROM_HISTORY).
+  async reconstructIfMissing(args: ChannelStoreCreateArgs): Promise<'already-exists' | 'wrote'> {
+    const {meta, projectRoot} = args
+    return this.writeSerializer.withLock(metaLockKey(meta.channelId), async () => {
+      const target = channelPaths.metaFile(projectRoot, meta.channelId)
+      const existing = await tryReadMeta(target)
+      if (existing !== undefined) return 'already-exists'
+      await writeAtomically(target, JSON.stringify(meta, undefined, 2))
+      return 'wrote'
+    })
+  }
+
   /**
    * Slice 9.4 — fire a best-effort GC sweep for the channel. No-op when
    * the transcript GC has not been wired or `retentionDays` is 0.

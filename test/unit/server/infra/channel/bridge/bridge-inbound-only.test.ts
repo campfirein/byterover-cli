@@ -70,6 +70,12 @@ class FakeChannelStore implements IChannelStore {
 
   async readTurn(): Promise<undefined> { return undefined }
 
+  async reconstructIfMissing(args: ChannelStoreCreateArgs): Promise<'already-exists' | 'wrote'> {
+    if (this.metaByChannel.has(args.meta.channelId)) return 'already-exists'
+    this.metaByChannel.set(args.meta.channelId, args.meta)
+    return 'wrote'
+  }
+
   async sweepTranscripts(): Promise<void> { /* unused */ }
 
   async updateChannelMeta(args: ChannelStoreUpdateMetaArgs): Promise<Channel> {

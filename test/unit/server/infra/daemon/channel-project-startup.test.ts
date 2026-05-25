@@ -21,10 +21,20 @@ const CHANNEL_ID = 'ch-startup-test'
 async function writeChannelHistory(projectRoot: string, channelId: string): Promise<void> {
   const turnsDir = join(projectRoot, '.brv', 'channel-history', channelId, 'turns')
   await fs.mkdir(turnsDir, {recursive: true})
-  // Minimal NDJSON snapshot so reconstruction can pick up a createdAt date.
+  // Phase 9.5.10 — real recordType is 'turn_snapshot' (matches the writer at
+  // src/server/infra/channel/storage/snapshot-writer.ts:98).
   const snapshot = JSON.stringify({
-    _recordType: 'snapshot',
-    turn: {startedAt: '2026-05-24T10:00:00.000Z'},
+    _recordType: 'turn_snapshot',
+    turn: {
+      author: {handle: '@alice', kind: 'local-user'},
+      channelId,
+      mentions: [],
+      promptBlocks: [],
+      promptedBy: 'user',
+      startedAt: '2026-05-24T10:00:00.000Z',
+      state: 'completed',
+      turnId: 'turn-1',
+    },
   })
   await fs.writeFile(join(turnsDir, 'turn-1.ndjson'), snapshot + '\n', 'utf8')
 }
@@ -43,8 +53,23 @@ describe('runChannelProjectStartup (Issue 1 — daemon startup wiring)', () => {
   const log = (msg: string): void => { logs.push(msg) }
   const warn = (msg: string): void => { warns.push(msg) }
 
-  // Minimal fake channelStore — updateChannelMeta must be callable.
+  // Minimal fake channelStore — updateChannelMeta + reconstructIfMissing
+  // must be callable (Phase 9.5.10 added the latter for Step 0 wiring).
   const fakeChannelStore = {
+    async reconstructIfMissing(args: {
+      meta: {channelId: string}
+      projectRoot: string
+    }): Promise<'already-exists' | 'wrote'> {
+      const metaPath = join(args.projectRoot, '.brv', 'context-tree', 'channel', args.meta.channelId, 'meta.json')
+      try {
+        await fs.access(metaPath)
+        return 'already-exists'
+      } catch { /* meta absent — write it */ }
+
+      await fs.mkdir(join(args.projectRoot, '.brv', 'context-tree', 'channel', args.meta.channelId), {recursive: true})
+      await fs.writeFile(metaPath, JSON.stringify(args.meta, null, 2), 'utf8')
+      return 'wrote'
+    },
     async updateChannelMeta(args: {
       channelId: string
       mutate: (m: unknown) => unknown
@@ -73,23 +98,22 @@ describe('runChannelProjectStartup (Issue 1 — daemon startup wiring)', () => {
     await removeTempDir(projectRoot)
   })
 
-  // SKIPPED for Phase 9.5.9 — kimi review (turnId 7h-RAyyU6GEy0mRdjI9ay) flagged
-  // two data-corruption vectors in reconstructMissingMetas (TOCTOU + members:[]
-  // lie). Reconstruction is no longer wired into runChannelProjectStartup; it
-  // stays in the tree (src/server/utils/channel-meta-reconstruction.ts) for
-  // 9.5.10 to pick up after the TOCTOU + members reconstruction are fixed.
-  it.skip('reconstructs a missing meta.json from channel-history', async () => {
+  // Phase 9.5.10 — reconstruction re-wired with kimi's data-corruption
+  // vectors fixed (TOCTOU closed via channelStore.reconstructIfMissing
+  // lock; members:[] honest + reconstructionStatus flag + inferredHandles).
+  it('reconstructs a missing meta.json from channel-history', async () => {
     // Set up: channel-history exists but meta.json does NOT.
     await writeChannelHistory(projectRoot, CHANNEL_ID)
 
     const result = await runChannelProjectStartup({channelStore: fakeChannelStore, log, projectRoot, warn})
     result.watcher.stop()
 
-    // meta.json must now exist.
+    // meta.json must now exist with the reconstruction marker set.
     const metaPath = join(projectRoot, '.brv', 'context-tree', 'channel', CHANNEL_ID, 'meta.json')
     const raw = await fs.readFile(metaPath, 'utf8')
-    const meta = JSON.parse(raw) as {channelId: string}
+    const meta = JSON.parse(raw) as {channelId: string; reconstructionStatus?: string}
     expect(meta.channelId).to.equal(CHANNEL_ID)
+    expect(meta.reconstructionStatus).to.equal('reconstructed-from-history')
 
     // Reconstruction log must be emitted.
     expect(logs.some((m) => m.includes('reconstruct'))).to.equal(true)
