@@ -176,7 +176,16 @@ Bad examples:
             await ensureBillingFunds({billing, client})
           }
 
-          await this.submitTask({client, content: resolvedContent, flags, format, projectRoot, taskType, worktreeRoot})
+          await this.submitTask({
+            client,
+            cliMetadata,
+            content: resolvedContent,
+            flags,
+            format,
+            projectRoot,
+            taskType,
+            worktreeRoot,
+          })
         },
         {
           ...this.getDaemonClientOptions(),
