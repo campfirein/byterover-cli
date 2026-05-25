@@ -1479,7 +1479,17 @@ def _extract_snippets_from_body(body: str) -> list[str]:
             drop_spans.append((m.start(), m.end()))
     # Strip orphan `## X` sections too — those are routed via the
     # heuristic elsewhere and must not be re-counted as snippets here.
+    #
+    # Filter out canonical headings: the canonical loop above already
+    # added their spans with a `\n---\n` terminator, but `_SECTION_REGEX`
+    # has NO `\n---\n` terminator — so re-adding canonical spans here
+    # would swallow any `---`-separated snippet adjacent to a canonical
+    # heading (the merge step picks the larger span and the snippet
+    # vanishes from the residual). Mirror `_list_orphan_sections`'s
+    # filter to skip them.
     for m in _SECTION_REGEX.finditer(masked):
+        if m.group(1).strip() in KNOWN_SECTION_HEADINGS:
+            continue
         drop_spans.append((m.start(), m.end()))
 
     # Merge overlapping spans, then rebuild residual text from `body`
