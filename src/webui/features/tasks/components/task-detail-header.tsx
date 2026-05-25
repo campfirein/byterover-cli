@@ -1,6 +1,7 @@
 import {Button} from '@campfirein/byterover-packages/components/button'
 import {Tooltip, TooltipContent, TooltipTrigger} from '@campfirein/byterover-packages/components/tooltip'
 import {cn} from '@campfirein/byterover-packages/lib/utils'
+import {CircleStop, LoaderCircle} from 'lucide-react'
 import {toast} from 'sonner'
 
 import type {StoredTask} from '../types/stored-task'
@@ -18,8 +19,16 @@ const STATUS_VERB: Record<StoredTask['status'], string> = {
   started: 'started',
 }
 
-export function DetailHeader({now, task}: {now: number; task: StoredTask}) {
+interface DetailHeaderProps {
+  cancelling: boolean
+  now: number
+  onCancel: (taskId: string) => void
+  task: StoredTask
+}
+
+export function DetailHeader({cancelling, now, onCancel, task}: DetailHeaderProps) {
   const isTerminal = isTerminalStatus(task.status)
+  const isActive = isActiveStatus(task.status)
   const elapsed = elapsedMs(task, now)
   const referenceTime = task.startedAt ?? task.createdAt
   const verb = STATUS_VERB[task.status]
@@ -42,11 +51,22 @@ export function DetailHeader({now, task}: {now: number; task: StoredTask}) {
           {verb} {formatRelative(referenceTime, now)} ago
         </span>
         <Separator />
-        <span
-          className={cn('mono tabular-nums', isActiveStatus(task.status) ? 'text-blue-400' : 'text-muted-foreground')}
-        >
+        <span className={cn('mono tabular-nums', isActive ? 'text-blue-400' : 'text-muted-foreground')}>
           {elapsedLabel} {formatDuration(elapsed)}
         </span>
+        {isActive && (
+          <Button
+            aria-label="Cancel task"
+            className="ml-1 h-6 gap-1 border-red-500/40 px-2 text-red-400 hover:border-red-500/60 hover:bg-red-500/10 hover:text-red-300"
+            disabled={cancelling}
+            onClick={() => onCancel(task.taskId)}
+            size="xs"
+            variant="outline"
+          >
+            {cancelling ? <LoaderCircle className="size-3 animate-spin" /> : <CircleStop className="size-3" />}
+            {cancelling ? 'Cancelling…' : 'Cancel'}
+          </Button>
+        )}
       </div>
     </header>
   )

@@ -95,18 +95,23 @@ export class ChatSession implements IChatSession {
 
   /**
    * Cancel the current operation or a specific task.
-   * @param taskId - Optional taskId to cancel specific task, otherwise cancels fallback controller
+   *
+   * @param taskId - Optional taskId to cancel a specific task, otherwise cancels the fallback controller
+   * @returns true when a controller was found and aborted, false otherwise (so callers can decide
+   *          whether to emit a terminal event upstream)
    */
-  public cancel(taskId?: string): void {
+  public cancel(taskId?: string): boolean {
     if (taskId) {
       const controller = this.activeControllers.get(taskId)
-      if (controller) {
-        controller.abort()
-        this.activeControllers.delete(taskId)
-      }
-    } else if (this.currentController) {
-      this.currentController.abort()
+      if (!controller) return false
+      controller.abort()
+      this.activeControllers.delete(taskId)
+      return true
     }
+
+    if (!this.currentController) return false
+    this.currentController.abort()
+    return true
   }
 
   /**

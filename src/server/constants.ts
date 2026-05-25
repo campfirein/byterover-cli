@@ -127,7 +127,14 @@ export const REVIEW_BACKUPS_DIR = 'review-backups'
 
 // User-configurable operational settings (global, restart-required)
 export const SETTINGS_FILE = 'settings.json'
-export const SETTINGS_SCHEMA_VERSION = '1'
+// Bumped from '1' to '2' alongside the boolean-descriptor work: v2 files
+// persist `{[key]: number | boolean}`. v1 files are migrated forward on
+// first read by `FileSettingsStore`; the migration is idempotent.
+export const SETTINGS_SCHEMA_VERSION = '2'
+
+// Default for the boolean `update.checkForUpdates` setting. ON by default; users
+// flip to false to disable the startup update-notifier hook entirely.
+export const UPDATE_CHECK_FOR_UPDATES_DEFAULT = true
 
 // Default wall-clock budget for the agentic loop (`llm.iterationBudgetMs`).
 // Slow local-LLM users override via `brv settings set llm.iterationBudgetMs <ms>`.

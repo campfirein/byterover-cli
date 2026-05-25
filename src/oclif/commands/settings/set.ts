@@ -22,7 +22,11 @@ const DURATION_RE = /\d+\s*(?:ms|s|m|h)/i
 export default class SettingsSet extends Command {
   public static args = {
     key: Args.string({description: 'Settings key to write', required: true}),
-    value: Args.string({description: 'New value (integer for count keys, duration like 30m / 1h 30m / 1800000 for ms keys)', required: true}),
+    value: Args.string({
+      description:
+        'New value (integer for count keys, duration like 30m / 1h 30m / 1800000 for ms keys, boolean true/false/on/off/1/0/yes/no for boolean keys)',
+      required: true,
+    }),
   }
   public static description =
     'Update one settings value. Changes apply after `brv restart`.'
@@ -90,7 +94,8 @@ export default class SettingsSet extends Command {
             success: true,
           })
         } else {
-          this.log(`Setting saved: ${args.key} = ${parsed.display}. Run \`brv restart\` to apply.`)
+          const base = `Setting saved: ${args.key} = ${parsed.display}.`
+          this.log(response.restartRequired ? `${base} Run \`brv restart\` to apply.` : base)
         }
 
         return
@@ -114,7 +119,7 @@ export default class SettingsSet extends Command {
 
   protected async writeSetting(
     key: string,
-    value: unknown,
+    value: boolean | number,
     options?: DaemonClientOptions,
   ): Promise<SettingsSetResponse> {
     return withDaemonRetry<SettingsSetResponse>(
@@ -126,12 +131,39 @@ export default class SettingsSet extends Command {
 }
 
 type ParseResult =
-  | {readonly display: string; readonly kind: 'ok'; readonly value: number}
+  | {readonly display: string; readonly kind: 'ok'; readonly value: boolean | number}
   | {readonly kind: 'error'; readonly message: string}
 
+const BOOLEAN_TOKENS = new Map<string, boolean>([
+  ['0', false],
+  ['1', true],
+  ['false', false],
+  ['no', false],
+  ['off', false],
+  ['on', true],
+  ['true', true],
+  ['yes', true],
+])
+
+const BOOLEAN_TOKENS_HINT = 'true, false, on, off, 1, 0, yes, no'
+
 function parseValue(descriptor: SettingsItemDTO, raw: string): ParseResult {
+  if (descriptor.type === 'boolean') return parseAsBoolean(descriptor, raw)
   if (descriptor.unit === 'ms') return parseAsDuration(descriptor, raw)
   return parseAsCount(descriptor, raw)
+}
+
+function parseAsBoolean(descriptor: SettingsItemDTO, raw: string): ParseResult {
+  const lowered = raw.trim().toLowerCase()
+  const value = BOOLEAN_TOKENS.get(lowered)
+  if (value === undefined) {
+    return {
+      kind: 'error',
+      message: `${descriptor.key} expected boolean (${BOOLEAN_TOKENS_HINT}), got '${raw}'.`,
+    }
+  }
+
+  return {display: String(value), kind: 'ok', value}
 }
 
 function parseAsDuration(descriptor: SettingsItemDTO, raw: string): ParseResult {

@@ -12,7 +12,7 @@ export type SettingsStartupSnapshot = {
    * Daemon startup logs this once; all values fall back to defaults.
    */
   readonly parseError?: string
-  readonly values: Readonly<Record<string, number>>
+  readonly values: Readonly<Record<string, boolean | number>>
 }
 
 /**

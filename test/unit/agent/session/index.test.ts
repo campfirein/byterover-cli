@@ -92,7 +92,9 @@ describe('Session index exports', () => {
     it('should export IChatSession interface', () => {
       // Type check - if this compiles, the interface is exported
       const session: IChatSession = {
-        cancel() {},
+        cancel() {
+          return false
+        },
         cleanup() {},
         dispose() {},
         getHistory() {
@@ -185,7 +187,9 @@ describe('Session index exports', () => {
       // Interfaces are checked above via type annotations
       // Cannot test interfaces as values, but compilation ensures they exist
       const session: IChatSession = {
-        cancel() {},
+        cancel() {
+          return false
+        },
         cleanup() {},
         dispose() {},
         getHistory() {

@@ -310,4 +310,69 @@ describe('brv settings (index)', () => {
 
     expect(loggedMessages.some((m) => m.includes('Connection failed'))).to.be.true
   })
+
+  describe('boolean rows (T4 UPDATES group)', () => {
+    it('renders an UPDATES section with the boolean row when the daemon returns one', async () => {
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      requestStub.resolves({
+        items: [
+          {
+            category: 'concurrency',
+            current: 10,
+            default: 10,
+            description: 'h',
+            key: 'agentPool.maxSize',
+            max: 100,
+            min: 1,
+            restartRequired: true,
+            type: 'integer',
+          },
+          {
+            category: 'updates',
+            current: true,
+            default: true,
+            description: 'Check for brv updates at startup and notify when one is available',
+            key: 'update.checkForUpdates',
+            restartRequired: false,
+            type: 'boolean',
+          },
+        ],
+      })
+
+      await createCommand().run()
+      const output = loggedMessages.join('\n')
+
+      expect(output, 'UPDATES header must appear').to.include('UPDATES')
+      const booleanRow = loggedMessages.find((m) => m.includes('update.checkForUpdates'))
+      expect(booleanRow, 'row for update.checkForUpdates').to.exist
+      expect(booleanRow).to.include('true')
+      expect(booleanRow).to.match(/default\s*true/)
+      // Range (min-max) is meaningless for booleans and must not be rendered.
+      expect(booleanRow).to.not.match(/\d+\s*-\s*\d+/)
+    })
+
+    it('omits the UPDATES section entirely when the daemon returns no boolean items', async () => {
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      requestStub.resolves({
+        items: [
+          {
+            category: 'concurrency',
+            current: 10,
+            default: 10,
+            description: 'h',
+            key: 'agentPool.maxSize',
+            max: 100,
+            min: 1,
+            restartRequired: true,
+            type: 'integer',
+          },
+        ],
+      })
+
+      await createCommand().run()
+      const output = loggedMessages.join('\n')
+
+      expect(output).to.not.include('UPDATES')
+    })
+  })
 })

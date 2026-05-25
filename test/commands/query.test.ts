@@ -661,4 +661,164 @@ describe('Query Command', () => {
       expect(loggedMessages.some((m) => m.includes('done'))).to.be.true
     })
   })
+
+  // ==================== --cancel flag (T2.3) ====================
+
+  describe('--cancel flag', () => {
+    // eslint-disable-next-line unicorn/consistent-function-scoping -- captures mockClient from outer beforeEach
+    function stubCancelResponse(response: {error?: string; success: boolean}): void {
+      ;(mockClient.requestWithAck as sinon.SinonStub).callsFake(async (event: string) => {
+        if (event === 'task:cancel') return response
+        return {activeProvider: 'anthropic'}
+      })
+    }
+
+    it('short-circuits the create flow: emits task:cancel only', async () => {
+      stubCancelResponse({success: true})
+
+      await createCommand('--cancel', 'task-A').run()
+
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      const eventNames = requestStub.getCalls().map((c) => c.args[0])
+      expect(eventNames).to.deep.equal(['task:cancel'])
+      expect(requestStub.firstCall.args[1]).to.deep.equal({taskId: 'task-A'})
+    })
+
+    it('does not require the positional query argument when --cancel is set', async () => {
+      stubCancelResponse({success: true})
+
+      // No positional arg, no error
+      let parseError: unknown
+      try {
+        await createCommand('--cancel', 'task-B').run()
+      } catch (error) {
+        parseError = error
+      }
+
+      expect(parseError).to.equal(undefined)
+      expect(loggedMessages).to.include('Cancelled task-B')
+    })
+
+    it('prints failure line with daemon-reported reason and exits non-zero (text)', async () => {
+      stubCancelResponse({error: 'Task not found', success: false})
+
+      let exitError: unknown
+      try {
+        await createCommand('--cancel', 'task-X').run()
+      } catch (error) {
+        exitError = error
+      }
+
+      expect(loggedMessages.some((m) => m.includes('Failed to cancel task-X') && m.includes('Task not found'))).to.be.true
+      expect(exitError).to.not.equal(undefined)
+    })
+
+    it('emits the project JSON envelope (success)', async () => {
+      stubCancelResponse({success: true})
+
+      await createJsonCommand('--cancel', 'task-J').run()
+
+      const [json] = parseJsonOutput()
+      expect(json.command).to.equal('query')
+      expect(json.success).to.equal(true)
+      expect(json.data).to.deep.include({status: 'cancelled', taskId: 'task-J'})
+    })
+
+    it('emits the project JSON envelope (failure)', async () => {
+      stubCancelResponse({error: 'Task not found', success: false})
+
+      try {
+        await createJsonCommand('--cancel', 'task-K').run()
+      } catch {
+        // ExitError on non-zero exit
+      }
+
+      const [json] = parseJsonOutput()
+      expect(json.command).to.equal('query')
+      expect(json.success).to.equal(false)
+      expect(json.data).to.deep.include({error: 'Task not found', status: 'error', taskId: 'task-K'})
+    })
+
+    it('rejects positional query string together with --cancel (mutex)', async () => {
+      stubCancelResponse({success: true})
+
+      let exitError: unknown
+      try {
+        await createCommand('what is X', '--cancel', 'task-Z').run()
+      } catch (error) {
+        exitError = error
+      }
+
+      // Either a clear logged error + non-zero exit, or just a thrown error.
+      const loggedErr = loggedMessages.some((m) => m.toLowerCase().includes('cancel') && m.toLowerCase().includes('query'))
+      expect(loggedErr || exitError !== undefined).to.equal(true)
+      // No transport call must be made when the combination is rejected.
+      expect((mockClient.requestWithAck as sinon.SinonStub).called).to.equal(false)
+    })
+
+    it('rejects missing both positional query and --cancel with the existing missing-query error', async () => {
+      let exitError: unknown
+      try {
+        await createCommand().run()
+      } catch (error) {
+        exitError = error
+      }
+
+      // Missing-query message OR a thrown error from oclif arg validation.
+      const loggedMissing = loggedMessages.some((m) => m.includes('Query argument is required'))
+      expect(loggedMissing || exitError !== undefined).to.equal(true)
+    })
+  })
+
+  // ==================== Remote cancel during foreground wait (N-2) ====================
+
+  describe('remote cancel during foreground wait', () => {
+    // eslint-disable-next-line unicorn/consistent-function-scoping -- captures mockClient from outer beforeEach
+    function simulateRemoteCancel(): void {
+      const eventHandlers = new Map<string, (data: unknown) => void>()
+      ;(mockClient.on as sinon.SinonStub).callsFake((event: string, handler: (data: unknown) => void) => {
+        eventHandlers.set(event, handler)
+        return () => {}
+      })
+      ;(mockClient.requestWithAck as sinon.SinonStub).callsFake(async (event: string, data: unknown) => {
+        if (event === 'state:getProviderConfig') return {activeProvider: 'anthropic'}
+        const {taskId} = data as {taskId: string}
+        setImmediate(() => {
+          eventHandlers.get('task:cancelled')?.({taskId})
+        })
+        return {taskId}
+      })
+    }
+
+    it('prints the cancelled line and exits non-zero (text)', async () => {
+      simulateRemoteCancel()
+
+      let exitError: unknown
+      try {
+        await createCommand('test query').run()
+      } catch (error) {
+        exitError = error
+      }
+
+      expect(loggedMessages.some((m) => m.includes('Query cancelled'))).to.be.true
+      expect(exitError).to.not.equal(undefined)
+    })
+
+    it('emits a cancelled JSON envelope and exits non-zero (json)', async () => {
+      simulateRemoteCancel()
+
+      try {
+        await createJsonCommand('test query').run()
+      } catch {
+        // ExitError on this.exit(130)
+      }
+
+      const lines = parseJsonOutput()
+      const cancelled = lines.find((line) => line.data.status === 'cancelled')
+      expect(cancelled).to.not.equal(undefined)
+      expect(cancelled!.command).to.equal('query')
+      // success: false tracks the non-zero exit code; cancellation semantics live in data.status.
+      expect(cancelled!.success).to.equal(false)
+    })
+  })
 })

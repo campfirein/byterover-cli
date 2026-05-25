@@ -53,6 +53,22 @@ export interface TaskCancelRequest {
   taskId: string
 }
 
+/**
+ * Daemon's reply to a `task:cancel` request.
+ *
+ * Semantics of `success`:
+ * - `true` from a queued/local-cancel path → terminal `task:cancelled` has
+ *   already been broadcast by the daemon; the task is fully cancelled.
+ * - `true` from the forward-to-agent path → the cancel was forwarded to a
+ *   live agent, NOT confirmed. The agent may have already finished the task
+ *   (race), in which case no `task:cancelled` follows; the wait loop must
+ *   still rely on the actual terminal event broadcast (`task:cancelled` /
+ *   `task:completed` / `task:error`) to determine the final state.
+ * - `true` from an idempotent retry → the task was previously observed as
+ *   `status: 'cancelled'` (in-memory cache or persistent history store).
+ * - `false` with `error: 'Task not found'` → daemon has no record of the
+ *   task in any tier (active / completed-cache / persistent history).
+ */
 export interface TaskCancelResponse {
   error?: string
   success: boolean

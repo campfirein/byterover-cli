@@ -12,7 +12,7 @@
     "coding-assistant",
     "knowledge-management"
   ],
-  "version": "3.15.0",
+  "version": "3.15.1",
   "author": "ByteRover",
   "bin": {
     "brv": "./bin/run.js"
@@ -156,6 +156,7 @@
     "commands": "./dist/oclif/commands",
     "hooks": {
       "init": [
+        "./dist/oclif/hooks/init/block-autoupdate-when-off",
         "./dist/oclif/hooks/init/block-command-update-npm",
         "./dist/oclif/hooks/init/welcome",
         "./dist/oclif/hooks/init/update-notifier",

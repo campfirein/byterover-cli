@@ -8,10 +8,14 @@ import type {ILLMService} from './i-llm-service.js'
  */
 export interface IChatSession {
   /**
-   * Cancel the current operation.
-   * Aborts any ongoing LLM request.
+   * Cancel the current operation or a specific task.
+   * Aborts the abort controller scoped to the given taskId; when no taskId is
+   * provided, aborts the legacy fallback controller used by interactive runs.
+   *
+   * @param taskId - Optional task ID to target a specific in-flight run
+   * @returns true when a controller was found and aborted, false otherwise
    */
-  cancel(): void
+  cancel(taskId?: string): boolean
 
   /**
    * Cleanup session resources but preserve history for later restoration.

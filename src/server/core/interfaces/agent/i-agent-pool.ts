@@ -41,6 +41,18 @@ export type AgentEntryInfo = {
  */
 export interface IAgentPool {
   /**
+   * Remove a queued task by taskId from any project's FIFO queue.
+   * Returns true when the task was found and removed; false when the task
+   * is not in any queue (either it never queued, or it is currently in flight).
+   *
+   * Used by the cancel pipeline to short-circuit queued cancellations without
+   * forwarding the request to an agent that has no controller for the task.
+   *
+   * @param taskId - Task identifier to remove from queues
+   */
+  cancelQueuedTask(taskId: string): boolean
+
+  /**
    * Get pool entries for monitoring/debugging.
    */
   getEntries(): readonly AgentEntryInfo[]

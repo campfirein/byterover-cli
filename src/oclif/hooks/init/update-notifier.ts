@@ -4,6 +4,8 @@ import {confirm} from '@inquirer/prompts'
 import {execSync, spawn} from 'node:child_process'
 import updateNotifier from 'update-notifier'
 
+import {checkForUpdatesSetting} from '../../lib/check-for-updates-setting.js'
+
 /**
  * Check interval for update notifications (1 hour)
  */
@@ -46,7 +48,29 @@ export const isNpmGlobalInstall = (execSyncFn: typeof execSync): boolean => {
 }
 
 /**
- * Core update notification logic, extracted for testability
+ * Resolves whether the init hook should run the update check at all.
+ *
+ * Returns `false` when any of the following holds:
+ * - The `update.checkForUpdates` setting is explicitly `false`.
+ * - The command being invoked is itself `update` (anti-recursion).
+ * - `BRV_ENV` is `development` (dev installs handle updates manually).
+ *
+ * Returns `true` otherwise (default behaviour).
+ */
+export function shouldRunUpdateCheck(args: {commandId: string | undefined}): boolean {
+  if (args.commandId === 'update') return false
+  if (process.env.BRV_ENV === 'development') return false
+  return checkForUpdatesSetting()
+}
+
+/**
+ * Core update notification logic, extracted for testability.
+ *
+ * Interactive flow only: shows a confirm prompt, then runs `npm update -g`
+ * + `brv restart` if the user types `y`. There is **no** unattended /
+ * automatic execution path — that was deliberately rejected by the team
+ * (May 2026). When the user types `n` (or the prompt is unavailable),
+ * the hook just notifies and returns.
  */
 export async function handleUpdateNotification(deps: UpdateNotifierDeps): Promise<void> {
   const {confirmPrompt, execSyncFn, exitFn, isNpmGlobalInstalled, isTTY, log, notifier} = deps
@@ -89,7 +113,9 @@ export async function handleUpdateNotification(deps: UpdateNotifierDeps): Promis
   }
 }
 
-const hook: Hook<'init'> = async function (): Promise<void> {
+const hook: Hook<'init'> = async function (opts): Promise<void> {
+  if (!shouldRunUpdateCheck({commandId: opts.id})) return
+
   const pkgInfo = {name: this.config.name, version: this.config.version}
   const notifier = updateNotifier({pkg: pkgInfo, updateCheckInterval: UPDATE_CHECK_INTERVAL_MS})
   const isNpmGlobalInstalled = isNpmGlobalInstall(execSync)

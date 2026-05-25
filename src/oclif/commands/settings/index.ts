@@ -9,14 +9,15 @@ import {formatCount, formatDuration} from '../../../shared/utils/format-duration
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
 
-type CategoryName = 'concurrency' | 'llm' | 'task-history'
+type CategoryName = 'concurrency' | 'llm' | 'task-history' | 'updates'
 
-const CATEGORY_ORDER: readonly CategoryName[] = ['concurrency', 'llm', 'task-history']
+const CATEGORY_ORDER: readonly CategoryName[] = ['concurrency', 'llm', 'task-history', 'updates']
 
 const CATEGORY_HEADERS: Readonly<Record<CategoryName, string>> = {
   concurrency: 'CONCURRENCY',
   llm: 'LLM',
   'task-history': 'TASK HISTORY',
+  updates: 'UPDATES',
 }
 
 const OTHER_HEADER = 'OTHER'
@@ -113,14 +114,20 @@ function formatRow(item: SettingsItemDTO): string {
   return `  ${pad(item.key, 40)}  ${pad(current, 7)}  (default ${defaultStr})${''.padEnd(Math.max(0, 8 - defaultStr.length))}  ${range}`
 }
 
-function renderValue(item: SettingsItemDTO, value: number): string {
+function renderValue(item: SettingsItemDTO, value: boolean | number): string {
+  if (typeof value === 'boolean') return value ? 'true' : 'false'
+  return renderInteger(item, value)
+}
+
+function renderInteger(item: SettingsItemDTO, value: number): string {
   if (item.unit === 'ms') return formatDuration(value)
   return formatCount(value)
 }
 
 function renderRange(item: SettingsItemDTO): string {
-  const min = renderValue(item, item.min)
-  const max = renderValue(item, item.max)
+  if (item.type !== 'integer' || item.min === undefined || item.max === undefined) return ''
+  const min = renderInteger(item, item.min)
+  const max = renderInteger(item, item.max)
   const base = `${min}-${max}`
   if (item.key === 'llm.requestTimeoutMs') return `${base}, max loop budget`
   return base
