@@ -24,14 +24,22 @@
 
 import {GlobalInstanceManager} from '@campfirein/brv-transport-client'
 import express from 'express'
+import {nanoid} from 'nanoid'
 import {fork, type StdioOptions} from 'node:child_process'
 import {randomUUID} from 'node:crypto'
 import {mkdirSync, readdirSync, readFileSync, unlinkSync} from 'node:fs'
-import {dirname, join} from 'node:path'
+import {dirname, join, resolve} from 'node:path'
 import {fileURLToPath} from 'node:url'
 
 import type {BrvConfig} from '../../core/domain/entities/brv-config.js'
+import type {IChannelBroadcaster} from '../../core/interfaces/channel/i-channel-broadcaster.js'
 
+import {InstallIdentityService} from '../../../agent/core/trust/install-identity-service.js'
+import {PeerTreeIdentityService} from '../../../agent/core/trust/peer-tree-identity-service.js'
+import {TofuStore} from '../../../agent/core/trust/tofu-store.js'
+import {type BuildInfoResponse, readBuildInfoSync} from '../../../shared/build-info-check.js'
+import {BridgeEvents, type BridgeWhoamiResponse} from '../../../shared/transport/events/bridge-events.js'
+import {ChannelEvents} from '../../../shared/transport/events/channel-events.js'
 import {ReviewEvents} from '../../../shared/transport/events/review-events.js'
 import {TaskEvents, type TaskHeartbeatEvent} from '../../../shared/transport/events/task-events.js'
 import {
@@ -44,6 +52,7 @@ import {
 } from '../../constants.js'
 import {
   type ProviderConfigResponse,
+  type TaskCurateResultEvent,
   type TaskQueryResultEvent,
   TransportStateEventNames,
   TransportTaskEventNames,
@@ -51,7 +60,44 @@ import {
 import {buildReviewUrl} from '../../utils/build-review-url.js'
 import {getGlobalDataDir} from '../../utils/global-data-path.js'
 import {crashLog, processLog} from '../../utils/process-logger.js'
+import {DaemonTokenProvider} from '../auth/daemon-token-provider.js'
+import {allowlistFromEnv, makeOriginAllowlist} from '../auth/origin-allowlist.js'
 import {createBillingStateHandler} from '../billing/billing-state-endpoint.js'
+import {type AutoCreateQuota, createAutoCreateQuota} from '../channel/bridge/auto-create-quota.js'
+import {BridgeConfigStore, resolveBridgeRuntimeConfig} from '../channel/bridge/bridge-config-store.js'
+import {DEFAULT_BRIDGE_CONFIG} from '../channel/bridge/bridge-config.js'
+import {BridgeDriverPool} from '../channel/bridge/bridge-driver-pool.js'
+import {BridgeTranscriptService} from '../channel/bridge/bridge-transcript-service.js'
+import {fetchAndPin, isL2CertExpired} from '../channel/bridge/identity-client.js'
+import {registerIdentityServer} from '../channel/bridge/identity-server.js'
+import {Libp2pHost} from '../channel/bridge/libp2p-host.js'
+import {
+  createDefaultRegistry as createDefaultParleyRegistry,
+  ParleyAdapterNotFoundError,
+} from '../channel/bridge/parley-adapter-registry.js'
+import {createFileBackedSessionStore} from '../channel/bridge/parley-adapter-session-store.js'
+import {registerParleyServer} from '../channel/bridge/parley-server.js'
+import {createProfileConcurrencyGate} from '../channel/bridge/profile-concurrency-gate.js'
+import {RemoteMemberDriver} from '../channel/bridge/remote-member-driver.js'
+import {runChannelRecovery} from '../channel/channel-recovery.js'
+import {ChannelStore} from '../channel/channel-store.js'
+import {ChannelDoctorService} from '../channel/doctor-service.js'
+import {FileDriverProfileStore} from '../channel/driver-profile-store.js'
+import {AcpDriverPool} from '../channel/drivers/acp-driver-pool.js'
+import {AcpDriver} from '../channel/drivers/acp-driver.js'
+import {FileBrokerPersistence} from '../channel/drivers/broker-persistence.js'
+import {CancelCoordinator} from '../channel/drivers/cancel-coordinator.js'
+import {PermissionBroker} from '../channel/drivers/permission-broker.js'
+import {ChannelOnboardService} from '../channel/onboard-service.js'
+import {ChannelOrchestrator} from '../channel/orchestrator.js'
+import {FileProfileMetadataStore} from '../channel/profile-metadata-store.js'
+import {ChannelEventsWriter} from '../channel/storage/events-writer.js'
+import {ChannelTurnIndexStore} from '../channel/storage/index-store.js'
+import {ChannelSnapshotWriter} from '../channel/storage/snapshot-writer.js'
+import {ChannelTranscriptGc} from '../channel/storage/transcript-gc.js'
+import {ChannelTreeReader} from '../channel/storage/tree-reader.js'
+import {TurnSequenceAllocator} from '../channel/storage/turn-sequence-allocator.js'
+import {ChannelWriteSerializer} from '../channel/storage/write-serializer.js'
 import {ClientManager} from '../client/client-manager.js'
 import {ProjectConfigStore} from '../config/file-config-store.js'
 import {readContextTreeRemoteUrl} from '../context-tree/read-context-tree-remote.js'
@@ -77,6 +123,8 @@ import {FileProviderConfigStore} from '../storage/file-provider-config-store.js'
 import {FileSettingsStore} from '../storage/file-settings-store.js'
 import {createProviderKeychainStore} from '../storage/provider-keychain-store.js'
 import {createTokenStore} from '../storage/token-store.js'
+import {channelsEnabled, registerDisabledStubs} from '../transport/handlers/channel-disabled-handler.js'
+import {ChannelHandler} from '../transport/handlers/channel-handler.js'
 import {SocketIOTransportServer} from '../transport/socket-io-transport-server.js'
 import {createWebUiMiddleware} from '../webui/webui-middleware.js'
 import {WebUiServer} from '../webui/webui-server.js'
@@ -88,6 +136,8 @@ import {
 } from '../webui/webui-state.js'
 import {AgentIdleTimeoutPolicy} from './agent-idle-timeout-policy.js'
 import {AgentPool} from './agent-pool.js'
+import {hasBridgePersistedState} from './bridge-startup-rebind.js'
+import {runChannelProjectStartup} from './channel-project-startup.js'
 import {DaemonResilience} from './daemon-resilience.js'
 import {HeartbeatWriter} from './heartbeat.js'
 import {IdleTimeoutPolicy} from './idle-timeout-policy.js'
@@ -97,6 +147,39 @@ import {ShutdownHandler} from './shutdown-handler.js'
 
 function log(msg: string): void {
   processLog(`[Daemon] ${msg}`)
+}
+
+/**
+ * Slice 9.4 — parse `BRV_CHANNEL_TRANSCRIPT_RETENTION_DAYS` env var.
+ * Default 30 days (matches `FileQueryLogStore`'s retention pattern in
+ * the broader codebase). 0 disables the GC sweep entirely. Negative or
+ * unparseable values fall back to the default with a warning log line.
+ */
+// Bridge runtime config (auto-provision policy, parley profile, project
+// root, max-concurrent-per-profile, delegate policy) used to be parsed
+// directly from `BRV_BRIDGE_*` env vars inside this file. They are now
+// resolved by `resolveBridgeRuntimeConfig()` in
+// `channel/bridge/bridge-config-store.ts`, which merges env + the
+// persisted `<dataDir>/state/bridge-config.json` file and writes
+// env-supplied values back to that file. This fixes the silent
+// degradation that hit operators when a daemon auto-respawned (without
+// the env vars in scope) and fell back to mock-echo + pinned-only.
+//
+// `resolveBridgeRuntimeConfig` is called ONCE during bridge bootstrap
+// below; the returned object replaces the legacy `parseAutoProvisionPolicy
+// / parseBridgeProjectRoot / parseBridgeMaxConcurrent` helpers that
+// previously lived here.
+
+function parseChannelRetentionDays(): number {
+  const raw = process.env.BRV_CHANNEL_TRANSCRIPT_RETENTION_DAYS
+  if (raw === undefined || raw.trim() === '') return 30
+  const parsed = Number.parseInt(raw, 10)
+  if (Number.isNaN(parsed) || parsed < 0) {
+    log(`invalid BRV_CHANNEL_TRANSCRIPT_RETENTION_DAYS=${raw}; defaulting to 30`)
+    return 30
+  }
+
+  return parsed
 }
 
 /**
@@ -145,6 +228,37 @@ function cleanupOldLogs(logsDir: string, keep: number): void {
   }
 }
 
+/**
+ * Phase 9.5.9 Issue 5 — read dist/build-info.json once at daemon startup.
+ * Stored in a module-level constant so the system:build-info transport
+ * handler can return it without re-reading the file on every request.
+ * The daemon's answer is intentionally the BOOT-TIME value — it does not
+ * change during the daemon's lifetime (proving the in-memory module cache
+ * is fixed at boot).
+ */
+function readDaemonBuildInfo(): BuildInfoResponse | undefined {
+  try {
+    const daemonDir = dirname(fileURLToPath(import.meta.url))
+    // dist/server/infra/daemon/ → dist/ is 3 levels up
+    // (daemon → infra → server → dist). Previous version had 4 segments which
+    // resolved to repo-root/build-info.json, returning undefined silently.
+    // codex impl r2 caught this: turnId fdWMmuTOxDzYSdZRxw7JA.
+    const buildInfoPath = join(daemonDir, '..', '..', '..', 'build-info.json')
+    const info = readBuildInfoSync(buildInfoPath)
+    return info === undefined ? undefined : {
+      buildAtIso: info.buildAtIso,
+      buildId: info.buildId,
+      gitDirty: info.gitDirty,
+      gitSha: info.gitSha,
+      packageVersion: info.packageVersion,
+    }
+  } catch {
+    return undefined
+  }
+}
+
+const DAEMON_BOOT_BUILD_INFO: BuildInfoResponse | undefined = readDaemonBuildInfo()
+
 async function main(): Promise<void> {
   // 1. Setup daemon logging at <global-data-dir>/logs/server-<timestamp>.log
   const daemonLogsDir = join(getGlobalDataDir(), 'logs')
@@ -188,6 +302,13 @@ async function main(): Promise<void> {
   log(`Instance acquired (PID: ${process.pid}, port: ${port})`)
   const daemonStartedAt = Date.now()
 
+  // Create the daemon-auth-token file EARLY in bootstrap so clients that
+  // discover the daemon via `ensureDaemonRunning` always find a valid token
+  // on disk by the time they're cleared to connect. The channel handler
+  // bootstrap later in this file consumes this same token; the read is
+  // idempotent so re-reading is safe.
+  const daemonTokenProvider = await DaemonTokenProvider.boot()
+
   // Steps 4-10 are wrapped so that partial startup is cleaned up.
   // Without this, a partial startup leaves daemon.json pointing to
   // a dead PID and may leak the port until stale-detection kicks in.
@@ -201,7 +322,14 @@ async function main(): Promise<void> {
 
   try {
     // 4a. Construct transport server. start() is deferred to step 11 so all handlers register before sockets connect.
-    transportServer = new SocketIOTransportServer()
+    // Slice 3.5b: install the Phase-3 Origin allowlist as a handshake
+    // middleware. Loopback origins are accepted by default; the env
+    // `BRV_ALLOWED_ORIGINS` (comma-separated) extends the list for the
+    // dev web UI / cloud-bridge cases.
+    const channelOriginAllowlist = makeOriginAllowlist(allowlistFromEnv())
+    transportServer = new SocketIOTransportServer({
+      handshakeMiddleware: channelOriginAllowlist.socketioMiddleware,
+    })
 
     // 4b. Start Web UI server on stable port (separate from transport)
     const daemonDir = dirname(fileURLToPath(import.meta.url))
@@ -514,12 +642,26 @@ async function main(): Promise<void> {
     // Wire query metadata from agent process → QueryLogHandler.
     // Agent sends task:queryResult BEFORE task:completed (Socket.IO preserves order),
     // so setQueryResult runs before onTaskCompleted merges the metadata.
+    // payload now also carries `format` + `usage` for telemetry.
     transportServer.onRequest<TaskQueryResultEvent, void>(TransportTaskEventNames.QUERY_RESULT, (data) => {
       queryLogHandler.setQueryResult(data.taskId, {
+        ...(data.format !== undefined && {format: data.format}),
         matchedDocs: data.matchedDocs,
         searchMetadata: data.searchMetadata,
         tier: data.tier,
         timing: data.timing,
+        ...(data.usage !== undefined && {usage: data.usage}),
+      })
+    })
+
+    // wire curate telemetry from agent process → CurateLogHandler.
+    // Agent sends task:curateResult BEFORE task:completed (Socket.IO preserves
+    // order), so setCurateUsage runs before onTaskCompleted merges the entry.
+    transportServer.onRequest<TaskCurateResultEvent, void>(TransportTaskEventNames.CURATE_RESULT, (data) => {
+      curateLogHandler.setCurateUsage(data.taskId, {
+        ...(data.format !== undefined && {format: data.format}),
+        ...(data.timing !== undefined && {timing: data.timing}),
+        ...(data.usage !== undefined && {usage: data.usage}),
       })
     })
 
@@ -653,6 +795,13 @@ async function main(): Promise<void> {
       return {port: newPort, success: true}
     })
 
+    // Phase 9.5.9 Issue 5 — build-info endpoint for client-side mismatch detection.
+    // Returns the build-info captured at daemon BOOT time (not re-read from disk)
+    // so comparing it to the CLI's current on-disk build-info.json reveals staleness.
+    transportServer.onRequest<void, BuildInfoResponse | undefined>('system:build-info', () =>
+      DAEMON_BOOT_BUILD_INFO,
+    )
+
     // Debug endpoint — exposes daemon internal state for `brv debug` command
     transportServer.onRequest<void, unknown>('daemon:getState', () => ({
       agentIdleStatus: agentIdleTimeoutPolicy.getIdleStatus(),
@@ -707,6 +856,642 @@ async function main(): Promise<void> {
       webuiPort: webuiServer?.getPort(),
     })
 
+    // Register channel-protocol handlers (Phase 1 — passive turns only).
+    // CHANNEL_PROTOCOL.md §2 requires every channel:* request carry a daemon-
+    // local auth token; that token was created early in bootstrap (above)
+    // so it's on disk before any client could discover the daemon and try to
+    // connect over socket.io.
+    const channelWriteSerializer = new ChannelWriteSerializer()
+    // Hoist these so Phase-3 recovery (below) can seed the writer's
+    // lastSeqByTurn and walk events.jsonl via the tree reader.
+    const channelEventsWriter = new ChannelEventsWriter({serializer: channelWriteSerializer})
+    const channelTreeReader = new ChannelTreeReader()
+    // Slice 9.3 — per-channel materialised index for fast list-turns +
+    // lookback. Shares the serializer so concurrent index appends from
+    // multiple terminal turns on the same channel don't tear the JSONL.
+    const channelIndexStore = new ChannelTurnIndexStore({serializer: channelWriteSerializer})
+    // Slice 9.4 — periodic transcript GC. Default retention 30 days,
+    // configurable via BRV_CHANNEL_TRANSCRIPT_RETENTION_DAYS. Setting
+    // to 0 disables sweep. Triggered fire-and-forget from the
+    // orchestrator's terminal path so an active channel naturally
+    // catches up on retention as it sees new finished turns.
+    const channelRetentionDays = parseChannelRetentionDays()
+    const channelTranscriptGc = new ChannelTranscriptGc({
+      indexStore: channelIndexStore,
+      retentionDays: channelRetentionDays,
+      serializer: channelWriteSerializer,
+    })
+    const channelStore = new ChannelStore({
+      eventsWriter: channelEventsWriter,
+      indexStore: channelIndexStore,
+      // Slice 9.2: snapshot-writer routes structural lines through the
+      // events-writer's held per-turn stream + per-turn lock so terminal
+      // writes never tear concurrent in-flight event appends and we
+      // don't pay the open/close syscall pair per terminal record.
+      snapshotWriter: new ChannelSnapshotWriter({eventsWriter: channelEventsWriter}),
+      transcriptGc: channelTranscriptGc,
+      treeReader: channelTreeReader,
+      writeSerializer: channelWriteSerializer,
+    })
+
+    const channelTransport = transportServer
+    const channelPool = new AcpDriverPool()
+    // Phase-3 (Slice 3.5c): persisted permission state. The broker
+    // appends `track`/`resolve` lines so daemon restart can re-emit
+    // `delivery_state_change → errored` for any orphaned permission.
+    const channelBrokerPersistence = new FileBrokerPersistence({dataDir: getGlobalDataDir()})
+    const channelBroker = new PermissionBroker({persistence: channelBrokerPersistence})
+    const channelSeqAllocator = new TurnSequenceAllocator()
+    const channelBroadcaster: IChannelBroadcaster = {
+      broadcastToChannel(channelId, event, data) {
+        channelTransport.broadcastTo(`channel:${channelId}`, event, data)
+      },
+    }
+    const channelCancelCoordinator = new CancelCoordinator({
+      broker: channelBroker,
+      pool: channelPool,
+      seqAllocator: channelSeqAllocator,
+      async writeEvent(event, ctx) {
+        await channelStore.appendTurnEvent({channelId: ctx.channelId, event, projectRoot: ctx.projectRoot, turnId: ctx.turnId})
+        channelBroadcaster.broadcastToChannel(ctx.channelId, ChannelEvents.TURN_EVENT, {channelId: ctx.channelId, event})
+      },
+    })
+    const channelProfileStore = new FileDriverProfileStore({dataDir: getGlobalDataDir()})
+    const channelProfileMetadataStore = new FileProfileMetadataStore({dataDir: getGlobalDataDir()})
+    const channelDriverFactory = (invocation: import('../channel/onboard-service.js').OnboardArgs['invocation'], handle: string) =>
+      new AcpDriver({handle, invocation})
+
+    // Phase 9 / Slice 9.4 — lazy-instantiated bridge primitives.
+    // The libp2p host + L1/L2 identity services are only created when
+    // the first remote-peer invite arrives OR when the daemon detects
+    // a persisted remote-peer member on restart, so installs that
+    // never use cross-host channels don't pay the libp2p startup cost.
+    //
+    // Slice 9.4b — the daemon ALSO registers the inbound identity +
+    // parley servers on the same host, so Alice's daemon can dial
+    // Bob's daemon directly (no separate `brv bridge listen` needed
+    // for production). The `brv bridge listen` CLI remains as a
+    // debugging surface.
+    const bridgeIdentityDir = join(getGlobalDataDir(), 'identity')
+    const bridgeInstall = new InstallIdentityService({installDir: bridgeIdentityDir})
+    const bridgeL2 = new PeerTreeIdentityService({install: bridgeInstall})
+    const bridgeTofu = new TofuStore({storePath: join(bridgeIdentityDir, 'known-peers.jsonl')})
+    let bridgeHostPromise: Promise<Libp2pHost> | undefined
+    // Slice 9.4f — closed-over so the shutdown hook can stop every
+    // warm parley driver. Assigned inside ensureBridgeHost when a
+    // BRV_BRIDGE_PARLEY_PROFILE is set; remains undefined for the
+    // mock-echo path.
+    let bridgeDriverPool: BridgeDriverPool | undefined
+    // Phase 9.5.4 deferral (§6) — shared quota instance used by BOTH
+    // BridgeTranscriptService (tryConsume on auto-create) and
+    // ChannelOrchestrator (reset on uninvite). Created once here so both
+    // share the same in-memory counter.
+    //
+    // Issue 3c fix: read the persisted autoCreateQuota from bridge-config.json
+    // so a daemon respawn without BRV_BRIDGE_AUTO_CREATE_QUOTA in env still
+    // respects the operator-configured quota.
+    // Precedence: env > persisted > default (5). The env path is already handled
+    // inside createAutoCreateQuota; we supply maxPerHour from the persisted store
+    // only when the env var is absent.
+    const _bridgeQuotaStore = new BridgeConfigStore({stateDir: join(getGlobalDataDir(), 'state')})
+    const _persistedAutoCreateQuota = _bridgeQuotaStore.load().autoCreateQuota
+    const _envAutoCreateQuota =
+      process.env.BRV_BRIDGE_AUTO_CREATE_QUOTA !== undefined && process.env.BRV_BRIDGE_AUTO_CREATE_QUOTA.trim() !== ''
+        ? undefined  // env present — createAutoCreateQuota reads it directly
+        : _persistedAutoCreateQuota  // env absent — supply persisted value as maxPerHour
+    const bridgeAutoCreateQuota: AutoCreateQuota = createAutoCreateQuota({log, maxPerHour: _envAutoCreateQuota})
+    const ensureBridgeHost = async (): Promise<Libp2pHost> => {
+      if (bridgeHostPromise === undefined) {
+        bridgeHostPromise = (async () => {
+          await bridgeInstall.loadOrGenerate()
+          await bridgeL2.loadOrGenerate()
+
+          // Resolve persisted bridge runtime config (env > file > default)
+          // BEFORE constructing the libp2p host — cross-machine deployments
+          // set `BRV_BRIDGE_LISTEN_ADDRS` so the daemon binds on a routable
+          // interface (e.g. `/ip4/0.0.0.0/tcp/60001` or a Tailscale-IP'd
+          // multiaddr) instead of the loopback-only default. Other resolved
+          // values (parley profile, auto-provision policy, etc.) are read
+          // again below for the parley-server wiring.
+          const bridgeConfigStore = new BridgeConfigStore({stateDir: join(getGlobalDataDir(), 'state')})
+          const bridgeRuntime = resolveBridgeRuntimeConfig({log, store: bridgeConfigStore})
+          // `listen_addrs` is the on-disk snake_case field per
+          // `BridgeConfig` (mirrors §6.5 on-disk JSON shape per the
+          // file-level comment in bridge-config.ts).
+          const bridgeListenConfig: typeof DEFAULT_BRIDGE_CONFIG =
+            bridgeRuntime.listenAddrs === undefined
+              ? DEFAULT_BRIDGE_CONFIG
+              // eslint-disable-next-line camelcase
+              : {...DEFAULT_BRIDGE_CONFIG, listen_addrs: [...bridgeRuntime.listenAddrs]}
+          if (bridgeRuntime.listenAddrs !== undefined) {
+            log(`Bridge listen_addrs: ${bridgeRuntime.listenAddrs.join(', ')}`)
+          }
+
+          const host = new Libp2pHost({config: bridgeListenConfig, identity: bridgeInstall})
+          await host.start()
+          // Register inbound handlers BEFORE returning so the host is
+          // dial-ready in both directions by the time any caller uses it.
+          //
+          // TODO(9.4c): read acceptModes + tofuPolicy from a daemon-level
+          // BridgeConfig instead of hardcoding (kimi round-1 LOW). Org
+          // deployments that want `accept_modes: ['ca-issued-tree']` or
+          // `tofu_policy: 'deny'` are currently ignored by the daemon
+          // listener.
+          // Slice 9.4d — pass `l2Identity` so the identity-server also
+          // publishes the L2 tree cert via `/brv/identity/tree-cert/v1`
+          // for in-band L2 discovery (operators no longer paste
+          // `--l2-pub-key` on every invite).
+          await registerIdentityServer({host, identity: bridgeInstall, l2Identity: bridgeL2})
+
+          // `bridgeRuntime` was already resolved above (before host
+          // construction so that `BRV_BRIDGE_LISTEN_ADDRS` could
+          // override the loopback-only default).
+
+          // Slice 9.4c — opt-in real ACP dispatch via the
+          // `BRV_BRIDGE_PARLEY_PROFILE` env var (now via the
+          // resolved runtime config). When unset, the parley-server
+          // falls back to mock-echo (existing 9.4a/b behaviour).
+          //
+          // Slice 9.4f — when a profile is set, also wire a profile-
+          // keyed warm driver pool so inbound parleys reuse one ACP
+          // subprocess per profile (instead of spawning per query).
+          // The cap from `BRV_BRIDGE_MAX_CONCURRENT_PER_PROFILE`
+          // bounds concurrent in-flight prompts; excess queries
+          // surface as signed `PARLEY_LOCAL_AGENT_BUSY` errors.
+          const {parleyProfile} = bridgeRuntime
+          const bridgeMaxConcurrent = bridgeRuntime.maxConcurrentPerProfile
+          // Assigned to the outer-scoped variable so the shutdown
+          // hook can call closeAll().
+          bridgeDriverPool =
+            parleyProfile === undefined ? undefined : new BridgeDriverPool({maxPerProfile: bridgeMaxConcurrent})
+
+          // Phase 9.5.2 / 9.5.3 — build the adapter registry and pass it as
+          // a registry+profile pair so the parley-server can resolve the
+          // active adapter by name. Behaviour is identical to pre-refactor:
+          // ACP profile → local-agent adapter; unset → mock-echo.
+          //
+          // Phase 9.5.3: wire in session store + concurrency gate for the
+          // ClaudeCodeHeadlessAdapter (registered only when
+          // BRV_BRIDGE_CLAUDE_UNSAFE=1).
+          const parleyConcurrencyGate = createProfileConcurrencyGate({
+            maxConcurrent: bridgeMaxConcurrent,
+          })
+          const parleySessionStore = createFileBackedSessionStore({
+            filePath: `${join(getGlobalDataDir(), 'state')}/parley-adapter-sessions.json`,
+            log,
+          })
+          // Issue 3a fix: pass persistedClaudeUnsafe so a daemon respawn
+          // without BRV_BRIDGE_CLAUDE_UNSAFE in env still registers the
+          // claude-code adapter if the value was previously persisted.
+          // Precedence (enforced inside createDefaultParleyRegistry):
+          //   env.BRV_BRIDGE_CLAUDE_UNSAFE === '1' > persistedClaudeUnsafe > false
+          const parleyAdapterRegistry = createDefaultParleyRegistry({
+            bridgeDriverPool,
+            concurrencyGate: parleyConcurrencyGate,
+            driverFactory: channelDriverFactory,
+            env: process.env,
+            log,
+            persistedClaudeUnsafe: bridgeRuntime.claudeUnsafe,
+            profileName: parleyProfile,
+            profileStore: channelProfileStore,
+            sessionStore: parleySessionStore,
+          })
+
+          // Strict resolution (plan §2.3 / codex round-2 MUST-FIX):
+          //   - Unset profile → mock-echo (safe default for unattended hosts).
+          //   - Explicit profile that resolves → use it + log at INFO.
+          //   - Explicit profile that does NOT resolve → fail-fast at
+          //     startup so the operator sees a clear error immediately
+          //     rather than silently running an echo endpoint on a live
+          //     bridge. Missing profile = misconfiguration, not a
+          //     fall-back-to-mock-echo case.
+          if (parleyProfile === undefined) {
+            log('[Daemon] Parley adapter: mock-echo (kind=mock) — no BRV_BRIDGE_PARLEY_PROFILE set')
+          } else {
+            const resolvedAdapter = parleyAdapterRegistry.resolve(parleyProfile)
+            if (resolvedAdapter === undefined) {
+              throw new ParleyAdapterNotFoundError(parleyProfile, parleyAdapterRegistry.list())
+            }
+
+            log(
+              `[Daemon] Parley adapter: ${resolvedAdapter.profile} (kind=${resolvedAdapter.kind}) ` +
+                `(pool cap=${bridgeMaxConcurrent} per profile)`,
+            )
+
+            // Fix 9.5.3 (codex K79P0sTCkPTOaaZefPoh1 Fix 2a): call warm() at
+            // startup so the daemon fails fast when the required binary is
+            // missing, rather than surfacing the error on the first request.
+            // For the 'claude-code' profile (explicitly operator-configured):
+            //   warm() returns {available: false} → throw so the operator
+            //   learns immediately about the misconfiguration.
+            // For all other profiles: log a warning but continue.
+            if (resolvedAdapter.warm !== undefined) {
+              const warmResult = await resolvedAdapter.warm({log})
+              if (warmResult.available) {
+                log(`[Daemon] Parley adapter '${resolvedAdapter.profile}' warm() OK`)
+              } else {
+                if (resolvedAdapter.profile === 'claude-code') {
+                  throw new Error(
+                    `[Daemon] Parley adapter '${resolvedAdapter.profile}' is not available at startup: ` +
+                      `${warmResult.reason}. ` +
+                      `Ensure the 'claude' binary is on PATH before starting the daemon with BRV_BRIDGE_PARLEY_PROFILE=claude-code.`,
+                  )
+                }
+
+                log(
+                  `[Daemon] Warning: parley adapter '${resolvedAdapter.profile}' warm() returned ` +
+                    `available=false: ${warmResult.reason}`,
+                )
+              }
+            }
+          }
+
+          // Slice 9.4e — Bob-side transcript persistence + auto-
+          // provision matrix.
+          //   - `auto` — accept all authenticated peers
+          //   - `pinned-only` (default) — only user-confirmed/ca-bound
+          //   - `deny` — Bob is read-only
+          const autoProvisionPolicy = bridgeRuntime.autoProvision
+          const bridgeProjectRoot = bridgeRuntime.projectRoot
+          const transcriptService = new BridgeTranscriptService({
+            autoCreateQuota: bridgeAutoCreateQuota,
+            autoProvisionPolicy,
+            channelStore,
+            clock: () => new Date(),
+            eventsWriter: channelEventsWriter,
+            idGenerator: () => nanoid(),
+            projectRoot: bridgeProjectRoot,
+          })
+          // kimi round-1 HIGH-1 / NIT-12 / round-2 MED — log the
+          // policy at INFO so operators see the resolved posture,
+          // and surface the env-var override hint when the default
+          // `pinned-only` would block first-contact peers (since the
+          // `brv trust verify` promotion CLI ships in a later slice).
+          // The resolved path is gated behind `BRV_BRIDGE_DEBUG=1`
+          // so info logs don't routinely echo cwd.
+          if (autoProvisionPolicy === 'auto') {
+            log(
+              'Bridge auto-provision policy: OPEN (auto) — every authenticated peer can ' +
+                'auto-create a mirror channel.',
+            )
+          } else if (autoProvisionPolicy === 'pinned-only') {
+            log(
+              'Bridge auto-provision policy: pinned-only (default) — only `user-confirmed` or ' +
+                '`ca-bound` senders accepted. First-contact peers will be declined until they ' +
+                'are promoted (or set BRV_BRIDGE_AUTO_PROVISION=auto for unattended hosts).',
+            )
+          } else {
+            log(`Bridge auto-provision policy: ${autoProvisionPolicy} (Bob is read-only)`)
+          }
+
+          if (process.env.BRV_BRIDGE_DEBUG === '1') {
+            log(`bridge project root: ${bridgeProjectRoot}`)
+          }
+
+          // Slice 9.9 — surface the configured delegate policy at
+          // startup. kimi round-1 MED-2 + MED-3:
+          //   - `auto` is a real security-relaxing setting (any
+          //     authenticated remote peer can execute mutating
+          //     tools); operators need to see they've opted in
+          //   - the policy gate is parsed but NOT yet enforced by
+          //     parley-server (the `/brv/parley/delegate/v1`
+          //     protocol handler ships in a later slice), so
+          //     operators who set `deny` must NOT assume protection
+          //     until that slice lands. The log makes the unwired
+          //     state visible.
+          const {delegatePolicy} = bridgeRuntime
+          if (delegatePolicy === 'auto') {
+            log(
+              'Bridge delegate policy: AUTO — authenticated remote peers can request mutating tool ' +
+                'calls without operator approval per invocation. Set BRV_BRIDGE_DELEGATE_POLICY=prompt ' +
+                'to require explicit approval.',
+            )
+          } else {
+            log(`Bridge delegate policy: ${delegatePolicy} (not yet enforced by parley-server — deferred to a later slice)`)
+          }
+
+          await registerParleyServer({
+            acceptModes: ['peer-tree'],
+            host,
+            l2Identity: bridgeL2,
+            projectRoot: bridgeProjectRoot,
+            responseGenerator: {profile: parleyProfile, registry: parleyAdapterRegistry},
+            tofuPolicy: 'auto',
+            tofuStore: bridgeTofu,
+            transcriptService,
+          })
+          log(`Bridge host started — peer_id=${bridgeInstall ? (await bridgeInstall.loadOrGenerate()).peerId : '?'}`)
+          for (const ma of host.getMultiaddrs()) {
+            log(`  bridge multiaddr: ${ma}`)
+          }
+
+          return host
+        })().catch((error) => {
+          bridgeHostPromise = undefined
+          throw error
+        })
+      }
+
+      return bridgeHostPromise
+    }
+
+    // Phase 9 / Slice 9.4b — bridge:whoami transport endpoint. Returns
+    // peer_id / current multiaddrs / l2_pub_key / tree_id for operators
+    // who need to paste these into a remote `brv channel invite`.
+    // Forces the bridge host to come up if it hasn't yet (lazy init).
+    transportServer.onRequest<void, BridgeWhoamiResponse>(BridgeEvents.WHOAMI, async () => {
+      const host = await ensureBridgeHost()
+      const installIdentity = await bridgeInstall.loadOrGenerate()
+      const l2Identity = await bridgeL2.loadOrGenerate()
+      // libp2p can briefly report no advertised addresses immediately
+      // after host.start() — retry once after 100ms so the CLI doesn't
+      // surface an empty list (kimi round-1 LOW).
+      let multiaddrs = host.getMultiaddrs()
+      if (multiaddrs.length === 0) {
+        await new Promise<void>((resolve) => { setTimeout(resolve, 100) })
+        multiaddrs = host.getMultiaddrs()
+      }
+
+      return {
+        l2PubKey: l2Identity.cert.public_key.key,
+        multiaddrs,
+        peerId: installIdentity.peerId,
+        treeId: l2Identity.treeId,
+      }
+    })
+
+    const remotePeerDriverFactory = async (args: {
+      channelId: string
+      handle: string
+      multiaddr: string
+      peerId: string
+      remoteL2PubKey: string
+    }) => {
+      // Reuse the shared bridge host across all remote-peer drivers in
+      // the daemon — one libp2p host per daemon process, NOT per
+      // member. The host is lazy-initialized on first invite so installs
+      // that never use cross-host channels skip the libp2p startup cost.
+      const host = await ensureBridgeHost()
+      // Issue 3b fix: pass persistedTimeouts so a daemon respawn without
+      // BRV_BRIDGE_PARLEY_*_MS in env still respects the persisted values.
+      // Precedence (enforced inside RemoteMemberDriver.prompt()):
+      //   env > persistedTimeouts > default
+      const _bridgeRuntimeForDriver = resolveBridgeRuntimeConfig({
+        env: process.env,
+        log,
+        store: new BridgeConfigStore({stateDir: join(getGlobalDataDir(), 'state')}),
+      })
+      return new RemoteMemberDriver({
+        channelId: args.channelId,
+        handle: args.handle,
+        host,
+        install: bridgeInstall,
+        l2Identity: bridgeL2,
+        multiaddr: args.multiaddr,
+        peerId: args.peerId,
+        persistedTimeouts: {
+          dialTimeoutMs: _bridgeRuntimeForDriver.parleyDialTimeoutMs,
+          idleTimeoutMs: _bridgeRuntimeForDriver.parleyTurnIdleTimeoutMs,
+        },
+        remoteL2PubKey: args.remoteL2PubKey,
+      })
+    }
+
+    // Slice 9.4d — in-band L2 cert discovery for remote-peer invites.
+    // `fetchAndPin({fetchTreeCert: true})` dials the remote's
+    // `/brv/identity/cert/v1` AND `/brv/identity/tree-cert/v1`,
+    // verifies both chains, and pins the L2 pubkey to the TOFU store.
+    // Slice 9.4h — clock captured at startup so the daemon's
+    // expiry check is deterministic under fake-timers in tests
+    // (kimi round-1 LOW; matches the clock-threading pattern used by
+    // other 9.4* services like BridgeTranscriptService).
+    const bridgeClock = (): Date => new Date()
+
+    const resolveRemotePeerL2PubKey = async (args: {multiaddr: string; peerId: string}): Promise<string> => {
+      // Fast-path: re-use a cached L2 pubkey when we've already pinned
+      // this peer with full identity (kimi round-1 LOW). Inviting the
+      // same peer to N channels otherwise re-dials the cert protocols
+      // N times.
+      //
+      // Slice 9.4h — skip the fast-path when the cached L2 cert has
+      // expired (or when the cache predates 9.4h and therefore has no
+      // recorded expiry — treat as stale-unknown). Falling through to
+      // `fetchAndPin({fetchTreeCert: true})` re-validates the chain
+      // against `now`, refreshing both pubkey and expires_at.
+      //
+      // Note (kimi round-1 NIT): two concurrent invites for the same
+      // peer with a stale cache BOTH fall through here before the
+      // TOFU lock serialises their writes. The flock prevents storage
+      // races but does NOT coalesce the network dials, so the same
+      // tree cert may be fetched twice in rapid succession. Acceptable
+      // for now; a request-coalescer would be a future optimisation.
+      const cached = await bridgeTofu.get(args.peerId)
+      if (cached?.l2_pub_key !== undefined && !isL2CertExpired(cached, bridgeClock())) {
+        return cached.l2_pub_key
+      }
+
+      if (cached?.l2_pub_key !== undefined) {
+        // kimi round-1 LOW — give operators a single observable
+        // signal when a previously-snappy invite suddenly does a
+        // network dial because the cached L2 cert has aged out.
+        log(`L2 cache stale for peer ${args.peerId}; re-fetching tree cert`)
+      }
+
+      const host = await ensureBridgeHost()
+      const pinned = await fetchAndPin({
+        expectedPeerId: args.peerId,
+        fetchTreeCert: true,
+        host,
+        multiaddr: args.multiaddr,
+        tofuStore: bridgeTofu,
+      })
+      if (pinned.l2_pub_key === undefined) {
+        throw new Error('remote did not publish an L2 tree cert on /brv/identity/tree-cert/v1')
+      }
+
+      return pinned.l2_pub_key
+    }
+
+    const channelOrchestrator = new ChannelOrchestrator({
+      // Phase 9.5.4 deferral (§6) — same quota instance shared with
+      // BridgeTranscriptService so uninvite resets the peer's counter.
+      autoCreateQuota: bridgeAutoCreateQuota,
+      broadcaster: channelBroadcaster,
+      cancelCoordinator: channelCancelCoordinator,
+      clock: () => new Date(),
+      driverFactory: channelDriverFactory,
+      idGenerator: () => nanoid(),
+      permissionBroker: channelBroker,
+      pool: channelPool,
+      // Phase 10 Tier C #4 — record per-agent wall-clock duration into
+      // profile metadata so `channel profile show` surfaces variance.
+      profileMetadataStore: channelProfileMetadataStore,
+      profileStore: channelProfileStore,
+      remotePeerDriverFactory,
+      resolveRemotePeerL2PubKey,
+      seqAllocator: channelSeqAllocator,
+      store: channelStore,
+    })
+
+    const channelOnboardService = new ChannelOnboardService({
+      clock: () => new Date(),
+      driverFactory: channelDriverFactory,
+      metadataStore: channelProfileMetadataStore,
+      store: channelProfileStore,
+    })
+
+    const channelDoctorService = new ChannelDoctorService({
+      broker: channelBroker,
+      clock: () => new Date(),
+      pool: channelPool,
+      profileMetadataStore: channelProfileMetadataStore,
+      profileStore: channelProfileStore,
+      store: channelStore,
+      // Slice 9.11 — give the doctor access to the bridge TOFU store
+      // so it can diagnose remote-peer channel members (pin state, L2
+      // cert freshness, etc.).
+      tofu: bridgeTofu,
+    })
+
+    // Slice 3.5c: run recovery BEFORE any client can connect. Seeds the
+    // sequence allocator + events-writer from on-disk events.jsonl,
+    // emits `delivery_state_change → errored` for any permission that
+    // was in-flight when the previous daemon went down, and finalises
+    // turns whose deliveries are now all terminal. Best-effort: a
+    // failure here logs but does not block bootstrap.
+    if (channelsEnabled()) {
+      try {
+        const recoverySummary = await runChannelRecovery({
+          broadcaster: channelBroadcaster,
+          brokerPersistence: channelBrokerPersistence,
+          clock: () => new Date(),
+          eventsWriter: channelEventsWriter,
+          seqAllocator: channelSeqAllocator,
+          store: channelStore,
+          treeReader: channelTreeReader,
+        })
+        // Slice 8.10: seed the orphan-permission registry so
+        // `permissionDecision()` surfaces CHANNEL_PERMISSION_LOST_ON_RESTART
+        // instead of the misleading CHANNEL_TURN_NOT_FOUND when the user
+        // approves a permission whose ACP subprocess died with the daemon.
+        // V3 super-mario reproducer (2026-05-16). Empty list is a no-op so
+        // we don't gate on length — keeps main()'s cyclomatic budget intact.
+        channelOrchestrator.seedRestartLosses(recoverySummary.restartLosses)
+      } catch (error) {
+        log(`channel-recovery error (continuing): ${error instanceof Error ? error.message : String(error)}`)
+      }
+      // Note: Slice 9.3 index 2PC-gap recovery is triggered lazily from
+      // `ChannelStore.listTurns` on first access per channel, not at
+      // daemon startup. Eager startup recovery requires a list of
+      // project roots that have ever used channels — discovery is
+      // bigger than Phase 9; lazy recovery covers correctness with no
+      // bootstrap-time cost.
+
+      // Slice 8.11 Layer 2: warm ACP drivers for a project's channels on the
+      // first Socket.IO connection from that cwd. Set is in-memory, rebuilt
+      // each daemon lifetime so a restart triggers fresh warm on first request.
+      // Fire-and-forget — Layer 1 (CHANNEL_DRIVER_NOT_REGISTERED) catches the
+      // race window where a mention arrives before spawn completes.
+      // V3 super-mario reproducer (2026-05-16 §"Driver reinvite needed").
+      //
+      // Issue 1 fix: also run per-project startup utilities on first connection
+      // so reconstructMissingMetas, runMarkInboundOnlyMigration, and
+      // BrvDirWatcher all fire before the channel registry warm.
+      const warmedProjects = new Set<string>()
+      // Keep per-project watcher handles so we can stop them on shutdown.
+      const projectWatchers = new Map<string, import('./channel-project-startup.js').ChannelProjectStartupResult>()
+      transportServer.onConnection((_clientId, metadata) => {
+        const rawCwd = metadata.cwd
+        if (rawCwd === undefined || rawCwd === '') return
+        // Codex Q3: canonicalize via path.resolve so trailing slashes,
+        // `.`, `..`, and equivalent forms don't trigger duplicate warms
+        // for the same project from the same daemon lifetime.
+        const cwd = resolve(rawCwd)
+        if (warmedProjects.has(cwd)) return
+        warmedProjects.add(cwd)
+
+        // Issue 1 §order: reconstruction + migration BEFORE warm so any
+        // newly reconstructed metas are visible to warmDriversForProject.
+        runChannelProjectStartup({
+          channelStore,
+          log,
+          projectRoot: cwd,
+          warn: (msg: string) => log(msg),
+        })
+          .then((startupResult) => {
+            projectWatchers.set(cwd, startupResult)
+            return channelOrchestrator.warmDriversForProject(cwd)
+          })
+          .catch((error: unknown) => {
+            log(`channel-startup error for ${cwd} (continuing): ${error instanceof Error ? error.message : String(error)}`)
+          })
+      })
+
+      // Stop all project watchers on process exit (belt-and-suspenders after
+      // the SIGTERM/SIGINT handlers have already called releaseChannelResourcesOnExit).
+      const stopProjectWatchers = (): void => {
+        for (const result of projectWatchers.values()) {
+          try { result.watcher.stop() } catch { /* ignore */ }
+        }
+      }
+
+      process.once('beforeExit', stopProjectWatchers)
+    }
+
+    // Slice 3.5b: gate the FULL handler registration on
+    // `BRV_CHANNELS_ENABLED`. When unset/off, register stubs that return
+    // CHANNEL_DISABLED for every channel:* event so the CLI ack callback
+    // fires (never hangs).
+    if (channelsEnabled()) {
+      new ChannelHandler({
+        // Slice 3.5a: pass a provider callback so token rotation takes
+        // effect immediately. Middleware reads getCurrent() per request.
+        authToken: () => daemonTokenProvider.getCurrent(),
+        doctorService: channelDoctorService,
+        onboardService: channelOnboardService,
+        orchestrator: channelOrchestrator,
+        // Phase 10 Tier B3 — wire the metadata store for drift telemetry.
+        profileMetadataStore: channelProfileMetadataStore,
+        profileStore: channelProfileStore,
+        rotateToken: () => daemonTokenProvider.rotate(),
+      }).registerOn(channelTransport)
+    } else {
+      registerDisabledStubs(channelTransport)
+    }
+
+    // Best-effort: release every channel driver on SIGTERM/SIGINT so
+    // subprocess agents do not leak. Phase 3 wires a first-class
+    // shutdown-handler hook; for Phase 2 we hook the existing signal
+    // listeners that already drive `shutdownHandler.shutdown()` below.
+    // Slice 9.2 — also drain every held-open per-turn write stream so
+    // any buffered transcript bytes flush to disk before exit. Without
+    // this, an abrupt SIGTERM mid-streaming-turn would truncate the
+    // last few chunks at the OS layer.
+    const releaseChannelResourcesOnExit = (): void => {
+      channelPool.releaseAll().catch(() => {})
+      channelEventsWriter.closeAll().catch(() => {})
+      // Slice 9.4f — stop every warm parley ACP subprocess so they
+      // don't outlive the daemon. closeAll swallows individual driver
+      // errors so a single misbehaving subprocess can't block exit.
+      bridgeDriverPool?.closeAll().catch(() => {})
+    }
+
+    process.once('beforeExit', releaseChannelResourcesOnExit)
+
+    // Phase 9.5.1 §3.1 — rebind bridge listener on daemon respawn.
+    // If the operator has ever configured a bridge (persisted listenAddrs,
+    // parleyProfile, etc.), eagerly call ensureBridgeHost() so the libp2p
+    // listener is bound before any client connects. Without this, a
+    // CLI-triggered auto-respawn would drop the bridge listener until the
+    // first `brv bridge whoami` / `brv channel invite`.
+    const bridgeConfigStore = new BridgeConfigStore({stateDir: join(getGlobalDataDir(), 'state')})
+    if (hasBridgePersistedState(bridgeConfigStore.load())) {
+      log('[Daemon] Persisted bridge state detected — starting bridge host eagerly (§3.1 rebind)')
+      ensureBridgeHost().catch((error: unknown) => {
+        log(`[Daemon] Bridge startup error (continuing): ${error instanceof Error ? error.message : String(error)}`)
+      })
+    }
+
     // Load auth token AFTER feature handlers are registered.
     // AuthHandler's onAuthChanged/onAuthExpired callbacks must be wired first
     // so that loadToken() triggers proper broadcasts to TUI and agents.
@@ -717,18 +1502,23 @@ async function main(): Promise<void> {
     // 11. Start idle timer + register signal handlers
     idleTimeoutPolicy.start()
 
-    process.once('SIGTERM', () => {
-      log('SIGTERM received')
+    // Slice 9.6 (codex D2): fire `releaseChannelResourcesOnExit` from the
+    // signal handlers too, not just `beforeExit`. Live channel ACP children
+    // can keep the event loop busy long enough that `shutdownHandler.shutdown()`
+    // proceeds to `process.exit()` — which SKIPS `beforeExit` — before our
+    // streams flush. The release hook is idempotent (`releaseAll` no-ops on
+    // an empty pool; `closeAll` clears its own Map), so duplicate invocation
+    // from beforeExit later is harmless.
+    const handleShutdownSignal = (signal: 'SIGINT' | 'SIGTERM'): void => {
+      log(`${signal} received`)
+      releaseChannelResourcesOnExit()
       shutdownHandler.shutdown().catch((error: unknown) => {
         log(`Shutdown error: ${error instanceof Error ? error.message : String(error)}`)
       })
-    })
-    process.once('SIGINT', () => {
-      log('SIGINT received')
-      shutdownHandler.shutdown().catch((error: unknown) => {
-        log(`Shutdown error: ${error instanceof Error ? error.message : String(error)}`)
-      })
-    })
+    }
+
+    process.once('SIGTERM', () => handleShutdownSignal('SIGTERM'))
+    process.once('SIGINT', () => handleShutdownSignal('SIGINT'))
 
     // 11. All handlers registered — open the socket port now.
     await transportServer.start(port)

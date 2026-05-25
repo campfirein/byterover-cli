@@ -16,7 +16,6 @@ import type {StatusFilter} from '../stores/task-store'
 import type {StoredTask} from '../types/stored-task'
 
 import {getCurrentActivity} from '../utils/current-activity'
-import {formatProviderModel} from '../utils/format-provider-model'
 import {formatDuration, formatRelative, formatTimeOfDay, shortTaskId} from '../utils/format-time'
 import {isInterrupted} from '../utils/is-interrupted'
 import {displayTaskType, isTerminalStatus} from '../utils/task-status'
@@ -31,7 +30,6 @@ const COL = {
   // Flexible column — fills the remaining space but never below ~288px so the
   // input + activity line stay readable on narrow viewports.
   input: 'min-w-72',
-  provider: 'w-44', // 176px — fits `<provider>:<model>` for typical pairs
   started: 'w-28', // 112px
   status: 'w-36', // 144px
   type: 'w-24', // 96px
@@ -53,7 +51,6 @@ interface TaskTableProps {
   onRowClick: (taskId: string) => void
   onToggleSelect: (taskId: string) => void
   onToggleSelectAll: () => void
-  providerNames: Map<string, string>
   searchQuery: string
   selectedIds: Set<string>
   statusFilter: StatusFilter
@@ -68,7 +65,6 @@ export function TaskTable({
   onRowClick,
   onToggleSelect,
   onToggleSelectAll,
-  providerNames,
   searchQuery,
   selectedIds,
   statusFilter,
@@ -82,7 +78,6 @@ export function TaskTable({
           </TableHead>
           <TableHead className={cn(COL.id, 'text-xs tracking-wider')}>ID</TableHead>
           <TableHead className={cn(COL.type, 'text-xs tracking-wider')}>Type</TableHead>
-          <TableHead className={cn(COL.provider, 'text-xs tracking-wider')}>Provider</TableHead>
           <TableHead className={cn(COL.input, 'text-xs tracking-wider')}>Input</TableHead>
           <TableHead className={cn(COL.status, 'text-xs tracking-wider')}>Status</TableHead>
           <TableHead className={cn(COL.started, 'text-right text-xs tracking-wider')}>Started</TableHead>
@@ -93,7 +88,7 @@ export function TaskTable({
       <TableBody>
         {filtered.length === 0 ? (
           <TableRow>
-            <TableCell className="text-muted-foreground py-10 text-center text-sm" colSpan={9}>
+            <TableCell className="text-muted-foreground py-10 text-center text-sm" colSpan={8}>
               <NoMatchState onClearSearch={onClearSearch} query={searchQuery} status={statusFilter} />
             </TableCell>
           </TableRow>
@@ -106,7 +101,6 @@ export function TaskTable({
               onDelete={onDelete}
               onRowClick={onRowClick}
               onToggleSelect={onToggleSelect}
-              providerNames={providerNames}
               task={task}
             />
           ))
@@ -122,7 +116,6 @@ function TaskRow({
   onDelete,
   onRowClick,
   onToggleSelect,
-  providerNames,
   task,
 }: {
   isSelected: boolean
@@ -130,7 +123,6 @@ function TaskRow({
   onDelete: (taskId: string) => void
   onRowClick: (taskId: string) => void
   onToggleSelect: (taskId: string) => void
-  providerNames: Map<string, string>
   task: StoredTask
 }) {
   const terminal = isTerminalStatus(task.status)
@@ -155,13 +147,6 @@ function TaskRow({
       </TableCell>
       <TableCell>
         <TypeBadge type={task.type} />
-      </TableCell>
-      <TableCell>
-        <ProviderChip
-          model={task.model}
-          provider={task.provider}
-          providerName={task.provider ? providerNames.get(task.provider) : undefined}
-        />
       </TableCell>
       <TableCell className="text-foreground max-w-0">
         <div className="truncate" title={task.content || undefined}>
@@ -217,16 +202,6 @@ function TypeBadge({type}: {type: string}) {
   return (
     <Badge className="text-muted-foreground mono text-[10px] leading-none uppercase tracking-wider" variant="outline">
       {displayTaskType(type)}
-    </Badge>
-  )
-}
-
-function ProviderChip({model, provider, providerName}: {model?: string; provider?: string; providerName?: string}) {
-  const label = formatProviderModel(provider, model, providerName)
-  if (!label) return null
-  return (
-    <Badge className="text-muted-foreground mono max-w-full truncate text-[10px] tracking-wider" title={label} variant="outline">
-      {label}
     </Badge>
   )
 }

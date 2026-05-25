@@ -68,15 +68,45 @@ export type QueryLogSearchMetadata = {
   totalFound: number
 }
 
+/**
+ * Per-recall latency tiers. All optional for back-compat with
+ * pre-telemetry entries. `durationMs` is kept for legacy readers; new
+ * consumers should prefer `totalMs` (the canonical name going forward).
+ */
+export type QueryLogTiming = {
+  /** @deprecated Prefer `totalMs`. Kept for back-compat with old entries. */
+  durationMs?: number
+  /** Sum of LLM-call durations (Tier 3/4 only; undefined when no LLM call ran). */
+  llmMs?: number
+  /** BM25 search wall-clock (Tier 2/3/4 only; undefined for cache hits). */
+  searchMs?: number
+  /** Full executor entry → return wall-clock. */
+  totalMs?: number
+}
+
 type QueryLogBase = {
+  /** Tokens written to cache on first call (Anthropic `cache_creation_input_tokens`). */
+  cacheCreationTokens?: number
+  /** Tokens read from prompt cache (Anthropic `cache_read_input_tokens`, Gemini `cachedContentTokenCount`). */
+  cachedInputTokens?: number
+  /**
+   * Format mode of the docs the recall touched. `'html'` if any retrieved
+   * file is HTML, otherwise `'markdown'`. Undefined when no files were
+   * retrieved (Tier 0/1 cache hits, Tier 4 LLM-only)..
+   */
+  format?: 'html' | 'markdown'
   id: string
+  /** Tokens consumed for the prompt (Anthropic `input_tokens`). */
+  inputTokens?: number
   matchedDocs: QueryLogMatchedDoc[]
+  /** Tokens emitted for the completion (Anthropic `output_tokens`). */
+  outputTokens?: number
   query: string
   searchMetadata?: QueryLogSearchMetadata
   startedAt: number
   taskId: string
   tier?: QueryLogTier
-  timing?: {durationMs: number}
+  timing?: QueryLogTiming
 }
 
 export type QueryLogEntry =

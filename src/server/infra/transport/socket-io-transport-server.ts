@@ -7,6 +7,7 @@ import type {
   ConnectionHandler,
   ConnectionMetadata,
   ITransportServer,
+  RequestContext,
   RequestHandler,
 } from '../../core/interfaces/transport/index.js'
 
@@ -26,10 +27,63 @@ const RESPONSE_EVENT_SUFFIX = ':response'
 const ERROR_EVENT_SUFFIX = ':error'
 
 /**
+ * The static (non-callback) shapes of {@link TransportServerConfig.corsOrigin}.
+ * Used to narrow the input of {@link mergeAdminOrigin} so the helper does not
+ * need internal type assertions; callers MUST exclude the function variant
+ * before invoking.
+ */
+type StaticCorsOrigin = RegExp | RegExp[] | string | string[]
+
+/**
+ * Dev-mode helper: flatten a static `corsOrigin` value into an array that also
+ * permits `https://admin.socket.io`, regardless of whether the input is a
+ * single value or an array. Callbacks are excluded by the input type; the
+ * caller filters them out and passes them through verbatim instead.
+ */
+const mergeAdminOrigin = (base: StaticCorsOrigin | undefined): (RegExp | string)[] => {
+  const ADMIN = 'https://admin.socket.io'
+  if (base === undefined) return [ADMIN]
+  if (typeof base === 'string') return [base, ADMIN]
+  if (base instanceof RegExp) return [base, ADMIN]
+  return [...base, ADMIN]
+}
+
+/**
+ * Build a {@link RequestContext} from a connected socket's handshake.
+ * Reads `auth.token` (Socket.IO client `auth` option) and the `Origin` header.
+ * Channel handlers consume this for auth and origin allowlisting; non-channel
+ * handlers may ignore it without breaking changes.
+ */
+const buildRequestContext = (socket: Socket): RequestContext => {
+  const handshakeAuth = socket.handshake.auth as Record<string, unknown> | undefined
+  const tokenValue = handshakeAuth && typeof handshakeAuth.token === 'string' ? handshakeAuth.token : undefined
+
+  const originHeader = socket.handshake.headers.origin
+  const origin = typeof originHeader === 'string' ? originHeader : undefined
+
+  const cwdQuery = socket.handshake.query.cwd
+  const cwd = typeof cwdQuery === 'string' ? cwdQuery : undefined
+
+  return {
+    auth: tokenValue === undefined ? undefined : {token: tokenValue},
+    cwd,
+    origin,
+    transport: 'socket.io',
+  }
+}
+
+/**
  * Wrapper type for storing request handlers with unknown types.
  * This allows us to store handlers in a Map without type assertions.
+ * The optional `ctx` carries per-request handshake metadata; the wrapper layer
+ * inside {@link SocketIOTransportServer.registerEventHandler} builds it from
+ * the underlying `Socket` and passes it through.
  */
-type StoredRequestHandler = (data: unknown, clientId: string) => Promise<unknown> | unknown
+type StoredRequestHandler = (
+  data: unknown,
+  clientId: string,
+  ctx?: RequestContext,
+) => Promise<unknown> | unknown
 
 /**
  * Socket.IO implementation of ITransportServer.
@@ -54,6 +108,7 @@ export class SocketIOTransportServer implements ITransportServer {
   constructor(config?: TransportServerConfig) {
     this.config = {
       corsOrigin: config?.corsOrigin ?? '*',
+      handshakeMiddleware: config?.handshakeMiddleware ?? ((_socket, next) => { next() }),
       pingIntervalMs: config?.pingIntervalMs ?? TRANSPORT_PING_INTERVAL_MS,
       pingTimeoutMs: config?.pingTimeoutMs ?? TRANSPORT_PING_TIMEOUT_MS,
     }
@@ -117,7 +172,8 @@ export class SocketIOTransportServer implements ITransportServer {
     handler: RequestHandler<TRequest, TResponse>,
   ): void {
     // Pre-start registration is supported: start()'s connection handler iterates this.requestHandlers.
-    const wrappedHandler: StoredRequestHandler = (data, clientId) => handler(data as TRequest, clientId)
+    const wrappedHandler: StoredRequestHandler = (data, clientId, ctx) =>
+      handler(data as TRequest, clientId, ctx)
     this.requestHandlers.set(event, wrappedHandler)
 
     for (const socket of this.sockets.values()) {
@@ -159,8 +215,14 @@ export class SocketIOTransportServer implements ITransportServer {
     return new Promise((resolve, reject) => {
       this.httpServer = this.httpRequestHandler ? createServer(this.httpRequestHandler) : createServer()
 
-      // In development mode, allow admin.socket.io for debugging
-      const corsOrigin = isDevelopment() ? [this.config.corsOrigin, 'https://admin.socket.io'] : this.config.corsOrigin
+      // In development mode, allow admin.socket.io for debugging.
+      // Function-shaped origins are passed through verbatim — the admin UI is
+      // a dev-only convenience and a custom origin callback already controls
+      // who may connect, so we trust the user's callback as-is.
+      const baseOrigin = this.config.corsOrigin
+      const corsOrigin = isDevelopment() && typeof baseOrigin !== 'function'
+        ? mergeAdminOrigin(baseOrigin)
+        : baseOrigin
 
       this.io = new Server(this.httpServer, {
         cors: {
@@ -180,6 +242,19 @@ export class SocketIOTransportServer implements ITransportServer {
         })
         transportLog('Socket.IO Admin UI enabled - connect at https://admin.socket.io')
       }
+
+      // Phase-3 (Slice 3.5b): handshake middleware runs BEFORE the
+      // `connection` event so middleware that calls next(err) rejects the
+      // handshake outright. The channel-protocol Origin allowlist plugs
+      // in here. Socket.IO's Socket type carries variadic generics that
+      // don't align with the structural type our config exposes; we cast
+      // through `unknown` because we only read `socket.handshake.headers`.
+      this.io.use((socket, next) => {
+        this.config.handshakeMiddleware(
+          socket as unknown as {handshake: {headers: Record<string, string | undefined>}},
+          next,
+        )
+      })
 
       this.io.on('connection', (socket) => {
         const clientId = socket.id
@@ -269,7 +344,8 @@ export class SocketIOTransportServer implements ITransportServer {
   private registerEventHandler(socket: Socket, event: string, handler: StoredRequestHandler): void {
     socket.on(event, async (data: unknown, callback?: (response: unknown) => void) => {
       try {
-        const result = await handler(data, socket.id)
+        const ctx = buildRequestContext(socket)
+        const result = await handler(data, socket.id, ctx)
 
         // Support both callback style and event-based response
         if (callback) {
@@ -280,9 +356,20 @@ export class SocketIOTransportServer implements ITransportServer {
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error'
         const errorCode = error instanceof Error && 'code' in error ? (error.code as string) : undefined
-        const errorPayload = errorCode
+        // Phase-4 (Slice 4.2): preserve structured `details` so the client
+        // can render auth-method remediation hints, validation field lists,
+        // etc. The CHANNEL_PROTOCOL.md §11 error envelope is `{code, message,
+        // details?}` — keeping `details` off the wire silently dropped
+        // AcpAuthRequiredError.authMethods.
+        const errorDetails =
+          error instanceof Error && 'details' in error
+            ? (error as Error & {details?: unknown}).details
+            : undefined
+        const basePayload = errorCode
           ? {code: errorCode, error: errorMessage, success: false}
           : {error: errorMessage, success: false}
+        const errorPayload =
+          errorDetails === undefined ? basePayload : {...basePayload, details: errorDetails}
 
         if (callback) {
           callback(errorPayload)

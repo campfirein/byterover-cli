@@ -32,3 +32,11 @@ agent-tmp
 
 # ByteRover's skill for Claude Code
 .claude/skills/byterover
+# Phase-5 adapter SDK packages
+packages/agent-sdk/dist/
+packages/agent-sdk/node_modules/
+packages/brv-agent-py/.venv/
+packages/brv-agent-py/dist/
+packages/brv-agent-py/build/
+packages/brv-agent-py/**/__pycache__/
+packages/brv-agent-py/.pytest_cache/

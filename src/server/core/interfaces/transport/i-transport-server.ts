@@ -1,12 +1,51 @@
 /**
+ * Per-request context built from the underlying transport's handshake metadata.
+ * Channel handlers consume this to enforce auth and origin checks; non-channel
+ * handlers may ignore it.
+ *
+ * The third parameter of {@link RequestHandler} is optional so existing
+ * handlers written as `(data, clientId) => ...` remain valid.
+ */
+export type RequestContext = {
+  /**
+   * Auth payload extracted from the transport handshake. For Socket.IO this is
+   * the client's `auth` option. The shape inside is transport-agnostic; channel
+   * handlers expect `{ token?: string }` for daemon-token auth.
+   */
+  readonly auth?: {
+    readonly token?: string
+  }
+  /**
+   * Client's working directory, sent on the Socket.IO handshake query.
+   * Channel handlers use this to resolve the project root for storage paths
+   * (`<cwd>/.brv/context-tree/channel/...`). Pre-existing semantics — the
+   * same value populates {@link ConnectionMetadata.cwd} at connect time.
+   */
+  readonly cwd?: string
+  /**
+   * The `Origin` header value (or equivalent) from the client's handshake, if
+   * the transport carries one. Used for origin allowlisting in channel auth.
+   */
+  readonly origin?: string
+  /**
+   * Identifies which transport produced this context, so handlers can branch
+   * if/when alternative transports are introduced.
+   */
+  readonly transport: 'socket.io'
+}
+
+/**
  * Handler for incoming client requests.
  * @param data - The request payload from client
  * @param clientId - Unique identifier of the requesting client
+ * @param ctx - Per-request handshake metadata; optional for backward compat
+ *              with handlers that only consume `data` and `clientId`.
  * @returns Response data or void for fire-and-forget events
  */
 export type RequestHandler<TRequest = unknown, TResponse = unknown> = (
   data: TRequest,
   clientId: string,
+  ctx?: RequestContext,
 ) => Promise<TResponse> | TResponse
 
 /**

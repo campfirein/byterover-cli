@@ -289,4 +289,63 @@ describe('mapToPushContexts', () => {
       expect(result[4].operation).to.equal('delete')
     })
   })
+
+  // Slice 8.7 — channel/<id>/turns/<turnId>/** is ephemeral per-turn ACP
+  // state and must NOT be pushed via CoGit. The mapper relies on
+  // isExcludedFromSync(), which delegates to isChannelTurnArtifact().
+  // The channel's meta.json (durable definition) still flows through.
+  describe('filters channel turn artifacts (Slice 8.7)', () => {
+    it('should drop added channel turn artifacts (events.jsonl, turn.json, deliveries/*.json)', () => {
+      const addedFiles: ContextFileContent[] = [
+        {content: '{}', keywords: [], path: 'channel/foo/turns/abc/events.jsonl', tags: [], title: 'turn events'},
+        {content: '{}', keywords: [], path: 'channel/foo/turns/abc/turn.json', tags: [], title: 'turn snapshot'},
+        {content: '{}', keywords: [], path: 'channel/foo/turns/abc/deliveries/d1.json', tags: [], title: 'delivery'},
+        {content: 'kept', keywords: [], path: 'channel/foo/meta.json', tags: [], title: 'channel meta'},
+        {content: 'kept', keywords: [], path: 'domain/context.md', tags: [], title: 'normal knowledge'},
+      ]
+
+      const result = mapToPushContexts({addedFiles, deletedPaths: [], modifiedFiles: []})
+
+      expect(result).to.have.lengthOf(2)
+      expect(result.map((r) => r.path)).to.deep.equal(['channel/foo/meta.json', 'domain/context.md'])
+    })
+
+    it('should drop modified channel turn artifacts', () => {
+      const modifiedFiles: ContextFileContent[] = [
+        {content: '{}', keywords: [], path: 'channel/foo/turns/abc/events.jsonl', tags: [], title: 'turn events'},
+        {content: 'updated', keywords: [], path: 'channel/foo/meta.json', tags: [], title: 'channel meta'},
+      ]
+
+      const result = mapToPushContexts({addedFiles: [], deletedPaths: [], modifiedFiles})
+
+      expect(result).to.have.lengthOf(1)
+      expect(result[0].path).to.equal('channel/foo/meta.json')
+      expect(result[0].operation).to.equal('edit')
+    })
+
+    it('should drop deleted channel turn paths', () => {
+      const deletedPaths = [
+        'channel/foo/turns/abc/events.jsonl',
+        'channel/foo/turns/abc/turn.json',
+        'channel/foo/meta.json',
+      ]
+
+      const result = mapToPushContexts({addedFiles: [], deletedPaths, modifiedFiles: []})
+
+      expect(result).to.have.lengthOf(1)
+      expect(result[0].path).to.equal('channel/foo/meta.json')
+      expect(result[0].operation).to.equal('delete')
+    })
+
+    it('should keep paths for a channel literally named "turns" (segments[0]=channel required)', () => {
+      const addedFiles: ContextFileContent[] = [
+        {content: 'kept', keywords: [], path: 'channel/turns/meta.json', tags: [], title: 'channel named turns'},
+      ]
+
+      const result = mapToPushContexts({addedFiles, deletedPaths: [], modifiedFiles: []})
+
+      expect(result).to.have.lengthOf(1)
+      expect(result[0].path).to.equal('channel/turns/meta.json')
+    })
+  })
 })

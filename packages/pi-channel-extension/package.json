@@ -1,0 +1,46 @@
+{
+  "name": "@brv/pi-channel-extension",
+  "version": "0.1.0",
+  "description": "Pi extension exposing `/channel ...` slash commands that drive brv channels (channel-protocol Phase 7.1a).",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/extension.js",
+  "module": "dist/extension.js",
+  "types": "dist/extension.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/extension.js",
+      "types": "./dist/extension.d.ts"
+    }
+  },
+  "bin": {
+    "pi-channel-extension": "bin/install.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "mocha --import tsx --no-warnings 'test/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@brv/channel-client": "0.1.0"
+  },
+  "peerDependencies": {
+    "socket.io-client": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.0.0",
+    "chai": "^5.3.3",
+    "mocha": "^10.8.2",
+    "socket.io-client": "^4.8.3",
+    "tsx": "^4.21.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

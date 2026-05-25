@@ -10,7 +10,10 @@ import {SessionEventBus} from '../events/event-emitter.js'
 import {MessageQueueService} from './message-queue.js'
 import {sessionStatusManager} from './session-status.js'
 
-// List of all session events that should be forwarded to agent bus
+// List of all session events that should be forwarded to agent bus.
+// Mirrors the canonical SESSION_EVENT_NAMES in `agent/core/domain/agent-events/types.ts`
+// (subset, with `llmservice:usage` deliberately included so token-telemetry
+// emission lands on the agent bus where TaskUsageAggregator subscribes).
 const SESSION_EVENT_NAMES: readonly [
   'llmservice:thinking',
   'llmservice:chunk',
@@ -20,6 +23,7 @@ const SESSION_EVENT_NAMES: readonly [
   'llmservice:doomLoopDetected',
   'llmservice:error',
   'llmservice:unsupportedInput',
+  'llmservice:usage',
   'message:queued',
   'message:dequeued',
   'run:complete',
@@ -35,6 +39,7 @@ const SESSION_EVENT_NAMES: readonly [
   'llmservice:doomLoopDetected',
   'llmservice:error',
   'llmservice:unsupportedInput',
+  'llmservice:usage',
   'message:queued',
   'message:dequeued',
   'run:complete',

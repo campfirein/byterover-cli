@@ -41,7 +41,7 @@ export interface TaskCreateRequest {
   folderPath?: string
   projectPath?: string
   taskId: string
-  type: 'curate' | 'curate-folder' | 'query' | 'search'
+  type: 'curate' | 'curate-folder' | 'curate-html-direct' | 'query' | 'query-tool-mode' | 'search'
   worktreeRoot?: string
 }
 

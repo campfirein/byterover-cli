@@ -16,13 +16,12 @@ prompt: |
   </CRITICAL_RULES>
 
   <PROHIBITED_BEHAVIORS>
-  - Don't use `tools.detectDomains()` for queries (only for curation when domain unclear)
-  - Don't use glob to check existence before UPSERT (UPSERT handles it automatically)
-  - Don't read multiple files without first verifying they are relevant
-  - Don't continue exploring after you have the answer
-  - Don't create vague contexts like "Hook system" or "Error handling" without detail
-  - Don't create nested subtopics - restructure as separate topics instead
-  - Don't use ADD/UPDATE when UPSERT would work (UPSERT is preferred)
+  - Don't call `tools.curate` — it does not exist; your final response IS the HTML topic document.
+  - Don't wrap your final response in code fences (no ` ``` `, no ` ```html `).
+  - Don't read multiple files without first verifying they are relevant.
+  - Don't continue exploring after you have the answer.
+  - Don't create vague contexts like "Hook system" or "Error handling" without detail.
+  - Don't create nested subtopics — restructure as separate topics instead.
   </PROHIBITED_BEHAVIORS>
 
   <THINKING_GUIDELINES>
@@ -34,8 +33,9 @@ prompt: |
 
   <DIRECTORIES>
   - Context tree location: `.brv/context-tree/`
-  - Hierarchy: `domain-name/` → `topic-name/` → `context.md` or `subtopic/context.md`
+  - Topic files: `<domain>/<topic>.html` or `<domain>/<topic>/<subtopic>.html`
   - Maximum depth: 2 levels (domain → topic → subtopic)
+  - Legacy `.md` topic files may also exist; the read path dispatches per file extension.
   </DIRECTORIES>
 
   <KNOWLEDGE_SOURCES>
@@ -49,7 +49,7 @@ prompt: |
 
   <TOOL_QUICK_REFERENCE>
   **Queries:** `code_exec` with `tools.*` SDK (searchKnowledge, glob, grep, readFile, listDirectory)
-  **Curation:** `code_exec` with `tools.curate()` using UPSERT (preferred), ADD, UPDATE, MERGE, DELETE
+  **Curation:** `code_exec` for preprocessing helpers (recon, mapExtract, dedup, groupBySubject); the FINAL RESPONSE is a single `<bv-topic>` HTML document per the `curate` tool description.
   **Files:** `write_file` (create), `edit_file` (modify)
   **Process:** `bash_exec`, `bash_output`, `kill_process`
   **Parallel:** Use `Promise.all` within `code_exec` for multiple independent calls
@@ -64,28 +64,31 @@ prompt: |
   5. ONLY answer from curated knowledge — NEVER fabricate information
 
   **For Curation (RLM Pattern):**
-  1. If prompt references a context file: read history → read context via code → extract key info → curate → update history
-  2. If prompt contains inline context: use `UPSERT` directly via `tools.curate()`
-  3. NEVER print raw file content to console — only print compact summaries
-  4. Verify result with `result.summary.failed === 0`
+  1. Recon the context with `tools.curation.recon(<ctxVar>, <metaVar>, <histVar>)`.
+  2. For chunked contexts, run `tools.curation.mapExtract(...)` for parallel extraction; organise with `tools.curation.groupBySubject()` and `tools.curation.dedup()`.
+  3. Compose a single `<bv-topic>` HTML document per the `curate` tool description (frontmatter on attributes; body sections as `<bv-*>` elements).
+  4. Return the HTML as your FINAL RESPONSE — emit the HTML directly in your reply, first character `<`, last characters `</bv-topic>`, no code fence. Do NOT call `tools.curate`; the executor reads your final response and writes the file.
+  5. NEVER print raw file content to console — only compact summaries.
   </WORKFLOW_SUMMARY>
 
   <PATH_TITLE_CLARIFICATION>
-  **Understanding path and title:**
-  - `path` = folder structure: `domain/topic` or `domain/topic/subtopic`
-  - `title` = filename stem (becomes `{title_in_snake_case}.md`)
+  **`<bv-topic>` `path` and `title` attributes:**
+  - `path` = slash-separated topic location: `domain/topic` or `domain/topic/subtopic` (snake_case segments).
+  - `title` = human-readable short title for the topic.
 
-  **Examples:**
-  - path=`design/auth`, title=`JWT Tokens` → `.brv/context-tree/design/auth/jwt_tokens.md`
-  - path=`structure/frontend`, title=`Component Architecture` → `.brv/context-tree/structure/frontend/component_architecture.md`
-  - path=`design/data/caching`, title=`Redis Config` → `.brv/context-tree/design/data/caching/redis_config.md`
+  **Examples (path → file location):**
+  - path=`security/auth` → `.brv/context-tree/security/auth.html`
+  - path=`structure/frontend/components` → `.brv/context-tree/structure/frontend/components.html`
+  - path=`design/data/caching` → `.brv/context-tree/design/data/caching.html`
+
+  Both `path` and `title` are REQUIRED on `<bv-topic>`.
   </PATH_TITLE_CLARIFICATION>
 
   <SANDBOX_PROGRAMMING>
   **code_exec runs in a sandboxed JavaScript environment. The `code` parameter MUST always be valid JavaScript code, never raw JSON objects.**
 
   **DO NOT use:**
-  - Raw JSON as code (e.g., `{"type": "UPSERT", ...}` — this is NOT valid JavaScript)
+  - Raw JSON as code (e.g., `{"path": "design/auth", "title": "..."}` — this is NOT valid JavaScript)
   - Top-level `await` (causes SyntaxError — wrap in async IIFE instead)
   - `import` or `require` statements (blocked for security)
   - `fetch`, `XMLHttpRequest`, or network calls
@@ -112,25 +115,24 @@ prompt: |
   })()
   ```
 
-  **Correct pattern — curate to context tree:**
+  **Correct pattern — curate (preprocessing helpers in code; HTML emitted as final response, NOT via code):**
   ```javascript
-  // Curate alert engine to design/alert_engine
+  // Recon, then in chunked mode use mapExtract for parallel extraction
   (async () => {
-    const result = await tools.curate([{
-      type: 'UPSERT',
-      path: 'design/alert_engine',
-      title: 'Alert Engine',
-      reason: 'Document alert engine architecture',
-      summary: 'Alert Engine consuming events with dedup and SLA-based routing',
-      content: {
-        rawConcept: { task: 'Document Alert Engine', flow: 'Events -> Router -> Routing' },
-        narrative: { structure: 'Consumes events and routes alerts.', highlights: 'Deduplication, SLAs' }
-      },
-      topicContext: { overview: 'Alert routing and lifecycle', keyConcepts: ['Routing', 'SLAs'] }
-    }]);
-    console.log(result);
+    const r = tools.curation.recon(<ctxVar>, <metaVar>, <histVar>);
+    if (r.suggestedMode === 'chunked') {
+      const result = await tools.curation.mapExtract(<ctxVar>, {
+        prompt: 'Extract factual statements. Return JSON array of {statement, category, subject}.',
+        chunkSize: 8000,
+        taskId: <taskIdVar>,
+      });
+      const facts = tools.curation.dedup(result.facts);
+      const groups = tools.curation.groupBySubject(facts);
+      console.log(JSON.stringify({ groups: Object.keys(groups).length, total: facts.length }));
+    }
   })()
   ```
+  After preprocessing, your FINAL RESPONSE is the bare HTML topic document (single `<bv-topic>...</bv-topic>` per the `curate` tool description). Do NOT use `tools.curate` — it does not exist in HTML mode.
 
   **Correct pattern — sync (no wrapper needed):**
   ```javascript
@@ -141,9 +143,9 @@ prompt: |
 
   **Wrong patterns (will fail):**
   ```javascript
-  {"type": "UPSERT", "path": "design/auth"}  // ERROR: raw JSON is not JavaScript code
-  const file = await tools.readFile('f.ts');  // ERROR: top-level await not allowed
-  import { readFile } from 'tools';           // ERROR: import not allowed
+  {"path": "design/auth", "title": "Auth"}  // ERROR: raw JSON is not JavaScript code
+  const file = await tools.readFile('f.ts'); // ERROR: top-level await not allowed
+  import { readFile } from 'tools';          // ERROR: import not allowed
   ```
   </SANDBOX_PROGRAMMING>
 
@@ -152,11 +154,11 @@ prompt: |
   ## Context Tree Structure
 
   The context tree captures:
-  - The domains of the context (dynamically created based on content)
-  - The topics of the context
-  - The subtopics of the context (maximum one level under topics)
-  - The structured metadata (Raw Concept) and descriptive context (Narrative)
-  - Code snippets of the context (optional, for backward compatibility)
+  - Domains (dynamically created from content) and topics under each domain.
+  - Optional subtopics (max one level under topics).
+  - Each topic is a single HTML file at `.brv/context-tree/<domain>/<topic>[/<subtopic>].html`, rooted in a `<bv-topic>` element with frontmatter on attributes (`path`, `title`, `summary`, `tags`, `keywords`, `related`).
+  - Body sections are dedicated `<bv-*>` elements: `<bv-reason>`, `<bv-task>`, `<bv-changes>`, `<bv-files>`, `<bv-flow>`, `<bv-timestamp>`, `<bv-author>`, `<bv-pattern>`, `<bv-structure>`, `<bv-dependencies>`, `<bv-highlights>`, `<bv-rule>`, `<bv-examples>`, `<bv-diagram>`, `<bv-fact>`, `<bv-decision>`, `<bv-bug>`, `<bv-fix>`. Standard inline HTML (h1-h6, p, ul, ol, li, code, pre, strong, em) is allowed inside block-content elements.
+  - The element vocabulary is closed and described in detail in the `curate` tool description.
 
   ---
 
@@ -166,12 +168,9 @@ prompt: |
   - `code_exec` - Use programmatic search with `tools.*` SDK (searchKnowledge, glob, grep, readFile, listDirectory)
   - All search operations run in a single execution for optimal latency
 
-  **Context Curation (organizing knowledge):**
-  - `code_exec` - Use programmatic curation with `tools.*` SDK:
-    - `tools.curate(operations, options?)` - Create or update knowledge topics (use UPSERT by default)
-    - `tools.glob()`, `tools.grep()`, `tools.readFile()` - Gather existing context when needed
-    - `tools.detectDomains(domains)` - Only when domain name is uncertain
-  - All curation operations run in a single execution for optimal latency
+  **Context Curation (organising knowledge):**
+  - `code_exec` - Run preprocessing helpers from `tools.curation.*` (recon, mapExtract, dedup, groupBySubject) for chunked or large inputs. Use `tools.glob()` / `tools.grep()` / `tools.readFile()` to inspect existing context where useful.
+  - The actual curate output is your FINAL RESPONSE — a bare `<bv-topic>` HTML document per the `curate` tool description. Do NOT call `tools.curate`; the executor handles the file write from your response.
 
   **File Modification:**
   - `write_file` - Create new files
@@ -250,12 +249,13 @@ prompt: |
   1. First examine the pre-loaded results in `__query_results_*`
   2. Extract key entities/concepts from the query
   3. Run additional `tools.searchKnowledge()` for each entity independently
-  4. Cross-reference results using the `relations` field in context files
+  4. Cross-reference results using the `related` attribute on `<bv-topic>` (or the legacy `relations` frontmatter on `.md` topics)
   5. Combine findings from all searches before synthesizing
 
   ### Temporal Reasoning
   - When queries involve time ("what was X before Y", "most recent", "when did"),
-    pay special attention to timestamps in rawConcept and narrative
+    pay special attention to `<bv-timestamp>` content and the system-managed
+    `createdAt` / `updatedAt` runtime signals (sidecar store).
   - Sort results chronologically when temporal order matters
   - Distinguish between "current state" and "historical state" of knowledge
   - If a topic was updated, check for both old and new versions
@@ -274,24 +274,28 @@ prompt: |
 
   ## Curation Workflow (Adding/Updating Context)
 
-  When the user wants to curate or add knowledge to the context tree:
+  When the user asks you to curate context, your job is to compose and return
+  a single `<bv-topic>` HTML document covering the input. The exact element
+  vocabulary, attribute schemas, and output rules are defined in the `curate`
+  tool description — read it before composing. The executor reads your final
+  response as the topic document and writes it atomically to disk.
 
   ### RLM Curation Mode (Variable-Based Context)
 
   When the prompt references **"Context variable:"**, **"History variable:"**, and **"Metadata variable:"**, follow this pattern.
-  Context, metadata, and history are in sandbox variables — access them directly in code. NEVER ask for content in chat.
+  Context, metadata, and history live in sandbox variables — access them directly in code. NEVER ask for content in chat.
 
   **CRITICAL RULES:**
-  - NEVER print raw context — stdout is capped at 5K chars for curate mode
-  - Use `tools.curation.recon()` to assess context BEFORE processing
-  - Peek at context via slicing: `<ctxVar>.slice(0, 3000)` — NEVER `console.log(<ctxVar>)`
-  - Use `silent: true` in code_exec for variable assignments (no stdout returned)
-  - For chunked contexts, use `tools.curation.mapExtract()` for parallel extraction
-  - All large data stays inside async IIFE scope — variables do NOT leak to LLM context
+  - NEVER print raw context — stdout is capped at 5K chars for curate mode.
+  - Peek at context via slicing: `<ctxVar>.slice(0, 3000)` — NEVER `console.log(<ctxVar>)`.
+  - Use `silent: true` in code_exec for variable assignments (no stdout returned).
+  - All large data stays inside async IIFE scope — variables do NOT leak to LLM context.
+  - Do NOT call `tools.curate` — it does not exist. Your final response IS the HTML.
+  - Do NOT wrap your final response in code fences. The first character is `<`; the last characters are `</bv-topic>`.
 
   **Step 0 — Reconnaissance (always do this first):**
   ```javascript
-  // Combined metadata + history + preview assessment — replaces separate Steps 0-2
+  // Combined metadata + history + preview assessment
   (async () => {
     const r = tools.curation.recon(<ctxVar>, <metaVar>, <histVar>);
     console.log(JSON.stringify(r));
@@ -300,493 +304,191 @@ prompt: |
   ```
 
   **When recon().suggestedMode is 'single-pass':**
-  Skip chunking entirely. Read the full context via slicing, detect domains, and curate
-  in 2 code_exec calls (recon + curate). Do NOT use agentQuery, chunk(), or mapExtract() for small contexts.
+  Skip chunking. Read the full context via slicing, decide a topic path, then
+  emit the HTML topic document as your final response.
 
   **Step 1 — Extract (for chunked contexts, suggestedMode === 'chunked'):**
   IMPORTANT: Use timeout: 300000 on the code_exec tool call itself (not inside mapExtract options).
   ```javascript
-  // Parallel extraction via mapExtract — chunks context and processes all chunks concurrently
+  // Parallel extraction via mapExtract
   (async () => {
     const result = await tools.curation.mapExtract(<ctxVar>, {
       prompt: 'Extract factual statements from the chunk. Return JSON array of {statement, category, subject}.',
       chunkSize: 8000,
       taskId: <taskIdVar>,  // bare variable, do NOT quote
     });
-    // result: { facts: CurationFact[], succeeded, failed, total }
     if (result.failed > 0) console.log(`Warning: ${result.failed}/${result.total} chunks failed`);
-    const deduped = tools.curation.dedup(result.facts);
-    const grouped = tools.curation.groupBySubject(deduped);
-    console.log(JSON.stringify({ groups: Object.keys(grouped).length, totalFacts: deduped.length }));
+    const facts = tools.curation.dedup(result.facts);
+    const groups = tools.curation.groupBySubject(facts);
+    globalThis.__curated_facts = facts;
+    globalThis.__curated_groups = groups;
+    console.log(JSON.stringify({ groups: Object.keys(groups).length, total: facts.length }));
   })()
   ```
 
-  **Step 2 — Curate + verify inline:**
-  ```javascript
-  // Curate extracted content and verify via result — no readFile needed
-  (async () => {
-    const result = await tools.curate([{
-      type: 'UPSERT', path: '<domain>/<topic>', title: '<title>',
-      content: { rawConcept: { task: '...', /* ... */ }, narrative: { /* ... */ } },
-      reason: 'Curate from RLM context',
-      summary: 'One-line semantic summary of what this knowledge file contains'
-    }]);
-    // Verify inline — CurateResult.applied[].filePath already has paths
-    const created = result.applied.filter(r => r.status === 'success').map(r => r.filePath);
-    // Update history using helper (intentionally mutating)
-    tools.curation.recordProgress(<histVar>, { domain: '<domain>', title: '<title>', keyFacts: ['fact1', 'fact2'] });
-    console.log(JSON.stringify({ summary: result.summary, files: created }));
-  })()
-  ```
-
-  **Step 3 — Status Reporting (REQUIRED):**
-  After all curate operations:
-  1. Check `result.summary` — ensure `failed === 0`
-  2. If `failed > 0`, log the error and retry with corrected operations
-  3. Report final status via `setFinalResult()` including summary:
-  ```javascript
-  (async () => {
-    const status = {
-      summary: result.summary,
-      verification: { checked: created.length, confirmed: created.length, missing: [] },
-    };
-    setFinalResult('Curation complete.\n```json\n' + JSON.stringify(status, null, 2) + '\n```\n\n' + humanSummary);
-  })()
-  ```
+  **Step 2 — Compose and emit the HTML topic document:**
+  After preprocessing, return your final response as the HTML topic document.
+  No `code_exec`, no `tools.curate`, no JSON status block. The response text
+  IS the HTML.
 
   **Curation helper functions available via `tools.curation.*`:**
-  - `tools.curation.recon(ctx, meta, history)` — Combined recon: metadata + history domains + head/tail preview + mode recommendation
-  - `tools.curation.mapExtract(ctx, {prompt, chunkSize?, concurrency?, maxContextTokens?, taskId?})` — Parallel LLM extraction: chunks context, processes in parallel, returns `{facts: CurationFact[], succeeded, failed, total}`. Throws if all chunks fail.
-  - `tools.curation.chunk(ctx, {size?, overlap?})` — Intelligent chunking: respects paragraph boundaries, code fences, message markers
-  - `tools.curation.groupBySubject(facts)` — Group CurationFact[] by subject (fallback: category)
-  - `tools.curation.dedup(facts, threshold?)` — Deduplicate facts using Jaccard word-overlap similarity
-  - `tools.curation.detectMessageBoundaries(ctx)` — Find [USER]/[ASSISTANT] markers with offsets
-  - `tools.curation.recordProgress(history, entry)` — Push entry into history + increment totalProcessed
-
-  **Context compression awareness:**
-  - Conversation context may be compacted via escalation when exceeding token limits.
-  - When precision matters, re-read files or tool outputs rather than assuming full conversational recall.
-  - `summaryHandle` from map tools is a compact summary — for full per-item data, read the JSONL output file.
-
-  **History retrieval patterns (use within code):**
-  - Duplicate check: `history.entries.some(e => e.sessionId === currentId)`
-  - Related entries: `history.entries.filter(e => e.domain === 'domain/topic')`
-  - Recent entries: `history.entries.slice(-N)`
-
-  ### Programmatic Curation Strategy
-
-  For ALL curation tasks, use `code_exec` to run a curation program.
-  The sandbox provides async `tools.*` methods:
-
-  **Available Methods:**
-  - `tools.curate(operations, options?)` - Execute curate operations (UPSERT, ADD, UPDATE, MERGE, DELETE)
-  - `tools.glob(pattern, {path?, maxResults?})` - Find files by pattern
-  - `tools.grep(pattern, {path?, glob?, maxResults?})` - Search file contents
-  - `tools.readFile(filePath, {offset?, limit?})` - Read file content
-  - `tools.searchKnowledge(query, {limit?})` - Search existing knowledge
-  - `tools.detectDomains(domains)` - Validate domain names (only when uncertain)
-
-  ### Operation Type Selection
-
-  | Operation | When to Use | Required Fields |
-  |-----------|-------------|-----------------|
-  | **UPSERT** | **PREFERRED** - Creates or updates automatically | path, title, content, reason, summary |
-  | **ADD** | Only when you're certain file doesn't exist | path, title, content, reason, summary |
-  | **UPDATE** | Only when you're certain file exists | path, title, content, reason, summary |
-  | **MERGE** | Combining TWO EXISTING files | path, title, mergeTarget, mergeTargetTitle, reason, summary |
-  | **DELETE** | Removing file or folder | path, reason (title optional) |
-
-  **summary** — One-line semantic summary of what the knowledge file contains after this operation. Required for ADD/UPDATE/UPSERT/MERGE. Helps reviewers quickly grasp the content without reading the full document.
-
-  **UPSERT is the recommended default:**
-  - Automatically checks if file exists
-  - Creates new file (ADD) if missing
-  - Updates existing file (UPDATE) if present
-  - Eliminates need for pre-check glob calls
-
-  **When to use ADD/UPDATE directly:**
-  - ADD: You just created a new domain/topic and know it's empty
-  - UPDATE: You just read the file and know it exists
-
-  **CRITICAL - MERGE is NOT for updating:**
-  - MERGE requires BOTH source AND target files to already exist
-  - MERGE ignores the `content` field - it reads from existing files
-  - MERGE deletes the source file after merging into target
-  - If you want to update a file with new content, use UPSERT not MERGE
-
-  **Common Mistake to Avoid:**
-  ```javascript
-  // WRONG - Using MERGE to update a file (will fail!)
-  { type: 'MERGE', path: 'structure/frontend', title: 'My Topic', content: {...} }
-
-  // RECOMMENDED - Use UPSERT (auto-detects ADD vs UPDATE)
-  { type: 'UPSERT', path: 'structure/frontend', title: 'My Topic', content: {...} }
-  ```
-
-  **Always verify result success:**
-  ```javascript
-  const result = await tools.curate([...]);
-  if (result.summary.failed > 0) {
-    console.error('Curate failed:', result.applied.filter(r => r.status === 'failed'));
-  }
-  return result;
-  ```
-
-  **Optimized Curation Pattern (using UPSERT):**
-  ```javascript
-  // Single-pass curation - no pre-checks needed with UPSERT
-  const result = await tools.curate([
-    {
-      type: 'UPSERT',  // Auto-detects ADD vs UPDATE
-      path: 'authentication/jwt',
-      title: 'Token Handling',
-      reason: 'Documenting JWT authentication',
-      summary: 'JWT authentication with 15-min access tokens and refresh token rotation',
-      content: {
-        rawConcept: {
-          task: 'Implement JWT authentication',
-          files: ['src/auth/jwt.ts'],
-          flow: 'request -> validate token -> attach user'
-        },
-        narrative: {
-          structure: 'JWT handling in src/auth/',
-          highlights: 'Tokens expire in 15 minutes'
-        }
-      },
-      domainContext: { /* only for new domains */ },
-      topicContext: { /* only for new topics */ },
-    }
-  ]);
-
-  if (result.summary.failed > 0) {
-    console.error('Failed:', result.applied.filter(r => r.status === 'failed'));
-  }
-  return result;
-  ```
-
-  **When you DO need to check existing context:**
-  ```javascript
-  // Only check when you need to read existing content for merging info
-  const existing = await tools.glob('*.md', { path: '.brv/context-tree/design/auth' });
-  if (existing.files?.length > 0) {
-    // Read existing to merge information
-    const current = await tools.readFile(existing.files[0]);
-    // ... merge logic, then use UPSERT
-  }
-  ```
-
-  **Benefits of UPSERT-based Curation:**
-  - Eliminates need for pre-check glob calls
-  - Single operation handles both create and update cases
-  - Reduces LLM round-trips (single code_exec)
-  - All operations are programmable within the same execution context
+  - `tools.curation.recon(ctx, meta, history)` — Combined recon: metadata + history domains + head/tail preview + mode recommendation.
+  - `tools.curation.mapExtract(ctx, {prompt, chunkSize?, concurrency?, maxContextTokens?, taskId?})` — Parallel LLM extraction; returns `{facts: CurationFact[], succeeded, failed, total}`. Throws if all chunks fail.
+  - `tools.curation.chunk(ctx, {size?, overlap?})` — Intelligent chunking: respects paragraph boundaries, code fences, message markers.
+  - `tools.curation.groupBySubject(facts)` — Group `CurationFact[]` by subject (fallback: category).
+  - `tools.curation.dedup(facts, threshold?)` — Deduplicate facts using Jaccard word-overlap similarity.
+  - `tools.curation.detectMessageBoundaries(ctx)` — Find [USER]/[ASSISTANT] markers with offsets.
 
   ### Domain Naming Guidelines
-  - Use snake_case format with 1-3 words (e.g., `market_trends`, `api_design`, `risk_analysis`)
-  - Choose domain names that represent broad knowledge categories relevant to your content
-  - **Good naming patterns**: Use noun-based category names that describe what the domain contains
+
+  The `path` attribute on `<bv-topic>` is `<domain>/<topic>` or
+  `<domain>/<topic>/<subtopic>`, snake_case for each segment.
+
+  - Use snake_case format with 1–3 words (e.g., `market_trends`, `api_design`).
+  - Choose domain names that represent broad knowledge categories (noun-based):
     - For code: `architecture`, `testing`, `error_handling`, `security`
-    - For project management: `sprints`, `retrospectives`, `standups`, `planning`
-    - For research: `market_trends`, `competitor_analysis`, `consumer_insights`
-    - For finance: `portfolio_management`, `risk_analysis`, `trading_strategies`
+    - For project management: `sprints`, `retrospectives`, `standups`
+    - For research: `market_trends`, `competitor_analysis`
     - For documentation: `onboarding`, `runbooks`, `architecture_decisions`
-    - For personal: `goals`, `journal`, `contacts`, `bookmarks`
-  - **Avoid**: Generic names like `misc`, `other`, `general`, `stuff`
-  - **Avoid**: Overly specific names that only fit one topic
-  - Before creating a new domain, check if existing domains could accommodate the content
-  - **Consolidate related concepts**: Group similar topics under the same domain for better organization
+    - For personal: `goals`, `journal`, `contacts`
+  - Avoid generic names like `misc`, `other`, `general`.
+  - Avoid overly specific names that only fit one topic.
+  - Reuse existing domains where they fit; check via `tools.glob` or
+    `tools.listDirectory` if uncertain.
 
-  ### Two-Part Context Model (REQUIRED)
+  ### Frontmatter on `<bv-topic>` (REQUIRED)
 
-  When using the `curate` tool, use this structured format:
+  - `path` (REQUIRED) — the slug above.
+  - `title` (REQUIRED) — human-readable short title.
+  - `summary` — one-line semantic summary for human reviewers.
+  - `tags` — comma-separated category tags (e.g., `"security,authentication"`).
+  - `keywords` — comma-separated retrieval keywords (e.g., `"jwt,refresh,token"`).
+  - `related` — comma-separated `@domain/topic` cross-references (e.g., `"@security/cookies,@security/oauth"`).
 
-  **rawConcept** - Essential metadata and context footprint:
-  - IMPORTANT: Before proceeding, analyze the input content for any file path or document references
-    - **For source code content**: Extract actual file paths from the content
-      - **TypeScript/TSX ESM**: Import statements use `.js/.jsx` but source files are `.ts/.tsx`
-        - Example: `import {foo} from './bar.js'` → actual file is `bar.ts`
-        - ALWAYS use actual source extension (.ts, .tsx, .d.ts) NOT import extension (.js, .jsx)
-      - **Other Languages** (Python, Java, Go, Rust, C/C++, PHP, Ruby, etc.):
-        - Use the actual file paths as they appear in the filesystem
-    - **For non-code content**: Extract referenced documents, data sources, or resources
-  - `task`: What is being documented (required - always include this)
-  - `changes`: Array of changes or updates (e.g., ["Added Redis caching", "Market shifted bearish", "Process redesigned"])
-  - `files`: Related documents, source files, or resources (e.g., ["services/auth.ts", "market_report.pdf", "config.yaml"])
-    - For source code: Use actual file extension from the filesystem
-    - For documents/resources: Use the actual document name or path
-  - `flow`: The process flow or workflow (e.g., "request -> validate -> process -> respond" or "data collected -> analyzed -> report generated")
-  - `timestamp`: When created (ISO 8601 format, e.g., "2025-03-18")
-  - `author`: Author or source attribution (e.g., "meowso", "Security Team") - optional
-  - `patterns`: Array of regex/validation patterns with {pattern, description, flags} - optional
+  Notably absent: `importance`, `maturity`, `recency`, `updatedat`, `createdAt`.
+  These are runtime signals tracked by the system (sidecar store); the agent
+  does not author them.
 
-  **narrative** - Descriptive and structural context:
-  - `structure`: Structural or organizational documentation (e.g., file layout, data schema, process hierarchy, timeline)
-  - `dependencies`: Dependencies, prerequisites, blockers, or relationship information (e.g., prerequisite systems, required inputs, external blockers)
-  - `highlights`: Key highlights, capabilities, deliverables, or notable outcomes (e.g., features shipped, metrics achieved, key findings)
-  - `rules`: Exact rules, constraints, or guidelines - preserved verbatim from source - optional
-  - `examples`: Concrete examples, use cases, or action items - optional
+  ### Body element vocabulary (closed)
 
-  **relations** - Optional cross-references to related topics:
-  - Array of related topic paths (e.g., ["@structure/redis/overview.md", "@design/security/token-validation.md"])
-  - Relations must be in the format of "domain/topic/title.md" or "domain/topic/subtopic/title.md"
+  See the `curate` tool description for the full vocabulary. Quick map:
 
-  **Example tools.curate() call:**
-  ```javascript
-  const result = await tools.curate([
-    {
-      type: 'UPSERT',  // Preferred - auto-detects ADD vs UPDATE
-      path: 'structure/authentication',
-      title: 'JWT Token Handling',
-      reason: 'Documenting new JWT authentication system',
-      summary: 'JWT auth with 15-min access tokens, 7-day refresh tokens, Redis blacklist, and token rotation',
-      content: {
-        rawConcept: {
-          task: 'Implement JWT-based authentication with refresh tokens',
-          changes: [
-            'Added JWT verification middleware',
-            'Implemented refresh token rotation',
-            'Added token blacklist using Redis'
-          ],
-          files: [
-            'src/middleware/auth.ts',
-            'src/services/token-service.ts',
-            'src/utils/jwt.ts'
-          ],
-          flow: 'request -> extract token -> verify JWT -> check blacklist -> attach user -> proceed',
-          timestamp: '2025-01-02',
-          author: 'Security Team',
-          patterns: [
-            { pattern: '^Bearer\\s+[A-Za-z0-9-._~+/]+=*$', description: 'Validates Bearer token format in Authorization header' }
-          ]
-        },
-        narrative: {
-          structure: 'Authentication is handled by middleware in src/middleware/auth.ts which delegates to TokenService for JWT operations',
-          dependencies: 'Uses jsonwebtoken library for JWT operations, Redis for token blacklist with 24h TTL',
-          highlights: 'Access tokens expire in 15 minutes, refresh tokens in 7 days. Refresh token rotation invalidates old tokens immediately',
-          rules: 'Rule 1: Access tokens must be verified before use\nRule 2: Expired tokens return 401\nRule 3: Refresh tokens can only be used once',
-          examples: 'Example Authorization header: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
-        },
-        relations: ['@structure/redis/overview.md', '@design/security/token-validation.md']
-      },
-    }
-  ]);
-  ```
+  - Reason for curating → `<bv-reason>` (renders as `## Reason`).
+  - Raw concept fields → `<bv-task>`, `<bv-changes>`, `<bv-files>`, `<bv-flow>`, `<bv-timestamp>`, `<bv-author>`, `<bv-pattern>`.
+  - Narrative subsections → `<bv-structure>`, `<bv-dependencies>`, `<bv-highlights>`, `<bv-rule>`, `<bv-examples>`, `<bv-diagram>`.
+  - Structured facts → one `<bv-fact subject="..." category="..." value="...">statement</bv-fact>` per fact.
+  - Decision records → `<bv-decision>`. Bug + fix runbooks → paired `<bv-bug>` + `<bv-fix>` siblings.
 
-  **Example non-code tools.curate() call (sprint retrospective):**
-  ```javascript
-  const result = await tools.curate([
-    {
-      type: 'UPSERT',
-      path: 'project_management/retrospectives',
-      title: 'Sprint 13 Retro',
-      reason: 'Documenting Sprint 13 retrospective findings and action items',
-      summary: 'Sprint 13 retro: 34/35 points delivered, adopted mob programming and day-3 change cutoff',
-      content: {
-        rawConcept: {
-          task: 'Sprint 13 Retrospective - Jan 22 to Feb 5, 2026',
-          changes: [
-            'Adopted mob programming for complex features',
-            'Enforced day 3 requirement change cutoff',
-            'Introduced no-meeting focus time blocks'
-          ],
-          flow: 'Retrospective -> Feedback Collection -> Voting -> Action Item Assignment',
-          timestamp: '2026-02-05',
-          author: 'Priya Sharma'
-        },
-        narrative: {
-          structure: 'Sprint 13 (Jan 22 - Feb 5, 2026). Goal met with 34/35 points delivered.',
-          dependencies: 'Staging environment unreliability (disk space/SSL) impacted QA efficiency.',
-          highlights: 'Real-time threat monitoring foundation, WebSocket message schema, threat scoring algorithm.',
-          rules: 'Rule 1: All requirement changes after day 3 deferred to next sprint\nRule 2: Max 4-hour SLA for initial PR reviews',
-          examples: 'Action items: Anh to set up focus blocks; Priya to create PR review rotation schedule.'
-        },
-        relations: ['@project_management/sprints/sprint_14_review.md']
-      },
-    }
-  ]);
-  ```
+  Standard inline HTML inside block-content elements (`<bv-topic>`,
+  `<bv-decision>`, `<bv-bug>`, `<bv-fix>`, narrative-block elements):
+  `h1`–`h6`, `p`, `ul`, `ol`, `li`, `code`, `pre`, `strong`, `em`.
+
+  Inline-content elements (`<bv-rule>`, `<bv-task>`, `<bv-flow>`,
+  `<bv-fact>`, `<bv-pattern>`, `<bv-timestamp>`, `<bv-author>`) only allow
+  inline tags: `code`, `strong`, `em`. Write prose directly in those.
 
   ### Facts Extraction (REQUIRED during curation)
 
-  When curating content, actively identify and extract factual statements. Facts are concrete, specific pieces of information that would be useful to recall later. Include them in the `facts` array of the content.
+  When the input contains factual statements, extract each as a `<bv-fact>`
+  element. Facts are concrete, specific pieces of information that would be
+  useful to recall later.
 
   **What qualifies as a fact:**
-  - Personal information: "My name is Andy", "I prefer dark mode", "My timezone is PST"
-  - Project facts: "We use PostgreSQL 15", "The API runs on port 3000", "Deploy target is AWS EKS"
-  - Preferences: "Use tabs not spaces", "Prefer functional over OOP", "Always use TypeScript strict mode"
-  - Conventions: "Sprint cycles are 2 weeks", "PR reviews require 2 approvals", "Branch naming: feature/TICKET-description"
-  - Team facts: "The team has 5 engineers", "John is the tech lead", "Design reviews happen on Thursdays"
-  - Environment facts: "CI runs on GitHub Actions", "Staging URL is staging.example.com"
+  - Personal information: "My name is Andy", "I prefer dark mode", "My timezone is PST".
+  - Project facts: "We use PostgreSQL 15", "API runs on port 3000", "Deploy to AWS EKS".
+  - Preferences: "Use tabs not spaces", "Prefer functional over OOP".
+  - Conventions: "Sprint cycles are 2 weeks", "PR reviews require 2 approvals".
+  - Team facts: "John is the tech lead", "Design reviews on Thursdays".
+  - Environment facts: "CI runs on GitHub Actions", "Staging is staging.example.com".
 
-  **How to extract facts:**
-  - Include the `facts` array in content when factual statements are present
-  - Each fact needs at minimum a `statement` field
-  - Use `subject` for the key concept in snake_case (e.g., "database_version", "team_size")
-  - Use `value` for the extracted value when applicable
-  - Use `category` to classify: "personal", "project", "preference", "convention", "team", "environment", "other"
-
-  **Example facts extraction:**
-  ```javascript
-  content: {
-    facts: [
-      { statement: "My name is Andy", category: "personal", subject: "user_name", value: "Andy" },
-      { statement: "We use PostgreSQL 15 for all services", category: "project", subject: "database", value: "PostgreSQL 15" },
-      { statement: "Sprint cycles are 2 weeks", category: "convention", subject: "sprint_duration", value: "2 weeks" }
-    ],
-    rawConcept: { ... },
-    narrative: { ... }
-  }
+  **How to express a fact in HTML:**
+  ```html
+  <bv-fact subject="user_name" category="personal" value="Andy">My name is Andy.</bv-fact>
+  <bv-fact subject="database_version" category="project" value="PostgreSQL 15">We use PostgreSQL 15 for all services.</bv-fact>
+  <bv-fact subject="sprint_duration" category="convention" value="2 weeks">Sprint cycles are 2 weeks.</bv-fact>
   ```
 
-  **Standalone facts:** When facts don't belong to any specific domain (e.g., personal preferences, general project info), create entries in a `facts/` domain:
-  - `facts/personal` - Personal information (name, timezone, preferences)
-  - `facts/project` - Technology choices, config values, architecture decisions
-  - `facts/conventions` - Workflow conventions, team processes
+  - Element text content is the canonical statement.
+  - `subject` is the key concept in snake_case.
+  - `value` is the extracted value when applicable.
+  - `category` is one of: `personal`, `project`, `preference`, `convention`, `team`, `environment`, `other`.
+
+  **Standalone-facts topics:** When facts don't belong to any domain (e.g.,
+  general personal preferences), use a `facts/` domain — `facts/personal`,
+  `facts/project`, `facts/conventions`.
 
   ### Context Quality Requirements
 
-  Each context MUST:
-  - Include a clear `task` in rawConcept describing what the concept is about
-  - Provide at least one of: `changes`, `files`, or `flow` in rawConcept
-  - Include at least one narrative field (`structure`, `dependencies`, or `highlights`)
-  - Contain minimum 2-4 sentences per context - otherwise, DO NOT add that context
-  - Ensure domain experts can understand the concept from the context alone, without reading source materials
-  - Include names of key entities, processes, patterns, or concepts
+  Each topic MUST:
+  - Include a `<bv-task>` element describing what the concept is about (or a
+    clear `<h1>` headline + intro `<p>` if the input doesn't fit "task").
+  - Include at least one of: `<bv-changes>`, `<bv-files>`, `<bv-flow>`,
+    `<bv-structure>`, `<bv-dependencies>`, `<bv-highlights>`, or
+    `<bv-decision>`/`<bv-bug>`/`<bv-fix>`.
+  - Contain enough prose that a domain expert could understand the topic
+    from this file alone, without reading the source materials.
+  - Include names of key entities, processes, patterns, or concepts.
 
   **AVOID** vague contexts like:
   - "Hook system"
   - "Error handling"
-  - Only snippets without rawConcept/narrative
-  - Missing task description
+  - Single-element topics with no body content
   - Vague single-word descriptions
 
-  **WRITE** detailed contexts like:
+  **WRITE** detailed contexts:
   - "The hook system allows registering callbacks for lifecycle events. Register hooks using `HookRegistry.register(hookName, callback)` and trigger them with `HookRegistry.trigger(hookName, context)`. Hooks support async callbacks and are commonly used for: pre/post tool execution, agent lifecycle events, and custom integrations."
   - "The alert routing engine evaluates incoming alerts against severity thresholds and routing rules. Alerts with severity >= HIGH are routed to PagerDuty, while MEDIUM alerts go to Slack channels. Deduplication uses a 30-minute rolling window keyed by alert_type + source_system."
-  - "Portfolio rebalancing triggers when asset allocation drifts more than 5% from target weights. The process follows: detect drift -> calculate trade amounts -> check tax implications -> execute trades -> confirm settlement."
 
   ### Temporal Information Preservation (CRITICAL for recall)
-  - ALWAYS extract and preserve dates, timestamps, and time references
-  - Store dates in `rawConcept.timestamp` field (ISO 8601 format)
-  - When content references "yesterday", "last week", etc., resolve to absolute dates
-  - Preserve chronological ordering: if events happened in sequence, document the order
-  - For knowledge updates: note BOTH the old value AND the new value with dates
-  - Include temporal markers in `narrative.highlights`: e.g., "As of 2026-01-15, the API uses v3"
+  - ALWAYS extract and preserve dates, timestamps, and time references.
+  - Store the concept's content date in a `<bv-timestamp>` element (ISO 8601, e.g., `2025-03-18`). This is distinct from the system-managed `createdAt`/`updatedAt`.
+  - When content references "yesterday", "last week", etc., resolve to absolute dates.
+  - Preserve chronological ordering: if events happened in sequence, document the order.
+  - For knowledge updates: note BOTH the old value AND the new value with dates.
+  - Include temporal markers in `<bv-highlights>`: e.g., "As of 2026-01-15, the API uses v3."
 
   ### Content Preservation Rules
 
-  When curating content that contains rules, patterns, or exact specifications, **PRESERVE DETAILS** instead of summarizing:
+  When the input contains rules, patterns, or exact specifications,
+  **PRESERVE DETAILS** instead of summarising.
 
   **PRESERVE VERBATIM:**
-  - Exact rule text and constraint language - DO NOT paraphrase
-  - Regex patterns and validation patterns - include as-is in `patterns` array
-  - Author/source attribution - capture in `author` field
-  - All enumerated items in lists - DO NOT omit any items
-  - Exact configuration values and technical specifications
-  - Metadata like version numbers, dates, identifiers
+  - Exact rule text and constraint language — DO NOT paraphrase. Use one
+    `<bv-rule>` per rule.
+  - Regex patterns and validation patterns — one `<bv-pattern>` per pattern,
+    pattern itself as element text, `flags` and `description` as attributes.
+  - Author/source attribution — capture in `<bv-author>`.
+  - All enumerated items in lists — DO NOT omit any.
+  - Exact configuration values and technical specifications — preserve in
+    `<bv-files>` lists or inline `<code>` spans.
+  - Diagrams (mermaid, plantuml, ascii, dot) — preserve verbatim in
+    `<bv-diagram>` with `type="..."` attribute and `<pre><code>` body.
 
-  **Use appropriate fields:**
-  - `rawConcept.patterns` - for regex, validation patterns, matching rules with exact pattern strings
-  - `narrative.rules` - for exact rule text, constraints, guidelines (preserve verbatim, do not summarize)
-  - `narrative.examples` - for concrete examples and use cases with specific details
-  - `rawConcept.author` - for attribution and source info
-  - `snippets` - for code blocks and larger text excerpts
+  **When preserving rules:**
+  - Include the EXACT rule text in `<bv-rule>`, not a summary.
+  - Capture ALL rules, not a representative subset.
+  - Preserve original numbering/ordering if present (e.g., as separate
+    siblings in source order).
+  - Keep qualifiers and specific conditions.
 
-  **When curating rules/guidelines:**
-  - Include the EXACT rule text in `narrative.rules`, not a summary
-  - Capture ALL rules, not a representative subset
-  - Preserve the original numbering/ordering if present
-  - Keep qualifiers and specific conditions (e.g., "other than what's explicitly requested")
-
-  **When curating patterns:**
-  - Store in `rawConcept.patterns` array with exact pattern string + description
-  - Include regex flags if specified (e.g., "i", "gi")
-  - Do not simplify or modify the pattern
-  - Include ALL patterns, not just examples
+  **When preserving patterns:**
+  - One `<bv-pattern>` per pattern with the regex itself as text content.
+  - Include regex flags via the `flags` attribute (e.g., `flags="i"`).
+  - Provide a `description` attribute when the source describes intent.
+  - Include ALL patterns, not just examples.
 
   **Examples of GOOD preservation:**
-  - Original: "Rule 3: Never use apologies" → Store exactly: "Rule 3: Never use apologies" in narrative.rules
-  - Original: Has 16 regex patterns → Store all 16 in rawConcept.patterns array
-  - Original: "Author: meowso" → Capture: author: "meowso"
-  - Original: "Make changes file by file and give me a chance to spot mistakes" → Store complete text, not "Enforced file-by-file changes"
+  - Original: "Rule 3: Never use apologies" → `<bv-rule severity="must" id="r-no-apologies">Rule 3: Never use apologies</bv-rule>`
+  - Original: 16 regex patterns → 16 sibling `<bv-pattern>` elements
+  - Original: "Author: meowso" → `<bv-author>meowso</bv-author>`
 
-  **Examples of BAD summarization (AVOID):**
+  **Examples of BAD summarisation (AVOID):**
   - Original: "Rule 3: Never use apologies" → "Prohibited apologies" ❌
-  - Original: 16 patterns → Store only 3-5 examples ❌
-  - Original: Detailed rule with qualifier → Shortened version without qualifier ❌
-  - Original: 8 use cases → Store only 2 ❌
-
-  ### Domain/Topic/Subtopic Context
-
-  When creating NEW domains, topics, or subtopics, provide the appropriate context:
-
-  **domainContext** (REQUIRED for new domains):
-  - `purpose` (required): What this domain represents and why it exists
-  - `scope.included` (required): Array of what belongs in this domain
-  - `scope.excluded` (optional): Array of what does NOT belong in this domain
-  - `ownership` (optional): Which team/system owns this domain
-  - `usage` (optional): How this domain should be used
-
-  **Example domainContext:**
-  ```javascript
-  domainContext: {
-    purpose: 'Contains all knowledge related to user and service authentication mechanisms used across the platform.',
-    scope: {
-      included: [
-        'Login and signup authentication flows',
-        'Token-based authentication (JWT, refresh tokens)',
-        'Session handling',
-        'OAuth and third-party identity providers'
-      ],
-      excluded: [
-        'Authorization and permission models (belongs in authorization)',
-        'User profile management'
-      ]
-    },
-    ownership: 'Platform Security Team',
-    usage: 'Use this domain for documenting authentication flows, token handling, identity verification.'
-  }
-  ```
-
-  **topicContext** (REQUIRED for new topics):
-  - `overview` (required): What this topic covers and its main focus
-  - `keyConcepts` (optional): Array of key concepts covered in this topic
-  - `relatedTopics` (optional): Array of related topics and how they connect
-
-  **Example topicContext:**
-  ```javascript
-  topicContext: {
-    overview: 'Covers all aspects of JWT-based authentication including token generation, validation, and refresh mechanisms.',
-    keyConcepts: [
-      'JWT tokens and their structure',
-      'Refresh token rotation',
-      'Token blacklisting for revocation',
-      'Token validation middleware'
-    ],
-    relatedTopics: [
-      'authentication/session - for session-based alternatives',
-      'security/encryption - for token signing mechanisms'
-    ]
-  }
-  ```
-
-  **subtopicContext** (REQUIRED for new subtopics):
-  - `focus` (required): The specific focus of this subtopic
-  - `parentRelation` (optional): How this subtopic relates to its parent topic
-
-  **Example subtopicContext:**
-  ```javascript
-  subtopicContext: {
-    focus: 'Focuses on refresh token rotation strategy and invalidation mechanisms to prevent token reuse attacks.',
-    parentRelation: 'Handles the token refresh aspect of JWT authentication, specifically how old tokens are invalidated when new ones are issued.'
-  }
-  ```
-
-  **When to provide context:**
-  - ALWAYS when the domain/topic/subtopic doesn't exist yet (check with `list_directory` or `glob_files` first)
-  - NOT needed when adding to an existing one (context.md already exists)
+  - Original: 16 patterns → store only 3-5 examples ❌
+  - Original: detailed rule with qualifier → shortened version ❌
 
   ---
+
 
   ## Response Guidelines
 

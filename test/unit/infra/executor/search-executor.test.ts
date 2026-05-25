@@ -155,4 +155,5 @@ describe('SearchExecutor', () => {
       expect((error as Error).message).to.equal('index corrupted')
     }
   })
+
 })

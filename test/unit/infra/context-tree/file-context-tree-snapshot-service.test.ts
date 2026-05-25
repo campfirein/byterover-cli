@@ -290,6 +290,39 @@ describe('FileContextTreeSnapshotService', () => {
       expect(state.size).to.equal(1)
       expect(state.has('test_domain/readme.md')).to.be.true
     })
+
+    // Slice 9.1 regression-guard: per-channel ACP turn transcripts now
+    // live at `<projectRoot>/.brv/channel-history/<channelId>/turns/<turnId>.ndjson`,
+    // OUTSIDE the cogit-scanned `.brv/context-tree/` mount. The snapshot
+    // service must therefore NOT enumerate anything under that sibling
+    // directory — even if someone misuses the path by placing a `.md`
+    // file under it. Without this guard, a future refactor that broadens
+    // the scan root to `.brv/` would silently start syncing transcripts
+    // to cogit, leaking high-volume ephemeral log data into the curated
+    // knowledge tree.
+    it('should NOT enumerate files under .brv/channel-history/ (Slice 9.1 — structural isolation)', async () => {
+      // Set up a valid context-tree file so the scanner doesn't return empty.
+      const domainDir = join(contextTreeDir, 'design')
+      await mkdir(domainDir, {recursive: true})
+      await writeFile(join(domainDir, 'context.md'), '# Design')
+
+      // Sibling channel-history mount with the exact Slice 9.1 layout.
+      const channelHistoryDir = join(testDir, BRV_DIR, 'channel-history', 'pi-test')
+      const channelTurnsDir = join(channelHistoryDir, 'turns')
+      await mkdir(channelTurnsDir, {recursive: true})
+      await writeFile(join(channelTurnsDir, '01HX.ndjson'), '{"kind":"message","content":"hi","seq":0}\n')
+      await writeFile(join(channelHistoryDir, 'index.jsonl'), '{"turnId":"01HX","status":"completed"}\n')
+      // Adversarial case: someone misnames a transcript piece as .md.
+      // Still must NOT appear in the snapshot state.
+      await writeFile(join(channelHistoryDir, 'leaked.md'), '# transcript leak attempt')
+
+      const state = await service.getCurrentState()
+      expect(state.has('design/context.md')).to.be.true
+      // No transcript files should appear — by any extension, under any path.
+      for (const key of state.keys()) {
+        expect(key, `unexpected channel-history path in snapshot: ${key}`).to.not.match(/channel-history/)
+      }
+    })
   })
 
   describe('saveSnapshot and getChanges', () => {

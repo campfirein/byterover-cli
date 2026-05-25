@@ -386,4 +386,122 @@ describe('ByteRoverLlmHttpService', () => {
       expect(result).to.deep.equal(expectedResponse)
     })
   })
+
+  describe('generateContentStream — rawResponse on terminating chunk', () => {
+    beforeEach(() => {
+      service = new ByteRoverLlmHttpService(defaultConfig)
+    })
+
+    it('should attach the full GenerateContentResponse as rawResponse on the final content chunk', async () => {
+      // Telemetry contract: LoggingContentGenerator captures the last
+      // non-undefined `chunk.rawResponse` during a stream and feeds it to
+      // `pickRawUsage(rawResponse)` (looks for `.usage ?? .usageMetadata`).
+      // If the stream never yields rawResponse, no `llmservice:usage` event
+      // fires and QueryLogEntry gets no token counts.
+      const backendResponse = {
+        candidates: [
+          {
+            content: {parts: [{text: 'Hello world'}], role: 'model'},
+            finishReason: 'STOP',
+          },
+        ],
+        usageMetadata: {
+          candidatesTokenCount: 7,
+          promptTokenCount: 12,
+          totalTokenCount: 19,
+        },
+      }
+
+      nock(baseUrl).post('/api/llm/generate').reply(200, createMockResponse(backendResponse))
+
+      const chunks = []
+      for await (const chunk of service.generateContentStream(
+        [{parts: [{text: 'Hi'}], role: 'user'}],
+        {},
+      )) {
+        chunks.push(chunk)
+      }
+
+      const terminatingChunk = chunks.at(-1)
+      expect(terminatingChunk, 'expected at least one chunk yielded').to.not.equal(undefined)
+      expect(terminatingChunk?.isComplete).to.equal(true)
+      expect(terminatingChunk?.rawResponse, 'rawResponse must be set on terminating chunk').to.deep.equal(
+        backendResponse,
+      )
+    })
+
+    it('should attach rawResponse even when content is empty (defensive)', async () => {
+      const backendResponse = {
+        candidates: [{content: {parts: [], role: 'model'}, finishReason: 'STOP'}],
+        usageMetadata: {candidatesTokenCount: 0, promptTokenCount: 5, totalTokenCount: 5},
+      }
+      nock(baseUrl).post('/api/llm/generate').reply(200, createMockResponse(backendResponse))
+
+      const chunks = []
+      for await (const chunk of service.generateContentStream(
+        [{parts: [{text: 'Hi'}], role: 'user'}],
+        {},
+      )) {
+        chunks.push(chunk)
+      }
+
+      const terminatingChunk = chunks.at(-1)
+      expect(terminatingChunk?.isComplete).to.equal(true)
+      expect(terminatingChunk?.rawResponse).to.deep.equal(backendResponse)
+    })
+
+    it('should attach rawResponse on the candidates-empty terminating chunk (safety-filter / refusal shape)', async () => {
+      // Gemini emits this shape on safety-filter blocks with usageMetadata
+      // populated; Claude can return it on refusals. Both surfaces have
+      // billable tokens the telemetry pipeline must still capture, so the
+      // candidates-empty early-return must forward rawResponse the same way
+      // the other terminating branches do.
+      const backendResponse = {
+        candidates: [],
+        usageMetadata: {candidatesTokenCount: 0, promptTokenCount: 9, totalTokenCount: 9},
+      }
+      nock(baseUrl).post('/api/llm/generate').reply(200, createMockResponse(backendResponse))
+
+      const chunks = []
+      for await (const chunk of service.generateContentStream(
+        [{parts: [{text: 'blocked content'}], role: 'user'}],
+        {},
+      )) {
+        chunks.push(chunk)
+      }
+
+      const terminatingChunk = chunks.at(-1)
+      expect(terminatingChunk?.isComplete).to.equal(true)
+      expect(terminatingChunk?.rawResponse).to.deep.equal(backendResponse)
+    })
+
+    it('should attach rawResponse on the function-call terminating chunk', async () => {
+      const backendResponse = {
+        candidates: [
+          {
+            content: {
+              parts: [{functionCall: {args: {path: '/x'}, name: 'read_file'}}],
+              role: 'model',
+            },
+            finishReason: 'STOP',
+          },
+        ],
+        usageMetadata: {candidatesTokenCount: 4, promptTokenCount: 11, totalTokenCount: 15},
+      }
+      nock(baseUrl).post('/api/llm/generate').reply(200, createMockResponse(backendResponse))
+
+      const chunks = []
+      for await (const chunk of service.generateContentStream(
+        [{parts: [{text: 'read'}], role: 'user'}],
+        {},
+      )) {
+        chunks.push(chunk)
+      }
+
+      const terminatingChunk = chunks.at(-1)
+      expect(terminatingChunk?.isComplete).to.equal(true)
+      expect(terminatingChunk?.toolCalls?.length).to.equal(1)
+      expect(terminatingChunk?.rawResponse).to.deep.equal(backendResponse)
+    })
+  })
 })

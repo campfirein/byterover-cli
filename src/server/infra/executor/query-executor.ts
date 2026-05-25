@@ -3,12 +3,17 @@ import {join, relative} from 'node:path'
 import type {ICipherAgent} from '../../../agent/core/interfaces/i-cipher-agent.js'
 import type {IFileSystem} from '../../../agent/core/interfaces/i-file-system.js'
 import type {ISearchKnowledgeService, SearchKnowledgeResult} from '../../../agent/infra/sandbox/tools-sdk.js'
-import type {QueryLogMatchedDoc} from '../../core/domain/entities/query-log-entry.js'
+import type {LlmUsage} from '../../core/domain/entities/llm-usage.js'
+import type {QueryLogMatchedDoc, QueryLogTiming} from '../../core/domain/entities/query-log-entry.js'
 import type {
   IQueryExecutor,
   QueryExecuteOptions,
   QueryExecutorResult,
+  QueryToolModeMatchedDoc,
+  QueryToolModeOptions,
+  QueryToolModeResult,
 } from '../../core/interfaces/executor/i-query-executor.js'
+import type {IFormatDetector} from '../../core/interfaces/render/i-format-detector.js'
 
 import {ABSTRACT_EXTENSION, BRV_DIR, CONTEXT_FILE_EXTENSION, CONTEXT_TREE_DIR} from '../../constants.js'
 import {
@@ -21,6 +26,8 @@ import {
 import {loadSources} from '../../core/domain/source/source-schema.js'
 import {isDerivedArtifact} from '../context-tree/derived-artifact.js'
 import {FileContextTreeManifestService} from '../context-tree/file-context-tree-manifest-service.js'
+import {ExtensionAwareFormatDetector} from '../render/format/extension-aware-format-detector.js'
+import {renderHtmlTopicForLlm} from '../render/reader/html-renderer.js'
 import {
   canRespondDirectly,
   type DirectSearchResult,
@@ -54,6 +61,15 @@ export interface QueryExecutorDeps {
   enableCache?: boolean
   /** File system for reading full document content and computing fingerprints */
   fileSystem?: IFileSystem
+  /**
+   * Format-mode detector for `QueryExecutorResult.format`. Defaults to
+   * {@link ExtensionAwareFormatDetector} — inspects each `matchedDoc.path`
+   * extension and reports `'html'` if any HTML doc is in the recall, else
+   * `'markdown'`. The legacy {@link MarkdownOnlyFormatDetector} stub is kept
+   * around for tests that pin pre-migration behaviour but should not be
+   * wired as the production default.
+   */
+  formatDetector?: IFormatDetector
   /** Search service for pre-fetching relevant context before calling the LLM */
   searchService?: ISearchKnowledgeService
 }
@@ -79,30 +95,100 @@ export interface QueryExecutorDeps {
  */
 export class QueryExecutor implements IQueryExecutor {
   private static readonly FINGERPRINT_CACHE_TTL_MS = 30_000
+  /** Default tool-mode limit when the CLI flag is not passed. Matches `--limit` default in `query.ts`. */
+  private static readonly TOOL_MODE_DEFAULT_LIMIT = 10
+  /**
+   * Upper bound for tool-mode retrieval. Mirrors the CLI's `--limit`
+   * max. The cache always stores up to this many matches so callers
+   * with different `--limit` values can reuse the same cache entry
+   * (sliced down on read).
+   */
+  private static readonly TOOL_MODE_MAX_LIMIT = 50
   private readonly baseDirectory?: string
   private readonly cache?: QueryResultCache
   private cachedFingerprint?: {expiresAt: number; sourceValidityHash: string; value: string; worktreeRoot?: string}
   private readonly fileSystem?: IFileSystem
+  private readonly formatDetector: IFormatDetector
   private readonly searchService?: ISearchKnowledgeService
+  /**
+   * Dedicated cache for tool-mode envelopes. Separate instance from
+   * `cache` because the stored shape differs (JSON-serialised
+   * QueryToolModeResult vs LLM-synthesised response strings) — sharing
+   * a Map would let a Tier-0 read in one path return data of the wrong
+   * shape from the other.
+   */
+  private readonly toolModeCache?: QueryResultCache
 
   constructor(deps?: QueryExecutorDeps) {
     this.baseDirectory = deps?.baseDirectory
     this.fileSystem = deps?.fileSystem
+    this.formatDetector = deps?.formatDetector ?? new ExtensionAwareFormatDetector()
     this.searchService = deps?.searchService
     if (deps?.enableCache) {
       this.cache = new QueryResultCache()
+      this.toolModeCache = new QueryResultCache()
     }
+  }
+
+  /**
+   * Tool-mode query: deterministic retrieval, no LLM. Runs Tier 0 / 1
+   * cache, then Tier-2-style BM25 retrieval WITHOUT the
+   * `canRespondDirectly` confidence gate — the calling agent decides
+   * whether the matches are useful, not byterover. `supplementEntitySearches`
+   * fires on thin queries (totalFound < 3) for richer recall.
+   *
+   * Wire contract: bundled SKILL.md (section 1, "Tool mode — run
+   * query without an LLM provider"). Renaming any returned field is
+   * breaking for tool consumers.
+   */
+  public async executeToolMode(options: QueryToolModeOptions): Promise<QueryToolModeResult> {
+    return this.executeToolModeInternal(options)
   }
 
   public async executeWithAgent(agent: ICipherAgent, options: QueryExecuteOptions): Promise<QueryExecutorResult> {
     const startTime = Date.now()
-    const {query, taskId, worktreeRoot} = options
+    const {query, taskId, usageAggregator, worktreeRoot} = options
     const workspaceScope = this.deriveWorkspaceScope(worktreeRoot)
+    // Mutable holders so prefer-const rule sees the bindings as never-reassigned
+    // (we mutate properties rather than rebinding).
+    const searchClock: {endMs?: number; startMs?: number} = {}
+    const llmClock: {endMs?: number; startMs?: number} = {}
 
     // Start search early — runs in parallel with fingerprint computation (independent operations)
+    if (this.searchService) {
+      searchClock.startMs = Date.now()
+    }
+
     const searchPromise = this.searchService?.search(query, {limit: SMART_ROUTING_MAX_DOCS, scope: workspaceScope})
     // Prevent unhandled rejection if we return early (cache hit) while search is still pending
     searchPromise?.catch(() => {})
+
+    const buildTiming = (): QueryLogTiming & {durationMs: number} => {
+      const totalMs = Date.now() - startTime
+      // Prefer aggregator.getLlmMs() (sum of per-call LLM durations from
+      // llmservice:usage events) over the executeOnSession wall-clock measured
+      // by `llmClock`. The aggregator counts only the LLM-call portion, while
+      // `llmClock` includes tool execution + other non-LLM work — overstates
+      // LLM latency for paths that run tools. Fall back to the wall-clock
+      // measurement when no aggregator is wired (tests, future call sites).
+      const aggregatorLlmMs = usageAggregator?.getLlmMs()
+      const llmClockMs = llmClock.startMs !== undefined && llmClock.endMs !== undefined
+        ? llmClock.endMs - llmClock.startMs
+        : undefined
+      const llmMs = aggregatorLlmMs !== undefined && aggregatorLlmMs > 0 ? aggregatorLlmMs : llmClockMs
+      return {
+        durationMs: totalMs,
+        ...(searchClock.startMs !== undefined && searchClock.endMs !== undefined && {searchMs: searchClock.endMs - searchClock.startMs}),
+        ...(llmMs !== undefined && {llmMs}),
+        totalMs,
+      }
+    }
+
+    const usageOrUndefined = (): LlmUsage | undefined => {
+      if (!usageAggregator) return undefined
+      const totals = usageAggregator.getTotals()
+      return totals.inputTokens === 0 && totals.outputTokens === 0 ? undefined : totals
+    }
 
     // === Tier 0: Exact cache hit (0ms) ===
     let fingerprint: string | undefined
@@ -114,7 +200,7 @@ export class QueryExecutor implements IQueryExecutor {
           matchedDocs: [],
           response: cached + ATTRIBUTION_FOOTER,
           tier: TIER_EXACT_CACHE,
-          timing: {durationMs: Date.now() - startTime},
+          timing: buildTiming(),
         }
       }
     }
@@ -127,7 +213,7 @@ export class QueryExecutor implements IQueryExecutor {
           matchedDocs: [],
           response: fuzzyHit + ATTRIBUTION_FOOTER,
           tier: TIER_FUZZY_CACHE,
-          timing: {durationMs: Date.now() - startTime},
+          timing: buildTiming(),
         }
       }
     }
@@ -145,6 +231,8 @@ export class QueryExecutor implements IQueryExecutor {
       searchResult = await this.supplementEntitySearches(query, searchResult, workspaceScope)
     }
 
+    searchClock.endMs = Date.now()
+
     // === OOD short-circuit: no results means topic not covered ===
     if (searchResult && searchResult.results.length === 0) {
       const response = formatNotFoundResponse(query)
@@ -152,12 +240,16 @@ export class QueryExecutor implements IQueryExecutor {
         this.cache.set(query, response, fingerprint)
       }
 
+      // Route through formatDetector with empty docs so an HTML-aware detector
+      // can still report `'markdown'` (or whatever the default is) instead of
+      // this branch silently bypassing the detector with `undefined`.
       return {
+        format: this.formatDetector.detect([]),
         matchedDocs: [],
         response: response + ATTRIBUTION_FOOTER,
         searchMetadata: {resultCount: 0, topScore: 0, totalFound: 0},
         tier: TIER_DIRECT_SEARCH,
-        timing: {durationMs: Date.now() - startTime},
+        timing: buildTiming(),
       }
     }
 
@@ -169,8 +261,10 @@ export class QueryExecutor implements IQueryExecutor {
           this.cache.set(query, directResult, fingerprint)
         }
 
+        const directDocs = buildMatchedDocs(searchResult)
         return {
-          matchedDocs: buildMatchedDocs(searchResult),
+          format: this.formatDetector.detect(directDocs),
+          matchedDocs: directDocs,
           response: directResult + ATTRIBUTION_FOOTER,
           searchMetadata: {
             cacheFingerprint: fingerprint,
@@ -179,7 +273,7 @@ export class QueryExecutor implements IQueryExecutor {
             totalFound: searchResult.totalFound,
           },
           tier: TIER_DIRECT_SEARCH,
-          timing: {durationMs: Date.now() - startTime},
+          timing: buildTiming(),
         }
       }
     }
@@ -254,10 +348,12 @@ export class QueryExecutor implements IQueryExecutor {
       : {maxIterations: 50, maxTokens: 2048, temperature: 0.5}
 
     try {
+      llmClock.startMs = Date.now()
       const response = await agent.executeOnSession(taskSessionId, prompt, {
         executionContext: {commandType: 'query', ...queryOverrides},
         taskId,
       })
+      llmClock.endMs = Date.now()
 
       // Store in cache for future Tier 0/1 hits
       if (this.cache && fingerprint) {
@@ -265,8 +361,10 @@ export class QueryExecutor implements IQueryExecutor {
       }
 
       const tier = prefetchedContext ? TIER_OPTIMIZED_LLM : TIER_FULL_AGENTIC
+      const llmDocs = buildMatchedDocs(searchResult)
       return {
-        matchedDocs: buildMatchedDocs(searchResult),
+        format: this.formatDetector.detect(llmDocs),
+        matchedDocs: llmDocs,
         response: response + ATTRIBUTION_FOOTER,
         searchMetadata: {
           cacheFingerprint: fingerprint,
@@ -275,11 +373,33 @@ export class QueryExecutor implements IQueryExecutor {
           totalFound: searchResult?.totalFound ?? 0,
         },
         tier,
-        timing: {durationMs: Date.now() - startTime},
+        timing: buildTiming(),
+        ...(usageOrUndefined() !== undefined && {usage: usageOrUndefined()}),
       }
     } finally {
       // Clean up entire task session (sandbox + history) in one call
       await agent.deleteTaskSession(taskSessionId)
+    }
+  }
+
+  /**
+   * Empty-envelope helper for executeToolMode early-return (no
+   * search service wired). Search-throw failures now propagate to
+   * the daemon and surface via outer `success: false` instead, so
+   * this only runs on the "tool mode not fully provisioned" path.
+   */
+  private buildEmptyToolModeEnvelope(startTime: number): QueryToolModeResult {
+    return {
+      matchedDocs: [],
+      metadata: {
+        cacheHit: null,
+        durationMs: Date.now() - startTime,
+        skippedSharedCount: 0,
+        tier: TIER_DIRECT_SEARCH,
+        topScore: 0,
+        totalFound: 0,
+      },
+      status: 'no-matches',
     }
   }
 
@@ -387,6 +507,64 @@ Use \`silent: true\` for data-loading code_exec calls. Use \`setFinalResult(answ
 ${groundingRules}
 
 ${responseFormat}`
+  }
+
+  /**
+   * Read + render content for each match in a search result. Skips
+   * shared-source matches in v1 (their context-tree root may live
+   * outside `<projectRoot>/.brv/` and isn't covered by the
+   * path-safety checks). Files that vanished or are unreadable are
+   * dropped silently — a stale BM25 index shouldn't fail the query.
+   *
+   * Returns the skipped-shared count alongside matches so callers can
+   * surface it in `metadata.skippedSharedCount` — calling agents need
+   * a way to detect when their tool-mode recall is incomplete vs
+   * genuinely empty.
+   */
+  private async buildToolModeMatches(
+    searchResult: SearchKnowledgeResult,
+  ): Promise<{matchedDocs: QueryToolModeMatchedDoc[]; skippedSharedCount: number}> {
+    if (!this.fileSystem) return {matchedDocs: [], skippedSharedCount: 0}
+
+    const allResults = searchResult.results ?? []
+    const localResults = allResults.filter((r) => !r.origin || r.origin === 'local')
+    const skippedSharedCount = allResults.length - localResults.length
+    const enriched = await Promise.all(
+      localResults.map(async (result) => {
+        const ctBase = result.originContextTreeRoot ?? join(BRV_DIR, CONTEXT_TREE_DIR)
+        const ctPath = join(ctBase, result.path)
+        try {
+          const {content: raw} = await this.fileSystem!.readFile(ctPath)
+          const format: 'html' | 'markdown' = result.format === 'html' ? 'html' : 'markdown'
+          let rendered = raw
+          if (format === 'html') {
+            try {
+              rendered = renderHtmlTopicForLlm(raw)
+            } catch {
+              // Renderer is forgiving by contract; fall back to raw bytes on the rare throw.
+            }
+          }
+
+          return {
+            format,
+            path: result.path,
+            // eslint-disable-next-line camelcase
+            rendered_md: rendered,
+            score: result.score,
+            title: result.title ?? result.path,
+          }
+        } catch {
+          // Stale BM25 index: file vanished or unreadable. Drop the
+          // match silently — implicit undefined return is filtered out
+          // by the typeguard below.
+        }
+      }),
+    )
+
+    return {
+      matchedDocs: enriched.filter((m): m is QueryToolModeMatchedDoc => m !== undefined),
+      skippedSharedCount,
+    }
   }
 
   /**
@@ -519,6 +697,93 @@ ${responseFormat}`
     return rel || undefined
   }
 
+  private async executeToolModeInternal(options: QueryToolModeOptions): Promise<QueryToolModeResult> {
+    const startTime = Date.now()
+    const {limit = QueryExecutor.TOOL_MODE_DEFAULT_LIMIT, query, worktreeRoot} = options
+    const workspaceScope = this.deriveWorkspaceScope(worktreeRoot)
+
+    // === Tier 0: Exact cache hit ===
+    //
+    // Cache entries always hold up to `TOOL_MODE_MAX_LIMIT` matches.
+    // We slice down to the caller's `limit` on read so calls with
+    // different `--limit` values share one cache entry — a `--limit 50`
+    // request followed by `--limit 1` returns the same top doc.
+    let fingerprint: string | undefined
+    if (this.toolModeCache && this.fileSystem) {
+      fingerprint = await this.computeContextTreeFingerprint(worktreeRoot)
+      const cached = this.toolModeCache.get(query, fingerprint)
+      if (cached) {
+        const overlaid = this.overlayCachedEnvelope(cached, 'exact', TIER_EXACT_CACHE, startTime, limit)
+        if (overlaid) return overlaid
+      }
+    }
+
+    // === Tier 1: Fuzzy cache hit ===
+    if (this.toolModeCache && fingerprint) {
+      const fuzzy = this.toolModeCache.findSimilar(query, fingerprint)
+      if (fuzzy) {
+        const overlaid = this.overlayCachedEnvelope(fuzzy, 'fuzzy', TIER_FUZZY_CACHE, startTime, limit)
+        if (overlaid) return overlaid
+      }
+    }
+
+    // === Tier 2: BM25 retrieval + supplement + render ===
+    if (!this.searchService) {
+      return this.buildEmptyToolModeEnvelope(startTime)
+    }
+
+    // Always retrieve at MAX_LIMIT so the cache entry serves smaller
+    // subsequent requests without re-fetching. Slicing happens after
+    // the cache write.
+    //
+    // searchService.search() throws on transport-level failures (index
+    // unavailable, malformed payload, etc.). DON'T swallow into an
+    // empty envelope — that would conflate "broken retrieval" with
+    // "genuinely no matches" and let the calling agent synthesise
+    // around an outage. Let the throw propagate; the daemon catches
+    // it and emits task:error, which the CLI maps to outer
+    // `success: false`.
+    let searchResult: SearchKnowledgeResult = await this.searchService.search(query, {
+      limit: QueryExecutor.TOOL_MODE_MAX_LIMIT,
+      scope: workspaceScope,
+    })
+
+    if (searchResult.totalFound < 3) {
+      searchResult = await this.supplementEntitySearches(query, searchResult, workspaceScope)
+    }
+
+    const {matchedDocs: allMatches, skippedSharedCount} = await this.buildToolModeMatches(searchResult)
+    const topScore = allMatches[0]?.score ?? 0
+    const status: QueryToolModeResult['status'] = allMatches.length === 0 ? 'no-matches' : 'ok'
+    const totalFound = searchResult.totalFound ?? allMatches.length
+
+    // Cache the FULL envelope (up to TOOL_MODE_MAX_LIMIT matches) so
+    // subsequent calls with a smaller `--limit` slice down on read.
+    // `durationMs` here is a placeholder — overlayCachedEnvelope
+    // overwrites it with the cache-read latency.
+    if (this.toolModeCache && fingerprint && status === 'ok') {
+      const fullEnvelope: QueryToolModeResult = {
+        matchedDocs: allMatches,
+        metadata: {cacheHit: null, durationMs: 0, skippedSharedCount, tier: TIER_DIRECT_SEARCH, topScore, totalFound},
+        status,
+      }
+      this.toolModeCache.set(query, JSON.stringify(fullEnvelope), fingerprint)
+    }
+
+    return {
+      matchedDocs: allMatches.slice(0, limit),
+      metadata: {
+        cacheHit: null,
+        durationMs: Date.now() - startTime,
+        skippedSharedCount,
+        tier: TIER_DIRECT_SEARCH,
+        topScore,
+        totalFound,
+      },
+      status,
+    }
+  }
+
   /**
    * Extract key entities from a query for supplementary searches.
    * Simple heuristic: split query, filter stopwords, keep significant terms.
@@ -559,6 +824,45 @@ ${responseFormat}`
     const words = query.toLowerCase().split(/\s+/)
 
     return words.filter((w) => w.length >= 3 && !stopwords.has(w))
+  }
+
+  /**
+   * Parse a cached tool-mode envelope JSON string, slice its
+   * `matchedDocs` to the caller's `limit`, and overlay cacheHit + tier
+   * + durationMs onto its metadata. Returns undefined when parse
+   * fails (corrupt cache entry) so the caller can fall through to
+   * fresh retrieval instead of crashing.
+   *
+   * Slicing is what lets one cache entry serve different `--limit`
+   * values — the cached envelope always holds up to
+   * `TOOL_MODE_MAX_LIMIT` matches, and we trim down on read. `topScore`
+   * and `totalFound` are kept from the cached envelope intentionally:
+   * `topScore` survives the slice (matchedDocs[0] is the same), and
+   * `totalFound` reports the corpus count which is independent of the
+   * caller's display limit.
+   */
+  private overlayCachedEnvelope(
+    cached: string,
+    cacheHit: 'exact' | 'fuzzy',
+    tier: number,
+    startTime: number,
+    limit: number,
+  ): QueryToolModeResult | undefined {
+    try {
+      const parsed = JSON.parse(cached) as QueryToolModeResult
+      return {
+        ...parsed,
+        matchedDocs: parsed.matchedDocs.slice(0, limit),
+        metadata: {
+          ...parsed.metadata,
+          cacheHit,
+          durationMs: Date.now() - startTime,
+          tier,
+        },
+      }
+    } catch {
+      return undefined
+    }
   }
 
   /**
@@ -639,7 +943,26 @@ ${responseFormat}`
               const ctBase = result.originContextTreeRoot ?? join(BRV_DIR, CONTEXT_TREE_DIR)
               const ctPath = join(ctBase, result.path)
               const {content: fullContent} = await this.fileSystem!.readFile(ctPath)
-              content = fullContent
+              // HTML topics: render the typed-element document as a
+              // markdown-like string before handing it to the response
+              // formatter. Shipping raw `<bv-topic>...</bv-topic>` markup
+              // here would burn the 5000-char content budget on tags
+              // (`direct-search-responder.ts:11`) and force any
+              // downstream LLM consumer to re-parse the document. The
+              // renderer preserves bv-* element semantics (severity,
+              // subject/value, decision id) without the markup tax.
+              if (result.format === 'html') {
+                try {
+                  content = renderHtmlTopicForLlm(fullContent)
+                } catch {
+                  // Renderer is forgiving by contract — but if anything
+                  // throws, fall back to the raw bytes so we don't
+                  // blank the response on a single malformed topic.
+                  content = fullContent
+                }
+              } else {
+                content = fullContent
+              }
             } catch {
               // Use excerpt if full read fails
             }

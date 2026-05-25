@@ -2,7 +2,9 @@
  * Logging Content Generator Decorator.
  *
  * Wraps any IContentGenerator to add debug logging capabilities.
- * Logs request/response metadata, timing, and errors.
+ * Logs request/response metadata, timing, and errors. Emits
+ * `llmservice:usage` after every successful call with canonical M1
+ * token usage extracted from the response .
  */
 
 import type {
@@ -12,6 +14,23 @@ import type {
   IContentGenerator,
 } from '../../../core/interfaces/i-content-generator.js'
 import type {SessionEventBus} from '../../events/event-emitter.js'
+
+import {extractUsage, type ProviderType} from '../usage-extractor.js'
+
+/**
+ * Order matters only for tie-breaking; raw shapes don't overlap across providers.
+ * Mirrors the {@link ProviderType} union in `usage-extractor.ts` — keep in sync if
+ * a new provider is added to the discriminator there.
+ *
+ * In production all live LLM traffic flows through `AiSdkContentGenerator`,
+ * which folds `result.usage` (+ Anthropic's `providerMetadata.cacheCreationInputTokens`)
+ * into the rawResponse shape that the `'aiSdk'` discriminator matches. The
+ * `'anthropic' / 'openai' / 'google'` branches are defensive shims for any
+ * future direct-provider adapter that bypasses the AI SDK and emits a native
+ * SDK shape on rawResponse — don't infer from the iteration order that live
+ * traffic flows through them first.
+ */
+const PROVIDER_TYPES: readonly ProviderType[] = ['anthropic', 'openai', 'google', 'aiSdk']
 
 /**
  * Logging options for the decorator.
@@ -86,6 +105,15 @@ export class LoggingContentGenerator implements IContentGenerator {
 
     try {
       const response = await this.inner.generateContent(request)
+      // Telemetry must never break the response. A throw inside emitUsage
+      // (e.g., a misbehaving event listener) would otherwise be caught by
+      // the outer catch and reported as an LLM error.
+      try {
+        this.emitUsage(request, response.rawResponse, Date.now() - startTime)
+      } catch {
+        // Best-effort — swallow any telemetry-side failure.
+      }
+
       return response
     } catch (error) {
       this.logError(requestId, error, Date.now() - startTime)
@@ -111,6 +139,10 @@ export class LoggingContentGenerator implements IContentGenerator {
 
     try {
       let chunkCount = 0
+      // Streaming providers (e.g. AiSdkContentGenerator) attach the per-call
+      // usage block to the terminating chunk's `rawResponse`. Capture the
+      // last non-undefined occurrence and emit telemetry once the stream drains.
+      let lastRawResponse: unknown
 
       for await (const chunk of this.inner.generateContentStream(request)) {
         chunkCount++
@@ -119,11 +151,56 @@ export class LoggingContentGenerator implements IContentGenerator {
           this.logChunk(requestId, chunk, chunkCount)
         }
 
+        if (chunk.rawResponse !== undefined) {
+          lastRawResponse = chunk.rawResponse
+        }
+
         yield chunk
+      }
+
+      try {
+        this.emitUsage(request, lastRawResponse, Date.now() - startTime)
+      } catch {
+        // Best-effort — swallow any telemetry-side failure.
       }
     } catch (error) {
       this.logError(requestId, error, Date.now() - startTime)
       throw error
+    }
+  }
+
+  /**
+   * Auto-detect provider type from raw response shape and emit
+   * `llmservice:usage` with canonical fields. Best-effort: emits nothing
+   * when no recognizable usage shape is present.
+   *
+   * Accepts an explicit `rawResponse` so the streaming path can pass the
+   * value captured off the terminating chunk; non-streaming callers pass
+   * `response.rawResponse` directly.
+   */
+  private emitUsage(
+    request: GenerateContentRequest,
+    rawResponse: unknown,
+    durationMs: number,
+  ): void {
+    if (!this.eventBus) return
+
+    const rawUsage = pickRawUsage(rawResponse)
+    if (rawUsage === undefined) return
+
+    for (const providerType of PROVIDER_TYPES) {
+      const usage = extractUsage(rawUsage, providerType)
+      if (!usage) continue
+      this.eventBus.emit('llmservice:usage', {
+        ...(usage.cacheCreationTokens !== undefined && {cacheCreationTokens: usage.cacheCreationTokens}),
+        ...(usage.cachedInputTokens !== undefined && {cachedInputTokens: usage.cachedInputTokens}),
+        durationMs,
+        inputTokens: usage.inputTokens,
+        model: request.model,
+        outputTokens: usage.outputTokens,
+        ...(request.taskId && {taskId: request.taskId}),
+      })
+      return
     }
   }
 
@@ -167,4 +244,18 @@ export class LoggingContentGenerator implements IContentGenerator {
   private shouldLogChunks(): boolean {
     return this.options.logChunks === true || this.options.verbose === true
   }
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object'
+}
+
+/**
+ * Pull the provider's raw `usage` block out of `rawResponse`. Anthropic and
+ * OpenAI nest it under `usage`; Gemini under `usageMetadata`. Returns the
+ * first match or `undefined`.
+ */
+function pickRawUsage(rawResponse: unknown): unknown {
+  if (!isObject(rawResponse)) return undefined
+  return rawResponse.usage ?? rawResponse.usageMetadata
 }

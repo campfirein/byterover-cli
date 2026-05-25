@@ -23,7 +23,10 @@ const QueryLogSearchMetadataFileSchema = z.object({
 })
 
 const QueryLogTimingFileSchema = z.object({
-  durationMs: z.number(),
+  durationMs: z.number().optional(),
+  llmMs: z.number().optional(),
+  searchMs: z.number().optional(),
+  totalMs: z.number().optional(),
 })
 
 // Single source of truth: tier validation is derived from QUERY_LOG_TIERS at runtime.
@@ -35,8 +38,13 @@ const QueryLogTierSchema = z.custom<QueryLogTier>(
 )
 
 const QueryLogEntryBaseSchema = z.object({
+  cacheCreationTokens: z.number().optional(),
+  cachedInputTokens: z.number().optional(),
+  format: z.enum(['html', 'markdown']).optional(),
   id: z.string(),
+  inputTokens: z.number().optional(),
   matchedDocs: z.array(QueryLogMatchedDocFileSchema),
+  outputTokens: z.number().optional(),
   query: z.string(),
   searchMetadata: QueryLogSearchMetadataFileSchema.optional(),
   startedAt: z.number(),

@@ -1,15 +1,10 @@
 import {Button} from '@campfirein/byterover-packages/components/button'
 import {Sheet, SheetContent} from '@campfirein/byterover-packages/components/sheet'
-import {useCallback, useEffect, useMemo, useState} from 'react'
+import {useCallback, useMemo, useState} from 'react'
 import {useSearchParams} from 'react-router-dom'
 import {toast} from 'sonner'
 
-import type {ComposerType} from './task-composer-types'
-
 import {useTransportStore} from '../../../stores/transport-store'
-import {CURATE_EXAMPLE, QUERY_EXAMPLE, TOUR_STEP_LABEL} from '../../onboarding/lib/tour-examples'
-import {useOnboardingStore} from '../../onboarding/stores/onboarding-store'
-import {useGetProviders} from '../../provider/api/get-providers'
 import {useClearCompleted} from '../api/clear-completed'
 import {useDeleteBulkTasks} from '../api/delete-bulk-tasks'
 import {useDeleteTask} from '../api/delete-task'
@@ -17,12 +12,10 @@ import {useGetTasks} from '../api/get-tasks'
 import {useDebouncedValue} from '../hooks/use-debounced-value'
 import {useTaskFilterParams} from '../hooks/use-task-filter-params'
 import {useTickingNow} from '../hooks/use-ticking-now'
-import {useComposerRetryStore} from '../stores/composer-retry-store'
 import {useTaskStore} from '../stores/task-store'
 import {durationPresetToRange} from '../utils/duration-presets'
 import {statusFilterToServer} from '../utils/status-filter-to-server'
-import {isTerminalStatus} from '../utils/task-status'
-import {TaskComposerSheet} from './task-composer'
+import {expandTaskTypeFilter, isTerminalStatus} from '../utils/task-status'
 import {TaskDetailView} from './task-detail-view'
 import {TaskFilterTags} from './task-filter-tags'
 import {BulkActionsBar} from './task-list-bulk-actions'
@@ -60,29 +53,19 @@ export function TaskListView() {
     clearAllFilters,
     filters,
     setDurationPreset,
-    setModelFilter,
     setPage,
     setPageSize,
-    setProviderFilter,
     setSearchQuery,
     setStatusFilter,
     setTimeRange,
     setTypeFilter,
   } = useTaskFilterParams()
-  const {data: providersResponse} = useGetProviders()
-  const providers = providersResponse?.providers ?? []
-  const providerNames = useMemo(
-    () => new Map((providersResponse?.providers ?? []).map((p) => [p.id, p.name])),
-    [providersResponse],
-  )
   const {
     createdAfter,
     createdBefore,
     durationPreset,
-    modelFilter,
     page,
     pageSize,
-    providerFilter,
     searchQuery,
     statusFilter,
     typeFilter,
@@ -94,15 +77,13 @@ export function TaskListView() {
   const nonStatusFilters = useMemo(
     () => ({
       projectPath: projectPath || undefined,
-      ...(typeFilter.length > 0 ? {type: typeFilter} : {}),
-      ...(providerFilter.length > 0 ? {provider: providerFilter} : {}),
-      ...(modelFilter.length > 0 ? {model: modelFilter} : {}),
+      ...(typeFilter.length > 0 ? {type: expandTaskTypeFilter(typeFilter)} : {}),
       ...(createdAfter === undefined ? {} : {createdAfter}),
       ...(createdBefore === undefined ? {} : {createdBefore}),
       ...durationRange,
       ...(debouncedSearch.trim() ? {searchText: debouncedSearch.trim()} : {}),
     }),
-    [projectPath, typeFilter, providerFilter, modelFilter, createdAfter, createdBefore, durationRange, debouncedSearch],
+    [projectPath, typeFilter, createdAfter, createdBefore, durationRange, debouncedSearch],
   )
 
   const serverStatus = useMemo(() => statusFilterToServer(statusFilter), [statusFilter])
@@ -117,14 +98,10 @@ export function TaskListView() {
 
   const tasks = data?.tasks ?? []
   const breakdown = countsData?.counts ?? {all: 0, cancelled: 0, completed: 0, failed: 0, running: 0}
-  const availableProviders = data?.availableProviders ?? []
-  const availableModels = data?.availableModels ?? []
   const now = useTickingNow(breakdown.running > 0)
   const hasActiveFilters =
     statusFilter !== 'all' ||
     typeFilter.length > 0 ||
-    providerFilter.length > 0 ||
-    modelFilter.length > 0 ||
     createdAfter !== undefined ||
     createdBefore !== undefined ||
     durationPreset !== 'all' ||
@@ -135,51 +112,6 @@ export function TaskListView() {
   const clearCompletedMutation = useClearCompleted()
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [composer, setComposer] = useState<{
-    initialContent?: string
-    initialType?: ComposerType
-    open: boolean
-  }>({open: false})
-
-  const tourActive = useOnboardingStore((s) => s.tourActive)
-  const tourStep = useOnboardingStore((s) => s.tourStep)
-  const tourTaskId = useOnboardingStore((s) => s.tourTaskId)
-  const setTourTaskId = useOnboardingStore((s) => s.setTourTaskId)
-  const inComposerStep = tourStep === 'curate' || tourStep === 'query'
-  const inTour = tourActive && inComposerStep
-  const tourCueLabel =
-    inTour && !tourTaskId
-      ? tourStep === 'curate'
-        ? 'Click to capture knowledge'
-        : 'Click to ask a question'
-      : undefined
-
-  const openComposer = () => {
-    if (inTour) {
-      const example = tourStep === 'curate' ? CURATE_EXAMPLE : QUERY_EXAMPLE
-      setComposer({initialContent: example, initialType: tourStep, open: true})
-      return
-    }
-
-    setComposer({open: true})
-  }
-
-  const closeComposer = () => setComposer({open: false})
-
-  const retrySeed = useComposerRetryStore((s) => s.seed)
-  const consumeRetry = useComposerRetryStore((s) => s.consume)
-
-  useEffect(() => {
-    if (!retrySeed) return
-    setComposer({initialContent: retrySeed.content, initialType: retrySeed.type, open: true})
-    closeTask()
-    consumeRetry()
-  }, [retrySeed, consumeRetry, closeTask])
-
-  const onComposerSubmitted = (taskId: string, openDetail: boolean) => {
-    if (inTour) setTourTaskId(taskId)
-    if (openDetail) openTask(taskId)
-  }
 
   const taskMap = useMemo(() => new Map(tasks.map((task) => [task.taskId, task])), [tasks])
 
@@ -279,24 +211,12 @@ export function TaskListView() {
         />
       ) : (
         <FilterBar
-          availableModels={availableModels}
-          availableProviders={availableProviders}
           breakdown={breakdown}
           createdAfter={createdAfter}
           createdBefore={createdBefore}
           durationPreset={durationPreset}
-          modelFilter={modelFilter}
           onDurationChange={(next) => {
             setDurationPreset(next)
-            clearSelection()
-          }}
-          onModelChange={(next) => {
-            setModelFilter(next)
-            clearSelection()
-          }}
-          onNewTask={openComposer}
-          onProviderChange={(next) => {
-            setProviderFilter(next)
             clearSelection()
           }}
           onSearchChange={setSearchQuery}
@@ -312,11 +232,8 @@ export function TaskListView() {
             setTypeFilter(next)
             clearSelection()
           }}
-          providerFilter={providerFilter}
-          providers={providers}
           searchQuery={searchQuery}
           statusFilter={statusFilter}
-          tourCue={tourCueLabel && tasks.length > 0 ? tourCueLabel : undefined}
           typeFilter={typeFilter}
         />
       )}
@@ -325,17 +242,12 @@ export function TaskListView() {
         createdAfter={createdAfter}
         createdBefore={createdBefore}
         durationPreset={durationPreset}
-        modelFilter={modelFilter}
         onClearAll={clearAllFilters}
         onDurationChange={setDurationPreset}
-        onModelChange={setModelFilter}
-        onProviderChange={setProviderFilter}
         onSearchChange={setSearchQuery}
         onStatusChange={setStatusFilter}
         onTimeRangeChange={setTimeRange}
         onTypeChange={setTypeFilter}
-        providerFilter={providerFilter}
-        providers={providers}
         searchQuery={searchQuery}
         statusFilter={statusFilter}
         typeFilter={typeFilter}
@@ -347,12 +259,7 @@ export function TaskListView() {
         </PlaceholderCard>
       ) : tasks.length === 0 ? (
         <PlaceholderCard withDots>
-          <EmptyState
-            hasActiveFilters={hasActiveFilters}
-            onClearFilters={clearAllFilters}
-            onNewTask={openComposer}
-            tourCue={tourCueLabel}
-          />
+          <EmptyState hasActiveFilters={hasActiveFilters} onClearFilters={clearAllFilters} />
         </PlaceholderCard>
       ) : (
         <TaskTable
@@ -364,7 +271,6 @@ export function TaskListView() {
           onRowClick={openTask}
           onToggleSelect={toggleSelect}
           onToggleSelectAll={toggleSelectAll}
-          providerNames={providerNames}
           searchQuery={searchQuery}
           selectedIds={selectedIds}
           statusFilter={statusFilter}
@@ -401,16 +307,6 @@ export function TaskListView() {
           {selectedTaskId && <TaskDetailView taskId={selectedTaskId} />}
         </SheetContent>
       </Sheet>
-
-      <TaskComposerSheet
-        initialContent={composer.initialContent}
-        initialType={composer.initialType}
-        onClose={closeComposer}
-        onSubmitted={onComposerSubmitted}
-        open={composer.open}
-        prefillNotice={inTour ? 'example' : undefined}
-        tourStepLabel={inTour ? TOUR_STEP_LABEL[tourStep] : undefined}
-      />
     </div>
   )
 }

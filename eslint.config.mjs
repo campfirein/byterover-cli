@@ -8,6 +8,12 @@ const gitignorePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
 
 export default [
   includeIgnoreFile(gitignorePath),
+  // Phase-5 monorepo packages (agent-sdk, brv-agent-py) + the byterover-packages
+  // submodule have their own toolchains + ESLint configs (referencing
+  // @workspace/* packages) — skip them from the root lint run.
+  {
+    ignores: ['packages/**'],
+  },
   ...oclif,
   prettier,
   {

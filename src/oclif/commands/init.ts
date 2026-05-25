@@ -2,7 +2,6 @@
 import {Command, Flags} from '@oclif/core'
 
 import {InitEvents, type InitLocalResponse} from '../../shared/transport/events/init-events.js'
-import {ProviderEvents, type ProviderGetActiveResponse} from '../../shared/transport/events/provider-events.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../lib/daemon-client.js'
 
 export default class Init extends Command {
@@ -52,29 +51,7 @@ export default class Init extends Command {
       return
     }
 
-    // Step 3: Provider setup — only if no provider connected yet
-    let activeProviderId: string
-    try {
-      const result = await withDaemonRetry(
-        async (client) => client.requestWithAck<ProviderGetActiveResponse>(ProviderEvents.GET_ACTIVE),
-        daemonOptions,
-      )
-      activeProviderId = result.activeProviderId
-    } catch (error) {
-      this.log(formatConnectionError(error))
-      return
-    }
-
-    if (!activeProviderId) {
-      try {
-        await this.config.runCommand('providers:connect')
-      } catch {
-        // providers:connect logs its own errors
-        return
-      }
-    }
-
-    // Step 4: Connector setup — interactive agent selection + default connector
+    // Step 3: Connector setup — interactive agent selection + default connector
     try {
       await this.config.runCommand('connectors:install')
     } catch {

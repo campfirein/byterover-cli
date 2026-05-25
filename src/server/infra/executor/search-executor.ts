@@ -7,6 +7,13 @@
  *
  * This is the engine behind `brv search`. The CLI command and transport
  * layer handle I/O; this module handles the search logic.
+ *
+ * Note on sidecar bumping: `SearchKnowledgeService.search()` already
+ * accumulates access hits and mirrors them to the sidecar via
+ * `flushAccessHits` → `mirrorHitsToSignalStore` inside `acquireIndex`'s
+ * cache-refresh path. We do NOT add a second bump here — doing so would
+ * double-count importance and prematurely promote topics to higher
+ * maturity tiers (observed end-to-end during PR #677 testing).
  */
 
 import type {ISearchKnowledgeService, SearchKnowledgeResult} from '../../../agent/infra/sandbox/tools-sdk.js'

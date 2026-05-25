@@ -266,6 +266,8 @@ export const TransportTaskEventNames = {
   COMPLETED: 'task:completed',
   CREATE: 'task:create',
   CREATED: 'task:created',
+  // Curate telemetry (Agent → Daemon, before task:completed)
+  CURATE_RESULT: 'task:curateResult',
   // Single delete (M2.09)
   DELETE: 'task:delete',
   // Multi delete (M2.09)
@@ -443,7 +445,7 @@ export const TaskExecuteSchema = z.object({
   /** Dream trigger source — how this dream was initiated */
   trigger: z.enum(['agent-idle', 'cli', 'manual']).optional(),
   /** Task type */
-  type: z.enum(['curate', 'curate-folder', 'dream', 'query', 'search']),
+  type: z.enum(['curate', 'curate-folder', 'curate-html-direct', 'dream', 'query', 'query-tool-mode', 'search']),
   /** Workspace root for scoped query/curate */
   worktreeRoot: z.string().optional(),
 })
@@ -540,6 +542,21 @@ export const LlmUnsupportedInputEventSchema = z.object({
 // ============================================================================
 
 /**
+ * Closed set of task types. Single source of truth — broadcast-event schemas
+ * (e.g. `TaskCreatedSchema`) and request schemas (e.g. `TaskExecuteSchema`)
+ * both reference this so a new task type only needs to be added in one place.
+ */
+export const TaskTypeSchema = z.enum([
+  'curate',
+  'curate-folder',
+  'curate-html-direct',
+  'dream',
+  'query',
+  'query-tool-mode',
+  'search',
+])
+
+/**
  * task:ack - Transport acknowledges task creation
  */
 export const TaskAckSchema = z.object({
@@ -567,8 +584,8 @@ export const TaskCreatedSchema = z.object({
   provider: z.string().optional(),
   /** Unique task identifier */
   taskId: z.string(),
-  /** Task type */
-  type: z.enum(['curate', 'curate-folder', 'query', 'search']),
+  /** Task type — closed enum kept in sync with `TaskTypeSchema`. */
+  type: TaskTypeSchema,
 })
 
 /**
@@ -615,7 +632,24 @@ export const TaskCompletedEventSchema = z.object({
  * Carries tier/timing/matchedDocs from QueryExecutor for QueryLogHandler.
  * Response string is NOT included — it arrives via task:completed.
  */
+/** Telemetry payload — canonical M1 token names + per-call duration. */
+const TelemetryUsageSchema = z.object({
+  cacheCreationTokens: z.number().optional(),
+  cachedInputTokens: z.number().optional(),
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+})
+
+/** Latency tiers (query path). */
+const QueryLogTimingTransportSchema = z.object({
+  durationMs: z.number(),
+  llmMs: z.number().optional(),
+  searchMs: z.number().optional(),
+  totalMs: z.number().optional(),
+})
+
 export const TaskQueryResultEventSchema = z.object({
+  format: z.enum(['html', 'markdown']).optional(),
   matchedDocs: z.array(z.object({path: z.string(), score: z.number(), title: z.string()})),
   searchMetadata: z
     .object({
@@ -629,7 +663,25 @@ export const TaskQueryResultEventSchema = z.object({
   tier: z.custom<QueryLogTier>((val) => new Set<unknown>(QUERY_LOG_TIERS).has(val), {
     message: 'Invalid query log tier',
   }),
-  timing: z.object({durationMs: z.number()}),
+  timing: QueryLogTimingTransportSchema,
+  usage: TelemetryUsageSchema.optional(),
+})
+
+/**
+ * task:curateResult — curate-side telemetry forwarder.
+ * Agent → Daemon, BEFORE task:completed, so CurateLogHandler.setCurateUsage
+ * runs before onTaskCompleted merges into the entry.
+ */
+export const TaskCurateResultEventSchema = z.object({
+  format: z.enum(['html', 'markdown']).optional(),
+  taskId: z.string(),
+  timing: z
+    .object({
+      llmMs: z.number().optional(),
+      totalMs: z.number().optional(),
+    })
+    .optional(),
+  usage: TelemetryUsageSchema.optional(),
 })
 
 /**
@@ -706,6 +758,7 @@ export type TaskStartedEvent = z.infer<typeof TaskStartedEventSchema>
 export type TaskCompletedEvent = z.infer<typeof TaskCompletedEventSchema>
 export type TaskErrorData = z.infer<typeof TaskErrorDataSchema>
 export type TaskErrorEvent = z.infer<typeof TaskErrorEventSchema>
+export type TaskCurateResultEvent = z.infer<typeof TaskCurateResultEventSchema>
 export type TaskQueryResultEvent = z.infer<typeof TaskQueryResultEventSchema>
 // Note: LlmResponseEvent, LlmToolCallEvent, LlmToolResultEvent are defined above
 // as type aliases extending AgentEventMap (lines 335-347)
@@ -713,8 +766,6 @@ export type TaskQueryResultEvent = z.infer<typeof TaskQueryResultEventSchema>
 // ============================================================================
 // Request/Response Schemas (for client → server commands)
 // ============================================================================
-
-export const TaskTypeSchema = z.enum(['curate', 'curate-folder', 'dream', 'query', 'search'])
 
 /**
  * Request to create a new task

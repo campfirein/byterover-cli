@@ -83,6 +83,15 @@ export const AGENT_IDLE_CHECK_INTERVAL_MS = 10_000 // Check every 10s (responsiv
 export const SLEEP_WAKE_CHECK_INTERVAL_MS = 5000
 export const SLEEP_WAKE_THRESHOLD_MULTIPLIER = 3
 
+// Phase 9 bridge — `/brv/parley/query/v1` server emits `heartbeat_ping`
+// frames at this cadence while the response generator is idle, so the
+// libp2p Yamux substream stays alive even when the remote agent's
+// generator is mid-LLM-call. Must be well below the Yamux idle timeout
+// (default ~30s in @chainsafe/libp2p-yamux v8). The wire schema
+// (`parley-types.ts`) already specifies heartbeat frames; `audit-parley-
+// seal.ts` and the transcript digest skip them.
+export const BRIDGE_PARLEY_HEARTBEAT_INTERVAL_MS = 10_000
+
 // Spawn lock, daemon readiness polling, daemon stop budget
 // → moved to @campfirein/brv-transport-client
 

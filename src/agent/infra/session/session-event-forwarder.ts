@@ -96,4 +96,14 @@ export function setupEventForwarding(
       sessionId,
     })
   })
+
+  // Forward llmservice:usage  — token + latency rollup per LLM call.
+  // TaskUsageAggregator subscribes at the agent-process layer to roll up totals
+  // onto QueryLogEntry / CurateLogEntry.
+  sessionEventBus.on('llmservice:usage', (payload) => {
+    agentEventBus.emit('llmservice:usage', {
+      ...payload,
+      sessionId,
+    })
+  })
 }

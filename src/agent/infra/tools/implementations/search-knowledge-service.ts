@@ -3,6 +3,7 @@ import {realpath} from 'node:fs/promises'
 import {join} from 'node:path'
 import {removeStopwords} from 'stopword'
 
+import type {ElementName} from '../../../../server/core/domain/render/element-types.js'
 import type {IRuntimeSignalStore} from '../../../../server/core/interfaces/storage/i-runtime-signal-store.js'
 import type {IFileSystem} from '../../../core/interfaces/i-file-system.js'
 import type {ILogger} from '../../../core/interfaces/i-logger.js'
@@ -10,7 +11,6 @@ import type {ISearchKnowledgeService, SearchKnowledgeResult} from '../../sandbox
 
 import {
   BRV_DIR,
-  CONTEXT_FILE_EXTENSION,
   CONTEXT_TREE_DIR,
   OVERVIEW_EXTENSION,
   SHARED_SOURCE_LOCAL_SCORE_BOOST,
@@ -33,6 +33,9 @@ import {
   parseArchiveStubFrontmatter,
   parseSummaryFrontmatter,
 } from '../../../../server/infra/context-tree/summary-frontmatter.js'
+import {getFormatForRead} from '../../../../server/infra/render/format/format-detector.js'
+import {ElementAxisIndex} from '../../../../server/infra/render/reader/element-axis-index.js'
+import {readHtmlTopicSync} from '../../../../server/infra/render/reader/html-reader.js'
 import {isPathLikeQuery, matchMemoryPath, parseSymbolicQuery} from './memory-path-matcher.js'
 import {
   buildReferenceIndex,
@@ -50,7 +53,7 @@ const MAX_CONTEXT_TREE_FILES = 10_000
 const DEFAULT_CACHE_TTL_MS = 5000
 
 /** Bump when MINISEARCH_OPTIONS fields/boost change to invalidate cached indexes */
-const INDEX_SCHEMA_VERSION = 5
+const INDEX_SCHEMA_VERSION = 6
 
 /** Only include results whose normalized score is at least this fraction of the top result's score */
 const SCORE_GAP_RATIO = 0.7
@@ -172,6 +175,16 @@ const MINISEARCH_OPTIONS = {
 
 interface IndexedDocument {
   content: string
+  /**
+   * Format of the source file on disk. Curate emits HTML topics; the
+   * legacy markdown path is kept for `brv swarm` (which still consumes
+   * `.md` topics and writes via the MD writer). The BM25 index is
+   * format-agnostic — for HTML files, the indexed content is the
+   * entity-decoded inner text, identical in shape to the markdown
+   * input — but downstream consumers (telemetry, query log) need the
+   * file format to route reads.
+   */
+  format: 'html' | 'markdown'
   id: string
   mtime: number
   /** 'local' for this project, 'shared' for results from a knowledge source */
@@ -198,6 +211,13 @@ interface SummarySource {
 interface CachedIndex {
   contextTreePath: string
   documentMap: Map<string, IndexedDocument>
+  /**
+   * Structural-axis index over the same corpus the BM25 index covers.
+   * Pre-filters candidate paths by element shape when a `SearchOptions`
+   * call carries an `elementHint`. Built in lockstep with the BM25
+   * index — same lifetime, same invalidation triggers.
+   */
+  elementAxisIndex: ElementAxisIndex
   fileMtimes: Map<string, number>
   index: MiniSearch<IndexedDocument>
   lastValidatedAt: number
@@ -249,9 +269,31 @@ export interface SearchKnowledgeServiceConfig {
 }
 
 /**
+ * Optional structural-axis filter applied before BM25 ranking. Restricts
+ * the candidate set to topic files containing at least one matching
+ * `<bv-*>` element. Reserved for the structural-selector grammar (the
+ * eventual `bv-rule[severity=must]` syntax); search callers today
+ * leave it unset and rely on full-corpus BM25.
+ *
+ * Discriminated union: either match by tag alone, or by tag plus an
+ * `attribute=value` pair. A half-set `{attribute}` without `value`
+ * (or vice versa) is rejected at compile time so callers can't
+ * silently lose their filtering intent.
+ */
+export type ElementHint =
+  | {attribute: string; tag: ElementName; value: string}
+  | {tag: ElementName}
+
+/**
  * Extended search options supporting symbolic filters.
  */
 export interface SearchOptions {
+  /**
+   * Pre-filter the candidate set by `<bv-*>` element shape before
+   * BM25 ranking. Wired but unused by today's callers; the grammar
+   * that drives this hint is downstream.
+   */
+  elementHint?: ElementHint
   /** Symbol kinds to exclude from results (e.g. ['subtopic']) */
   excludeKinds?: string[]
   /** Symbol kinds to include in results (e.g. ['domain', 'context']) */
@@ -456,32 +498,55 @@ function stripMarkdownFrontmatter(content: string): string {
   return content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '').trim()
 }
 
-async function findMarkdownFilesWithMtime(
+/**
+ * Discover topic files in the context tree. The corpus is `<bv-topic>`
+ * HTML; markdown topics are out of scope. The legacy `_index.md`
+ * summary convention is still globbed because the summary frontmatter
+ * pipeline (separate from topic-body indexing) hasn't migrated yet.
+ */
+async function findContextFilesWithMtime(
   fileSystem: IFileSystem,
   contextTreePath: string,
 ): Promise<Array<{mtime: number; path: string}>> {
-  try {
-    const globResult = await fileSystem.globFiles(`**/*${CONTEXT_FILE_EXTENSION}`, {
-      cwd: contextTreePath,
-      includeMetadata: true,
-      maxResults: MAX_CONTEXT_TREE_FILES,
-      respectGitignore: false,
-    })
+  // Two parallel passes (one per extension) instead of brace expansion so
+  // the discovery isn't coupled to whatever glob engine
+  // `IFileSystem.globFiles` delegates to. Some engines don't expand
+  // `{html,md}` and would silently drop one branch — caught here only as
+  // a missing index entry, well after the daemon has cached the partial
+  // corpus. Per-pass failures collapse to an empty result for that
+  // branch only; the other pass still produces its files.
+  const runPass = async (pattern: string) => {
+    try {
+      const globResult = await fileSystem.globFiles(pattern, {
+        cwd: contextTreePath,
+        includeMetadata: true,
+        maxResults: MAX_CONTEXT_TREE_FILES,
+        respectGitignore: false,
+      })
+      return globResult.files
+    } catch {
+      return []
+    }
+  }
 
-    return globResult.files.map((f) => {
+  const passResults = await Promise.all([runPass('**/*.html'), runPass('**/*.md')])
+
+  const seen = new Map<string, {mtime: number; path: string}>()
+  for (const files of passResults) {
+    for (const f of files) {
       let relativePath = f.path
       if (f.path.startsWith(contextTreePath)) {
         relativePath = f.path.slice(contextTreePath.length + 1)
       }
 
-      return {
+      seen.set(relativePath, {
         mtime: f.modified?.getTime() ?? 0,
         path: relativePath,
-      }
-    })
-  } catch {
-    return []
+      })
+    }
   }
+
+  return [...seen.values()]
 }
 
 function isCacheValid(cache: CachedIndex, currentFiles: Array<{mtime: number; path: string}>): boolean {
@@ -504,12 +569,63 @@ function isCacheValid(cache: CachedIndex, currentFiles: Array<{mtime: number; pa
  * Returns documents with origin-qualified IDs (<originKey>::<path>)
  * and summary docs keyed by origin-qualified paths.
  */
+/**
+ * Read the file from disk and split into the BM25 input (`indexedContent`)
+ * plus per-format metadata. HTML topics route through the html-reader
+ * which strips markup and returns entity-decoded inner text — that's
+ * what the BM25 tokenizer sees, ensuring ranking parity with the
+ * markdown corpus on the same content. Markdown is fed verbatim.
+ */
+async function readIndexableContent(
+  fileSystem: IFileSystem,
+  fullPath: string,
+  filePath: string,
+): Promise<null | {
+  elements: ReturnType<typeof readHtmlTopicSync>['elements']
+  format: 'html' | 'markdown'
+  htmlTitleHint?: string
+  indexedContent: string
+  rawContent: string
+}> {
+  try {
+    const {content} = await fileSystem.readFile(fullPath)
+    if (getFormatForRead(filePath) === 'html') {
+      const parsed = readHtmlTopicSync(content)
+      // Concatenate the searchable subset of `<bv-topic>` attributes
+      // into the BM25 input. The markdown corpus exposes the same
+      // signals via YAML frontmatter (which the MD branch passes through
+      // verbatim), so without this step a query for a term living only
+      // in `summary=`/`tags=`/`keywords=`/`related=` would rank an HTML
+      // topic strictly below the MD equivalent. `title` already carries
+      // a 3x field boost via the `title` column and is intentionally
+      // omitted here.
+      const {keywords, related, summary, tags} = parsed.topicAttributes
+      const indexedContent = [parsed.bodyText, summary, tags, keywords, related]
+        .filter((part): part is string => typeof part === 'string' && part.length > 0)
+        .join(' ')
+      return {
+        elements: parsed.elements,
+        format: 'html',
+        htmlTitleHint: parsed.topicAttributes.title,
+        indexedContent,
+        rawContent: content,
+      }
+    }
+
+    return {elements: [], format: 'markdown', indexedContent: content, rawContent: content}
+  } catch {
+    return null
+  }
+}
+
 async function indexOriginDocuments(
   fileSystem: IFileSystem,
   origin: SearchOrigin,
   filesWithMtime: Array<{mtime: number; path: string}>,
 ): Promise<{
   documents: IndexedDocument[]
+  /** Per-document element entries gathered for the structural-axis index. */
+  elementsByDocId: Map<string, ReturnType<typeof readHtmlTopicSync>['elements']>
   fileMtimes: Map<string, number>
   summaryMap: Map<string, SummaryDocLike>
 }> {
@@ -536,35 +652,47 @@ async function indexOriginDocuments(
   }
 
   const documentPromises = indexableFiles.map(async ({mtime, path: filePath}) => {
-    try {
-      const fullPath = join(origin.contextTreeRoot, filePath)
-      const {content} = await fileSystem.readFile(fullPath)
-      const title = extractTitle(content, filePath.replace(/\.md$/, '').split('/').pop() || filePath)
-      const qualifiedId = `${origin.originKey}::${filePath}`
-      const symbolPath = getSymbolPath(origin, filePath)
+    const fullPath = join(origin.contextTreeRoot, filePath)
+    const read = await readIndexableContent(fileSystem, fullPath, filePath)
+    if (!read) return null
 
-      // Check if a .overview.md sibling exists (written by abstract generation queue)
-      const overviewRelPath = filePath.replace(/\.md$/, OVERVIEW_EXTENSION)
-      const overviewPath = knownPaths.has(overviewRelPath) ? overviewRelPath : undefined
+    const fallbackTitle = filePath.replace(/\.(html?|md)$/i, '').split('/').pop() ?? filePath
+    // Trim before falling back: a `title=""` (or whitespace-only) attribute
+    // survives the schema's `passthrough` permissiveness and would
+    // otherwise leak into BM25's 3x-boosted `title` field.
+    const title = read.format === 'html'
+      ? (read.htmlTitleHint?.trim() || fallbackTitle)
+      : extractTitle(read.rawContent, fallbackTitle)
+    const qualifiedId = `${origin.originKey}::${filePath}`
+    const symbolPath = getSymbolPath(origin, filePath)
 
-      const doc: IndexedDocument = {
-        content,
-        id: qualifiedId,
-        mtime,
-        origin: origin.origin,
-        originContextTreeRoot: origin.contextTreeRoot,
-        originKey: origin.originKey,
-        ...(overviewPath !== undefined && {overviewPath}),
-        path: filePath,
-        symbolPath,
-        title,
-      }
-      if (origin.alias) doc.originAlias = origin.alias
+    // Check if a .overview.md sibling exists (written by abstract
+    // generation queue). The overview convention is markdown-only;
+    // HTML topics don't get one until the queue learns the format.
+    const overviewRelPath = filePath.replace(/\.(html?|md)$/i, OVERVIEW_EXTENSION)
+    const overviewPath = knownPaths.has(overviewRelPath) ? overviewRelPath : undefined
 
-      return doc
-    } catch {
-      return null
+    const doc: IndexedDocument = {
+      // BM25 receives the entity-decoded innerText for HTML topics so
+      // ranking parity with markdown is automatic. The raw HTML is
+      // preserved as `rawContent` in the wrapper below for any consumer
+      // that wants the source text (excerpt extraction, snippet
+      // highlighting). Today only the BM25 index is wired.
+      content: read.indexedContent,
+      format: read.format,
+      id: qualifiedId,
+      mtime,
+      origin: origin.origin,
+      originContextTreeRoot: origin.contextTreeRoot,
+      originKey: origin.originKey,
+      ...(overviewPath !== undefined && {overviewPath}),
+      path: filePath,
+      symbolPath,
+      title,
     }
+    if (origin.alias) doc.originAlias = origin.alias
+
+    return {doc, elements: read.elements}
   })
 
   const summaryPromises = summaryFiles.map(async ({path: filePath}) => {
@@ -587,7 +715,16 @@ async function indexOriginDocuments(
 
   const [docResults, summaryResults] = await Promise.all([Promise.all(documentPromises), Promise.all(summaryPromises)])
 
-  const documents: IndexedDocument[] = docResults.filter((doc) => doc !== null)
+  const documents: IndexedDocument[] = []
+  const elementsByDocId = new Map<string, ReturnType<typeof readHtmlTopicSync>['elements']>()
+  for (const result of docResults) {
+    if (!result) continue
+    documents.push(result.doc)
+    if (result.elements.length > 0) {
+      elementsByDocId.set(result.doc.id, result.elements)
+    }
+  }
+
   const fileMtimes = new Map<string, number>()
   for (const doc of documents) {
     fileMtimes.set(doc.id, doc.mtime)
@@ -609,7 +746,7 @@ async function indexOriginDocuments(
     }
   }
 
-  return {documents, fileMtimes, summaryMap}
+  return {documents, elementsByDocId, fileMtimes, summaryMap}
 }
 
 async function buildFreshIndex(
@@ -638,25 +775,35 @@ async function buildFreshIndex(
   const sharedResults = await Promise.all(
     sharedOrigins.map(async (origin) => {
       try {
-        const files = await findMarkdownFilesWithMtime(fileSystem, origin.contextTreeRoot)
+        const files = await findContextFilesWithMtime(fileSystem, origin.contextTreeRoot)
         const filtered = files.filter(
           (f) => !isDerivedArtifact(f.path) || f.path.split('/').at(-1) === SUMMARY_INDEX_FILE,
         )
 
         return indexOriginDocuments(fileSystem, origin, filtered)
       } catch {
-        return {documents: [], fileMtimes: new Map<string, number>(), summaryMap: new Map<string, SummaryDocLike>()}
+        return {
+          documents: [],
+          elementsByDocId: new Map<string, ReturnType<typeof readHtmlTopicSync>['elements']>(),
+          fileMtimes: new Map<string, number>(),
+          summaryMap: new Map<string, SummaryDocLike>(),
+        }
       }
     }),
   )
 
   // Merge all documents, fileMtimes, and summaryMaps
   const allDocuments: IndexedDocument[] = [...localResult.documents]
+  const allElementsByDocId = new Map(localResult.elementsByDocId)
   const fileMtimes = new Map(localResult.fileMtimes)
   const summaryMap = new Map(localResult.summaryMap)
 
   for (const result of sharedResults) {
     allDocuments.push(...result.documents)
+    for (const [key, elements] of result.elementsByDocId) {
+      allElementsByDocId.set(key, elements)
+    }
+
     for (const [key, mtime] of result.fileMtimes) {
       fileMtimes.set(key, mtime)
     }
@@ -679,6 +826,15 @@ async function buildFreshIndex(
   const index = new MiniSearch<IndexedDocument>(MINISEARCH_OPTIONS)
   index.addAll(allDocuments)
 
+  // Populate the structural-axis index from every HTML topic that
+  // contributed elements. The index is the consumer for the
+  // (currently unused) `elementHint` filter on `SearchOptions`; it
+  // shares the BM25 index's lifecycle, rebuilt on the same triggers.
+  const elementAxisIndex = new ElementAxisIndex()
+  for (const [docId, elements] of allElementsByDocId) {
+    elementAxisIndex.add(docId, elements)
+  }
+
   const symbolDocumentMap = new Map<string, IndexedDocument>()
   for (const doc of allDocuments) {
     symbolDocumentMap.set(doc.id, {...doc, path: doc.symbolPath})
@@ -691,6 +847,7 @@ async function buildFreshIndex(
   return {
     contextTreePath,
     documentMap,
+    elementAxisIndex,
     fileMtimes,
     index,
     lastValidatedAt: now,
@@ -746,6 +903,7 @@ async function acquireIndex(
     return {
       contextTreePath: '',
       documentMap: new Map(),
+      elementAxisIndex: new ElementAxisIndex(),
       fileMtimes: new Map(),
       index: emptyIndex,
       lastValidatedAt: 0,
@@ -774,7 +932,7 @@ async function acquireIndex(
     const sourcesFileMtime = loadedSources?.mtime
     const sharedOrigins = loadedSources?.origins ?? []
 
-    let allFiles = await findMarkdownFilesWithMtime(fileSystem, contextTreePath)
+    let allFiles = await findContextFilesWithMtime(fileSystem, contextTreePath)
     // Exclude non-indexable derived artifacts (.full.md) so that currentFiles
     // matches what buildFreshIndex tracks in fileMtimes. Without this filter,
     // isCacheValid() sees a size mismatch once archives exist, causing cache thrash.
@@ -793,7 +951,7 @@ async function acquireIndex(
     if (onBeforeBuild) {
       const wroteScoringUpdates = await onBeforeBuild(contextTreePath)
       if (wroteScoringUpdates) {
-        allFiles = await findMarkdownFilesWithMtime(fileSystem, contextTreePath)
+        allFiles = await findContextFilesWithMtime(fileSystem, contextTreePath)
         localFiles = allFiles.filter(
           (f) =>
             !isDerivedArtifact(f.path) ||
@@ -810,7 +968,7 @@ async function acquireIndex(
     const sharedFileArrays = await Promise.all(
       sharedOrigins.map(async (origin) => {
         try {
-          const files = await findMarkdownFilesWithMtime(fileSystem, origin.contextTreeRoot)
+          const files = await findContextFilesWithMtime(fileSystem, origin.contextTreeRoot)
           const filtered = files.filter(
             (f) => !isDerivedArtifact(f.path) || f.path.split('/').at(-1) === SUMMARY_INDEX_FILE,
           )
@@ -991,6 +1149,7 @@ export class SearchKnowledgeService implements ISearchKnowledgeService {
         summaryMap,
         symbolPathDocMap,
         signalsByPath,
+        indexResult.elementAxisIndex,
         options,
       )
 
@@ -1022,6 +1181,7 @@ export class SearchKnowledgeService implements ISearchKnowledgeService {
       summaryMap,
       symbolPathDocMap,
       signalsByPath,
+      indexResult.elementAxisIndex,
       options,
     )
 
@@ -1039,6 +1199,7 @@ export class SearchKnowledgeService implements ISearchKnowledgeService {
         summaryMap,
         symbolPathDocMap,
         signalsByPath,
+        indexResult.elementAxisIndex,
         options,
       )
     }
@@ -1130,6 +1291,7 @@ export class SearchKnowledgeService implements ISearchKnowledgeService {
       ...(archiveFullPath && {archiveFullPath}),
       ...(overviewPath && {overviewPath}),
       backlinkCount: backlinks?.length ?? 0,
+      ...(doc && {format: doc.format}),
       ...(origin && {origin}),
       ...(originAlias && {originAlias}),
       ...(originContextTreeRoot && {originContextTreeRoot}),
@@ -1230,10 +1392,26 @@ export class SearchKnowledgeService implements ISearchKnowledgeService {
     summaryMap: Map<string, SummaryDocLike>,
     symbolPathDocMap: Map<string, IndexedDocument>,
     signalsByPath: Map<string, RuntimeSignals>,
+    elementAxisIndex: ElementAxisIndex,
     options?: SearchOptions,
   ): SearchKnowledgeResult {
     const filteredQuery = filterStopWords(query)
     const filteredWords = filteredQuery.split(/\s+/).filter((w) => w.length >= 2)
+
+    // Compose the optional element-shape pre-filter from the search
+    // call. When present, only documents containing the requested
+    // `<bv-*>` (with optional attribute=value match) are eligible for
+    // BM25 ranking. Today no caller supplies this hint; it's wired so
+    // the structural-selector grammar can plug in without reshaping
+    // the search service signature.
+    let elementHintIds: Set<string> | undefined
+    if (options?.elementHint) {
+      const hint = options.elementHint
+      const matching = 'attribute' in hint
+        ? elementAxisIndex.findByAttribute(hint.tag, hint.attribute, hint.value)
+        : elementAxisIndex.findByTag(hint.tag)
+      elementHintIds = new Set(matching)
+    }
 
     // Build scope filter if a subtree is specified
     let scopeFilter: ((result: {id: string}) => boolean) | undefined
@@ -1253,11 +1431,21 @@ export class SearchKnowledgeService implements ISearchKnowledgeService {
       }
     }
 
+    // Compose scope + element-hint filters into a single MiniSearch
+    // predicate. Only documents passing both filters proceed to BM25.
+    const composedFilter: ((result: {id: string}) => boolean) | undefined = scopeFilter || elementHintIds
+      ? (result) => {
+          if (scopeFilter && !scopeFilter(result)) return false
+          if (elementHintIds && !elementHintIds.has(result.id)) return false
+          return true
+        }
+      : undefined
+
     // AND-first strategy: for multi-word queries, try AND for concentrated scores.
     // If AND returns no results, fall back to OR to ensure no regression.
     let rawResults: Array<{id: string; queryTerms: string[]; score: number}>
     let andSearchFailed = false
-    const searchOpts = scopeFilter ? {filter: scopeFilter} : {}
+    const searchOpts = composedFilter ? {filter: composedFilter} : {}
 
     if (filteredWords.length >= 2) {
       rawResults = index.search(filteredQuery, {combineWith: 'AND', ...searchOpts})
@@ -1461,6 +1649,7 @@ export class SearchKnowledgeService implements ISearchKnowledgeService {
     summaryMap: Map<string, SummaryDocLike>,
     symbolPathDocMap: Map<string, IndexedDocument>,
     signalsByPath: Map<string, RuntimeSignals>,
+    elementAxisIndex: ElementAxisIndex,
     options?: SearchOptions,
   ): null | SearchKnowledgeResult {
     const pathMatches = matchMemoryPath(symbolTree, query.split(/\s+/)[0].includes('/') ? query.split(/\s+/)[0] : query)
@@ -1516,6 +1705,7 @@ export class SearchKnowledgeService implements ISearchKnowledgeService {
         summaryMap,
         symbolPathDocMap,
         signalsByPath,
+        elementAxisIndex,
         options,
       )
     }

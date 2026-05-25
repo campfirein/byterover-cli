@@ -1,6 +1,6 @@
 import {expect} from 'chai'
 
-import {isArchiveStub, isDerivedArtifact, isExcludedFromSync} from '../../../../src/server/infra/context-tree/derived-artifact.js'
+import {isArchiveStub, isChannelTurnArtifact, isDerivedArtifact, isExcludedFromSync} from '../../../../src/server/infra/context-tree/derived-artifact.js'
 
 describe('derived-artifact predicates', () => {
   describe('isDerivedArtifact', () => {
@@ -96,6 +96,79 @@ describe('derived-artifact predicates', () => {
     it('should return false for regular .md files', () => {
       expect(isExcludedFromSync('domain/context.md')).to.be.false
       expect(isExcludedFromSync('auth/jwt-tokens.md')).to.be.false
+    })
+  })
+
+  // Slice 8.7 — channel turn artifacts (events.jsonl, turn.json,
+  // deliveries/*.json under channel/<id>/turns/<turnId>/) are ephemeral
+  // per-turn ACP state, not knowledge. Excluded from sync ONLY — they are
+  // intentionally NOT classified as derived artifacts (which would also
+  // remove them from query/manifest/archive/summary surfaces). The
+  // channel's own meta.json stays synced.
+  describe('isChannelTurnArtifact', () => {
+    it('should return true for events.jsonl under channel/<id>/turns/<turnId>/', () => {
+      expect(isChannelTurnArtifact('channel/foo/turns/abc123/events.jsonl')).to.be.true
+    })
+
+    it('should return true for turn.json under channel/<id>/turns/<turnId>/', () => {
+      expect(isChannelTurnArtifact('channel/foo/turns/abc123/turn.json')).to.be.true
+    })
+
+    it('should return true for delivery snapshots under deliveries/', () => {
+      expect(isChannelTurnArtifact('channel/foo/turns/abc123/deliveries/del-xyz.json')).to.be.true
+    })
+
+    it('should return true for any nested file under channel/<id>/turns/', () => {
+      expect(isChannelTurnArtifact('channel/foo/turns/abc/some/deep/nested/file.txt')).to.be.true
+    })
+
+    it('should return false for channel/<id>/meta.json (durable channel definition)', () => {
+      expect(isChannelTurnArtifact('channel/foo/meta.json')).to.be.false
+    })
+
+    it('should return false for a channel literally named "turns" (segments[0]=channel required)', () => {
+      expect(isChannelTurnArtifact('channel/turns/meta.json')).to.be.false
+    })
+
+    it('should return false for non-channel paths that happen to contain "turns"', () => {
+      expect(isChannelTurnArtifact('turns/whatever.json')).to.be.false
+      expect(isChannelTurnArtifact('domain/turns/notes.md')).to.be.false
+      expect(isChannelTurnArtifact('foo/channel/bar/turns/x.json')).to.be.false
+    })
+
+    it('should return false for regular knowledge files', () => {
+      expect(isChannelTurnArtifact('domain/context.md')).to.be.false
+      expect(isChannelTurnArtifact('_index.md')).to.be.false
+    })
+
+    it('should handle Windows-style backslash paths', () => {
+      expect(isChannelTurnArtifact(String.raw`channel\foo\turns\abc\events.jsonl`)).to.be.true
+      expect(isChannelTurnArtifact(String.raw`channel\foo\meta.json`)).to.be.false
+    })
+
+    it('should NOT be reclassified by isDerivedArtifact (separation of concerns)', () => {
+      // Channel turn files are excluded from sync but are NOT generic
+      // derived artifacts. Keeping them out of isDerivedArtifact protects
+      // query/manifest/archive/summary paths from accidentally hiding them.
+      expect(isDerivedArtifact('channel/foo/turns/abc/events.jsonl')).to.be.false
+    })
+  })
+
+  describe('isExcludedFromSync — channel turn artifacts (Slice 8.7)', () => {
+    it('should return true for events.jsonl under a channel turn', () => {
+      expect(isExcludedFromSync('channel/foo/turns/abc/events.jsonl')).to.be.true
+    })
+
+    it('should return true for turn.json under a channel turn', () => {
+      expect(isExcludedFromSync('channel/foo/turns/abc/turn.json')).to.be.true
+    })
+
+    it('should return true for a delivery snapshot under a channel turn', () => {
+      expect(isExcludedFromSync('channel/foo/turns/abc/deliveries/d1.json')).to.be.true
+    })
+
+    it('should return false for channel/<id>/meta.json (kept synced)', () => {
+      expect(isExcludedFromSync('channel/foo/meta.json')).to.be.false
     })
   })
 })

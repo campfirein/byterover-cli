@@ -1,0 +1,30 @@
+{
+  "name": "@brv/channel-skill",
+  "version": "0.1.0",
+  "description": "Agent-Skills SKILL.md teaching host agents (Claude Code, Codex, kimi-cli, opencode, Pi) when and how to use brv channel via the @brv/channel-mcp tools. Ships an install CLI that copies the skill into each host's discovery dir.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "brv-channel-skill": "bin/install.js"
+  },
+  "files": [
+    "bin",
+    "SKILL.md",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "echo 'no build step — SKILL.md ships verbatim'",
+    "test": "mocha --import tsx --no-warnings 'test/**/*.test.ts'"
+  },
+  "devDependencies": {
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.0.0",
+    "chai": "^5.3.3",
+    "mocha": "^10.8.2",
+    "tsx": "^4.21.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

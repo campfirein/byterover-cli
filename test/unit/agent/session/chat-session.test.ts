@@ -453,8 +453,8 @@ describe('ChatSession', () => {
 
       session.dispose()
 
-      // Should call off for each event name (14 events in ChatSession's SESSION_EVENT_NAMES)
-      expect(offStub.callCount).to.equal(14)
+      // Should call off for each event name (15 events in ChatSession's SESSION_EVENT_NAMES)
+      expect(offStub.callCount).to.equal(15)
     })
 
     it('should clear forwarders map', () => {
@@ -468,6 +468,19 @@ describe('ChatSession', () => {
 
       // Should not forward after dispose
       expect(agentEmitStub.called).to.be.false
+    })
+
+    // Regression: chat-session's local SESSION_EVENT_NAMES previously omitted
+    // `llmservice:usage`, so the event emitted by LoggingContentGenerator never
+    // reached the agent bus where TaskUsageAggregator subscribed — causing all
+    // four token fields on QueryLogEntry/CurateLogEntry to land null.
+    it('should forward llmservice:usage from session bus to agent bus (token telemetry)', () => {
+      const agentEmitStub = sandbox.stub(agentEventBus, 'emit')
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sessionEventBus.emit('llmservice:usage' as any, {inputTokens: 100, outputTokens: 50})
+
+      expect(agentEmitStub.calledWith('llmservice:usage' as never)).to.be.true
     })
   })
 

@@ -49,10 +49,41 @@ export function isArchiveStub(relativePath: string): boolean {
 }
 
 /**
+ * Returns true if the path is a channel turn artifact —
+ * `channel/<id>/turns/<turnId>/**` — i.e. ephemeral per-turn ACP state
+ * (events.jsonl, turn.json, deliveries/*.json). These are excluded from
+ * sync but are deliberately NOT classified as derived artifacts: query,
+ * manifest, archive and summary paths consume `isDerivedArtifact`, and
+ * we do not want to hide channel turn logs from those surfaces — only
+ * from CoGit/snapshot/sync. The channel's own `meta.json` (durable
+ * definition: members, capabilities, settings) is kept synced.
+ *
+ * Slice 8.7 — Phase 8 follow-up. See
+ * `plan/channel-protocol/IMPLEMENTATION_PHASE_8_FOLLOWUPS.md` §"Slice 8.7".
+ *
+ * @deprecated Slice 9.5. Phase 9 relocated channel turn transcripts to
+ * `.brv/channel-history/<channelId>/turns/<turnId>.ndjson`, which is
+ * structurally outside the cogit-scanned `.brv/context-tree/` root and
+ * needs no predicate filter. Legacy `<channelDir>/turns/<turnId>/`
+ * subdirs are now retentioned by `ChannelTranscriptGc.sweepLegacyMount`.
+ * This predicate remains load-bearing only until any host's pre-Phase-9
+ * legacy turn directory has aged out via GC — once that's confirmed for
+ * the wild (target removal: 2026-08), the predicate + its branch in
+ * `isExcludedFromSync` can be deleted in a follow-up. Do NOT add new
+ * call sites.
+ */
+export function isChannelTurnArtifact(relativePath: string): boolean {
+  const normalized = toUnixPath(relativePath)
+  const segments = normalized.split('/')
+  return segments[0] === 'channel' && segments[2] === 'turns'
+}
+
+/**
  * Returns true if the path should be excluded from snapshot tracking,
  * CoGit sync (push/pull/merge), and writer operations.
- * This includes ALL derived artifacts plus searchable stubs.
+ * This includes ALL derived artifacts plus searchable stubs plus
+ * channel turn artifacts (per-turn ephemeral ACP state).
  */
 export function isExcludedFromSync(relativePath: string): boolean {
-  return isDerivedArtifact(relativePath) || isArchiveStub(relativePath)
+  return isDerivedArtifact(relativePath) || isArchiveStub(relativePath) || isChannelTurnArtifact(relativePath)
 }

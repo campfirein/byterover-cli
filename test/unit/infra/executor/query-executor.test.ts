@@ -124,6 +124,17 @@ const ATTRIBUTION_FOOTER = '\n\n---\nSource: ByteRover Knowledge Base'
 
 const TASK_ID = 'test-task-001'
 
+/**
+ * Seed a `.brv/context-tree/` with one stub topic so
+ * `computeContextTreeFingerprint` produces a stable non-`'unknown'`
+ * value — the cache hit path depends on the fingerprint being
+ * consistent across calls.
+ */
+function seedContextTree(projectRoot: string): void {
+  mkdirSync(join(projectRoot, '.brv', 'context-tree'), {recursive: true})
+  writeFileSync(join(projectRoot, '.brv', 'context-tree', 'doc.html'), '<bv-topic></bv-topic>')
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('QueryExecutor', () => {
@@ -301,6 +312,66 @@ describe('QueryExecutor', () => {
         expect(result.searchMetadata!.topScore).to.equal(0.95)
         expect(result.timing.durationMs).to.be.at.least(0)
         expect(result.response).to.include(ATTRIBUTION_FOOTER)
+      })
+
+      it('renders HTML topics into structured markdown before formatting the direct response', async () => {
+        // For HTML results, the executor reads the full file and routes
+        // it through `renderHtmlTopicForLlm` so that downstream
+        // `formatDirectResponse` ships markdown, not raw `<bv-*>`
+        // markup. Locks the Tier 2 contract: the user-facing response
+        // never contains tag/attribute syntax for HTML topics.
+        const agent = createMockAgent()
+        const fileSystem = createMockFileSystem()
+        ;(fileSystem.readFile as SinonStub).resolves({
+          content: `<bv-topic path="security/auth" title="JWT auth" summary="JWT design">
+            <bv-reason>Document JWT design.</bv-reason>
+            <bv-rule severity="must" id="r-1">Always validate signatures.</bv-rule>
+            <bv-decision id="d-1">Use RS256 over HS256.</bv-decision>
+          </bv-topic>`,
+          encoding: 'utf8',
+        })
+        const searchResult = makeSearchResult({
+          format: 'html',
+          path: 'security/auth.html',
+          score: 0.95,
+          title: 'JWT auth',
+        })
+        const searchService = createMockSearchService([searchResult])
+        const executor = new QueryExecutor({fileSystem, searchService})
+
+        const result = await executor.executeWithAgent(agent, {query: 'jwt auth', taskId: TASK_ID})
+
+        expect(result.tier).to.equal(TIER_DIRECT_SEARCH)
+        // No raw bv-* markup or attribute syntax leaks into the response.
+        expect(result.response).to.not.match(/<bv-/)
+        expect(result.response).to.not.match(/\s\w+="/)
+        // Structured render preserves element semantics (severity, id).
+        expect(result.response).to.include('- **Rule** [must] (r-1): Always validate signatures.')
+        expect(result.response).to.include('- **Decision** (d-1): Use RS256 over HS256.')
+        expect(result.response).to.include('**Reason:** Document JWT design.')
+      })
+
+      it('passes markdown topics through unchanged (no renderer applied)', async () => {
+        const agent = createMockAgent()
+        const fileSystem = createMockFileSystem()
+        ;(fileSystem.readFile as SinonStub).resolves({
+          content: '# Auth\n\nSome markdown body about auth.',
+          encoding: 'utf8',
+        })
+        const searchResult = makeSearchResult({
+          format: 'markdown',
+          path: 'topics/auth.md',
+          score: 0.95,
+          title: 'Auth',
+        })
+        const searchService = createMockSearchService([searchResult])
+        const executor = new QueryExecutor({fileSystem, searchService})
+
+        const result = await executor.executeWithAgent(agent, {query: 'auth', taskId: TASK_ID})
+
+        expect(result.tier).to.equal(TIER_DIRECT_SEARCH)
+        // Markdown body survives verbatim — no renderer rewrites it.
+        expect(result.response).to.include('Some markdown body about auth.')
       })
     })
 
@@ -651,6 +722,239 @@ describe('QueryExecutor', () => {
         // Both queries should have gone through full execution (no stale cache hit)
         expect((agent.executeOnSession as ReturnType<typeof stub>).callCount).to.equal(2)
       })
+    })
+  })
+
+  describe('executeToolMode', () => {
+    /**
+     * The executor is the layer where the tool-mode wire contract is
+     * built. The CLI side is daemon-coupled and exercised by the auto-test
+     * harness; the executor itself is unit-testable with stubbed deps
+     * and that's where the branch-coverage bar lives.
+     */
+
+    it('Tier-2 happy path: stubbed searchService → ok envelope with rendered matches', async () => {
+      const projectRoot = tempDir
+      seedContextTree(projectRoot)
+
+      const fileSystem = createMockFileSystem()
+      const searchService = createMockSearchService(
+        [
+          makeSearchResult({path: 'auth.html', score: 0.91, title: 'Auth'}),
+          makeSearchResult({path: 'cookies.html', score: 0.71, title: 'Cookies'}),
+        ],
+        2,
+      )
+
+      const executor = new QueryExecutor({
+        baseDirectory: projectRoot,
+        enableCache: true,
+        fileSystem,
+        searchService,
+      })
+
+      const result = await executor.executeToolMode({query: 'auth', worktreeRoot: projectRoot})
+
+      expect(result.status).to.equal('ok')
+      expect(result.matchedDocs).to.have.lengthOf(2)
+      expect(result.matchedDocs[0].path).to.equal('auth.html')
+      expect(result.matchedDocs[0].title).to.equal('Auth')
+      expect(result.matchedDocs[0].rendered_md).to.be.a('string').and.have.length.greaterThan(0)
+      expect(result.metadata.tier).to.equal(TIER_DIRECT_SEARCH)
+      expect(result.metadata.cacheHit).to.equal(null)
+      expect(result.metadata.skippedSharedCount).to.equal(0)
+    })
+
+    it('Tier-0 exact cache hit: second identical call returns cacheHit=exact, tier=0', async () => {
+      const projectRoot = tempDir
+      seedContextTree(projectRoot)
+
+      const searchStub = stub().resolves({
+        message: '',
+        results: [makeSearchResult({path: 'auth.html', score: 0.91})],
+        totalFound: 1,
+      })
+      const executor = new QueryExecutor({
+        baseDirectory: projectRoot,
+        enableCache: true,
+        fileSystem: createMockFileSystem(),
+        searchService: {search: searchStub} as unknown as ISearchKnowledgeService,
+      })
+
+      await executor.executeToolMode({query: 'auth', worktreeRoot: projectRoot})
+      const second = await executor.executeToolMode({query: 'auth', worktreeRoot: projectRoot})
+
+      expect(second.metadata.cacheHit).to.equal('exact')
+      expect(second.metadata.tier).to.equal(TIER_EXACT_CACHE)
+      // Search service called exactly once — the second call hit cache before retrieval.
+      expect(searchStub.callCount).to.equal(1)
+    })
+
+    it('Tier-1 fuzzy cache: semantically-similar query overlays with cacheHit=fuzzy', async () => {
+      const projectRoot = tempDir
+      seedContextTree(projectRoot)
+
+      const searchStub = stub().resolves({
+        message: '',
+        results: [makeSearchResult({path: 'auth.html', score: 0.91})],
+        totalFound: 1,
+      })
+      const executor = new QueryExecutor({
+        baseDirectory: projectRoot,
+        enableCache: true,
+        fileSystem: createMockFileSystem(),
+        searchService: {search: searchStub} as unknown as ISearchKnowledgeService,
+      })
+
+      // Seed cache with one phrasing; query with a Jaccard-similar reword.
+      await executor.executeToolMode({
+        query: 'how does authentication work',
+        worktreeRoot: projectRoot,
+      })
+      const second = await executor.executeToolMode({
+        query: 'how does authentication work in practice',
+        worktreeRoot: projectRoot,
+      })
+
+      // Cache hit is acceptable as either tier; assert it's a cache
+      // hit, not a fresh fetch. (Whether jaccard picks 'exact' vs
+      // 'fuzzy' depends on tokenisation thresholds; the contract is
+      // "second call doesn't re-run BM25".)
+      expect(['exact', 'fuzzy']).to.include(second.metadata.cacheHit)
+      expect([TIER_EXACT_CACHE, TIER_FUZZY_CACHE]).to.include(second.metadata.tier)
+      // Snapshot search-call count after the first invocation (which
+      // may include supplement entity searches) and assert the second
+      // invocation does NOT increment it.
+      const callCountAfterFirst = searchStub.callCount
+      await executor.executeToolMode({
+        query: 'how does authentication work in practice',
+        worktreeRoot: projectRoot,
+      })
+      expect(searchStub.callCount).to.equal(callCountAfterFirst)
+    })
+
+    it('slicing: cache stored at MAX_LIMIT is sliced down to caller --limit', async () => {
+      const projectRoot = tempDir
+      seedContextTree(projectRoot)
+
+      // Twenty results so we can prove the slice is happening
+      const results = Array.from({length: 20}, (_, i) =>
+        makeSearchResult({path: `doc-${i}.html`, score: 0.9 - i * 0.01, title: `Doc ${i}`}),
+      )
+      const searchStub = stub().resolves({message: '', results, totalFound: 20})
+
+      const executor = new QueryExecutor({
+        baseDirectory: projectRoot,
+        enableCache: true,
+        fileSystem: createMockFileSystem(),
+        searchService: {search: searchStub} as unknown as ISearchKnowledgeService,
+      })
+
+      // First call: limit 5 → 5 matches, cache populated with full 20.
+      const first = await executor.executeToolMode({limit: 5, query: 'docs', worktreeRoot: projectRoot})
+      expect(first.matchedDocs).to.have.lengthOf(5)
+      expect(first.metadata.totalFound).to.equal(20)
+
+      // Second call: limit 15 → 15 matches from cache, NO new search.
+      const second = await executor.executeToolMode({limit: 15, query: 'docs', worktreeRoot: projectRoot})
+      expect(second.matchedDocs).to.have.lengthOf(15)
+      expect(second.metadata.cacheHit).to.equal('exact')
+      expect(second.metadata.totalFound).to.equal(20)
+      expect(searchStub.callCount).to.equal(1)
+    })
+
+    it('supplementEntitySearches fires when totalFound < 3', async () => {
+      const projectRoot = tempDir
+      seedContextTree(projectRoot)
+
+      const searchStub = stub()
+      // Initial search: returns 2 — under the threshold, supplement should fire.
+      searchStub.onFirstCall().resolves({
+        message: '',
+        results: [makeSearchResult({path: 'auth.html', score: 0.91, title: 'Auth'})],
+        totalFound: 1,
+      })
+      // Entity searches: stub adds a supplementary match per entity.
+      searchStub.resolves({
+        message: '',
+        results: [makeSearchResult({path: 'extra.html', score: 0.6, title: 'Extra'})],
+        totalFound: 1,
+      })
+
+      const executor = new QueryExecutor({
+        baseDirectory: projectRoot,
+        enableCache: false,
+        fileSystem: createMockFileSystem(),
+        searchService: {search: searchStub} as unknown as ISearchKnowledgeService,
+      })
+
+      // Multi-entity query: extractQueryEntities returns >1 term, so supplement runs.
+      await executor.executeToolMode({query: 'security authentication tokens', worktreeRoot: projectRoot})
+
+      expect(searchStub.callCount).to.be.greaterThan(1)
+    })
+
+    it('shared-source results are filtered + counted in skippedSharedCount', async () => {
+      const projectRoot = tempDir
+      seedContextTree(projectRoot)
+
+      const results = [
+        makeSearchResult({path: 'local.html', score: 0.91, title: 'Local'}),
+        // origin !== 'local' → must be excluded from matchedDocs, counted in skippedSharedCount
+        {...makeSearchResult({path: 'shared.html', score: 0.85, title: 'Shared'}), origin: 'shared' as const},
+      ]
+      const executor = new QueryExecutor({
+        baseDirectory: projectRoot,
+        enableCache: false,
+        fileSystem: createMockFileSystem(),
+        searchService: createMockSearchService(results, 2),
+      })
+
+      const result = await executor.executeToolMode({query: 'q', worktreeRoot: projectRoot})
+
+      expect(result.matchedDocs).to.have.lengthOf(1)
+      expect(result.matchedDocs[0].path).to.equal('local.html')
+      expect(result.metadata.skippedSharedCount).to.equal(1)
+    })
+
+    it('searchService.search() throws → executor rethrows (outer envelope reports failure)', async () => {
+      const projectRoot = tempDir
+      seedContextTree(projectRoot)
+
+      const searchStub = stub().rejects(new Error('BM25 index unavailable'))
+      const executor = new QueryExecutor({
+        baseDirectory: projectRoot,
+        enableCache: false,
+        fileSystem: createMockFileSystem(),
+        searchService: {search: searchStub} as unknown as ISearchKnowledgeService,
+      })
+
+      let caught: Error | undefined
+      try {
+        await executor.executeToolMode({query: 'q', worktreeRoot: projectRoot})
+      } catch (error) {
+        caught = error as Error
+      }
+
+      // Rethrow lets the daemon emit task:error → CLI maps to outer success: false.
+      // Compare with the empty-envelope path (no searchService) below.
+      expect(caught?.message).to.equal('BM25 index unavailable')
+    })
+
+    it('no searchService injected → empty no-matches envelope (executor stays callable)', async () => {
+      const executor = new QueryExecutor({
+        baseDirectory: tempDir,
+        enableCache: false,
+        fileSystem: createMockFileSystem(),
+        // no searchService
+      })
+
+      const result = await executor.executeToolMode({query: 'q', worktreeRoot: tempDir})
+
+      expect(result.status).to.equal('no-matches')
+      expect(result.matchedDocs).to.deep.equal([])
+      expect(result.metadata.totalFound).to.equal(0)
+      expect(result.metadata.skippedSharedCount).to.equal(0)
     })
   })
 })

@@ -5,6 +5,7 @@ export * from '../types/dto.js'
 export * from './agent-events.js'
 export * from './auth-events.js'
 export * from './billing-events.js'
+export * from './channel-events.js'
 export * from './client-events.js'
 export * from './config-events.js'
 export * from './connector-events.js'
@@ -34,6 +35,7 @@ export * from './worktree-events.js'
 import {AgentEvents} from './agent-events.js'
 import {AuthEvents} from './auth-events.js'
 import {BillingEvents} from './billing-events.js'
+import {ChannelEvents} from './channel-events.js'
 import {ClientEvents} from './client-events.js'
 import {ConfigEvents} from './config-events.js'
 import {ConnectorEvents} from './connector-events.js'
@@ -67,6 +69,7 @@ export const AllEventGroups = [
   AgentEvents,
   AuthEvents,
   BillingEvents,
+  ChannelEvents,
   ClientEvents,
   ConfigEvents,
   ConnectorEvents,

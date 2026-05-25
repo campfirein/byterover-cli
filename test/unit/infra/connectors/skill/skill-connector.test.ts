@@ -134,7 +134,7 @@ describe('SkillConnector', () => {
       const skillDir = path.join(projectPath, BRV_SKILL_NAME)
       const content = await readFile(path.join(testDir, skillDir, 'SKILL.md'), 'utf8')
       expect(content).to.include('You MUST use this for gathering contexts before any work')
-      expect(content).to.include('Uses a configured LLM provider')
+      expect(content).to.include('Runs locally with no LLM provider required')
     })
   })
 

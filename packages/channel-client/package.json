@@ -1,0 +1,40 @@
+{
+  "name": "@brv/channel-client",
+  "version": "0.1.0",
+  "description": "TypeScript client for the brv channel-protocol wire surface. Use it to drive `channel:*` requests + subscribe to broadcasts from any Node/TS host (Pi extension, kimi-cli wrapper, custom CLI, etc.).",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "mocha --import tsx --no-warnings 'test/**/*.test.ts'"
+  },
+  "peerDependencies": {
+    "socket.io-client": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.0.0",
+    "chai": "^5.3.3",
+    "mocha": "^10.8.2",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
+    "tsx": "^4.21.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

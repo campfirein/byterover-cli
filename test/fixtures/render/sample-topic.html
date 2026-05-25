@@ -1,0 +1,65 @@
+<bv-topic path="security/auth" title="Authentication and Authorization" summary="Project-wide rules + decisions for the auth subsystem; JWT RS256 signing, sliding refresh tokens, runbook for the 2026-04-15 incident." tags="security,authentication" keywords="jwt,rs256,refresh,revocation,401" related="@security/cookies,@security/oauth">
+  <bv-reason>Capture the auth subsystem's standing rules and the decisions that shaped them, plus the runbook for the recent revocation-cache leak so the next on-call has it.</bv-reason>
+
+  <bv-task>Document JWT-based authentication for service-to-service and user flows.</bv-task>
+  <bv-changes>
+    <li>Adopted RS256 (asymmetric) over HS256 for service-to-service tokens.</li>
+    <li>Refresh tokens use sliding 24h expiry; rotation on every refresh.</li>
+    <li>Logout now evicts the refresh-token entry from the revocation cache synchronously.</li>
+  </bv-changes>
+  <bv-files>
+    <li><code>src/auth/jwt.ts</code></li>
+    <li><code>src/auth/logout-handler.ts</code></li>
+    <li><code>test/integration/auth/logout-revocation.test.ts</code></li>
+  </bv-files>
+  <bv-flow>request → verify access token → on 401 client calls /auth/refresh → server checks revocation cache → rotates both tokens → responds with new pair in httpOnly cookies.</bv-flow>
+  <bv-timestamp>2026-04-15</bv-timestamp>
+  <bv-author>auth-team</bv-author>
+  <bv-pattern flags="i" description="Matches a JWT in Authorization header">^Bearer\s+([A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+)$</bv-pattern>
+
+  <bv-structure>JWT auth issues access/refresh token pairs. Access tokens expire in 15min, refresh tokens in 24h. Tokens are stored as httpOnly Secure SameSite=Strict cookies. Refresh rotation evicts the prior token from the revocation cache.</bv-structure>
+  <bv-dependencies>jsonwebtoken for signing/verification; the revocation cache (Redis) for token denylist; httpOnly cookie support in the application framework.</bv-dependencies>
+  <bv-highlights>RS256 signing (no shared secrets), 30-day key rotation via JWKS, synchronous logout-revocation eviction, integration test covering the post-logout 401 path.</bv-highlights>
+
+  <bv-rule severity="must" id="r-jwt-401">Failed token validation MUST return 401 Unauthorized — never 403, never 500.</bv-rule>
+  <bv-rule severity="should" id="r-rotate-rs256-keys">The RS256 signing key SHOULD rotate every 30 days. Old keys remain in the JWKS until tokens signed with them expire.</bv-rule>
+  <bv-rule severity="info" id="r-token-expiry-doc">Document access-token expiry on every public API endpoint.</bv-rule>
+
+  <bv-examples>
+    <p>Example: a user with a stale access token calls a protected endpoint, receives 401, and the client transparently calls <code>/auth/refresh</code> with the refresh token from its httpOnly cookie. The server rotates both tokens and the client retries the original request.</p>
+  </bv-examples>
+
+  <bv-diagram type="mermaid" title="Refresh flow">
+<pre><code>sequenceDiagram
+  Client->>API: GET /resource (expired access)
+  API-->>Client: 401
+  Client->>Auth: POST /auth/refresh
+  Auth->>RevocationCache: check
+  RevocationCache-->>Auth: ok
+  Auth-->>Client: new {access, refresh}
+  Client->>API: GET /resource (new access)
+  API-->>Client: 200</code></pre>
+  </bv-diagram>
+
+  <bv-decision id="d-rs256-over-hs256">
+    <p>Use RS256 (asymmetric), not HS256 (shared-secret).</p>
+    <p>Rationale: public-key validation lets downstream services verify tokens without holding the signing secret. Scales across services without rotating shared secrets.</p>
+  </bv-decision>
+
+  <bv-bug severity="critical" id="b-2026-04-15-auth-leak">
+    <p><strong>Symptom:</strong> Logged-out users could still access protected routes for up to 5 minutes.</p>
+    <p><strong>Root cause:</strong> Refresh-token revocation was being read from a stale cache; the cache TTL was longer than the access-token expiry.</p>
+  </bv-bug>
+
+  <bv-fix id="f-2026-04-15-revoke-on-logout">
+    <p>On logout, evict the user's refresh-token entry from the revocation cache synchronously before responding to the client.</p>
+    <ul>
+      <li>Updated <code>logout-handler.ts:42</code> to call <code>revocationCache.invalidate(userId)</code> before <code>response.send()</code>.</li>
+      <li>Added integration test <code>logout-revocation.test.ts</code> covering the post-logout 401 path.</li>
+    </ul>
+  </bv-fix>
+
+  <bv-fact subject="jwt_signing_algorithm" category="convention" value="RS256">Service-to-service JWTs are signed with RS256.</bv-fact>
+  <bv-fact subject="access_token_ttl" category="project" value="15 minutes">Access tokens expire in 15 minutes.</bv-fact>
+  <bv-fact subject="refresh_token_ttl" category="project" value="24 hours">Refresh tokens use sliding 24-hour expiry with rotation on use.</bv-fact>
+</bv-topic>

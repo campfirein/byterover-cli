@@ -1,6 +1,6 @@
 import {cn} from '@campfirein/byterover-packages/lib/utils'
 import {ChevronDown, ChevronUp} from 'lucide-react'
-import {Fragment, memo, useMemo, useState} from 'react'
+import {Fragment, memo, ReactNode, useMemo, useState} from 'react'
 
 import type {ToolCallEvent} from '../types/stored-task'
 
@@ -173,7 +173,7 @@ export function ToolCallContent({
   call: ToolCallEvent
   flash: boolean
   taskId: string
-  tooltip: import('react').ReactNode
+  tooltip: ReactNode
 }) {
   const [expanded, setExpanded] = useState(false)
   const argsText = useMemo(() => stripTaskIdSuffix(formatToolArgs(call), taskId), [call, taskId])

@@ -5,97 +5,95 @@ prompt: |
 
   When curating content from files or folders, actively look for and preserve:
 
-  **Diagrams (MUST PRESERVE in narrative.diagrams array):**
-  - Mermaid diagrams (```mermaid ... ```) - store with type: "mermaid"
-  - PlantUML diagrams (@startuml ... @enduml) - store with type: "plantuml"
-  - ASCII art diagrams (box drawings, flow charts using |, -, +, >, arrows) - store with type: "ascii"
-  - Sequence diagrams, state diagrams, class diagrams, ER diagrams - identify the format and store accordingly
+  **Diagrams (MUST PRESERVE in `<bv-diagram>` elements):**
+  - Mermaid diagrams (```mermaid ... ```) — emit `<bv-diagram type="mermaid">` with the body verbatim
+  - PlantUML diagrams (@startuml ... @enduml) — emit `<bv-diagram type="plantuml">`
+  - ASCII art diagrams (box drawings, flow charts using |, -, +, >, arrows) — emit `<bv-diagram type="ascii">`
+  - Sequence / state / class / ER diagrams — identify the format and use the matching `type` attribute (`mermaid`, `plantuml`, `dot`, `graphviz`, or `other`)
   - ALWAYS preserve diagram content EXACTLY as-is, character for character
-  - NEVER paraphrase or describe a diagram in text instead of storing it
-  - NEVER skip a diagram because "it's too complex" - store it verbatim
+  - NEVER paraphrase or describe a diagram in text instead of emitting `<bv-diagram>`
+  - NEVER skip a diagram because "it's too complex" — emit it verbatim
 
   **Tables (MUST PRESERVE):**
-  - Markdown tables - preserve the full table in narrative.structure or narrative.highlights
-  - Include column headers and ALL rows - do not summarize table content
-  - If a table has 20 rows, store all 20 rows
+  - Markdown tables — preserve the full table inside `<bv-structure>` or `<bv-highlights>` (block-content elements that allow `<table>`, `<ul>`, `<p>`)
+  - Include column headers and ALL rows — do not summarize table content
+  - If a table has 20 rows, preserve all 20 rows
 
   **Step-by-step Procedures:**
-  - Numbered instructions - store in narrative.rules with original numbering
-  - Decision trees - store as diagrams (ascii type) or in narrative.structure
-  - Workflows - capture in rawConcept.flow AND as diagrams if visual representation exists
+  - Numbered instructions — emit each as a `<bv-rule>` (use `severity` and `id` attributes when applicable) or, for purely procedural steps, as `<bv-task>` elements
+  - Decision trees — emit as `<bv-diagram type="ascii">` or as a structured walkthrough inside `<bv-structure>`
+  - Workflows — capture as `<bv-flow>` AND as `<bv-diagram>` if a visual representation exists
 
   **API Signatures and Interfaces:**
-  - Function signatures with parameter types - store in narrative.structure
-  - Interface definitions - preserve exact TypeScript/language syntax in snippets
-  - Request/response schemas - store complete schema, not summaries
+  - Function signatures with parameter types — preserve in `<bv-structure>` or `<bv-examples>`
+  - Interface definitions — preserve exact TypeScript / language syntax inside `<bv-examples>` using fenced `<pre><code>` blocks
+  - Request / response schemas — emit complete schema, not summaries
 
   **Code Examples:**
-  - Inline code examples from documentation - store in narrative.examples with full code
-  - Configuration examples - preserve exact syntax and values
-  - Command-line examples - store complete commands with flags
+  - Inline code examples from documentation — emit inside `<bv-examples>` with full code in `<pre><code>` blocks
+  - Configuration examples — preserve exact syntax and values
+  - Command-line examples — preserve complete commands with flags
 
   **Detection Heuristics:**
-  - Lines containing box-drawing characters (U+2500-U+257F, or ASCII +--+, |  |) = ASCII diagram
-  - Fenced blocks with language tag "mermaid", "plantuml", "dot", "graphviz" = diagram
-  - Content between @startuml/@enduml = PlantUML diagram
-  - Arrow patterns (-->, ==>, ->, =>), combined with indentation = flow/sequence diagram
+  - Lines containing box-drawing characters (U+2500–U+257F, or ASCII `+--+`, `|  |`) = ASCII diagram
+  - Fenced blocks with language tag `mermaid`, `plantuml`, `dot`, `graphviz` = diagram
+  - Content between `@startuml` / `@enduml` = PlantUML diagram
+  - Arrow patterns (`-->`, `==>`, `->`, `=>`) combined with indentation = flow / sequence diagram
 
   **Storage Rules for Diagrams:**
-  - One diagram per entry in the narrative.diagrams array
-  - Always set the `type` field correctly (mermaid, plantuml, ascii, other)
-  - Use `title` field when the diagram has a caption or label nearby
+  - One `<bv-diagram>` per diagram. Do NOT combine multiple diagrams into a single element.
+  - Always set the `type` attribute (`mermaid`, `plantuml`, `ascii`, `dot`, `graphviz`, `other`)
+  - Use the `title` attribute when the diagram has a caption or label nearby
   - Example:
-    ```javascript
-    narrative: {
-      diagrams: [
-        {
-          type: "mermaid",
-          title: "Authentication Flow",
-          content: "graph TD\n  A[Request] --> B{Has Token?}\n  B -->|Yes| C[Validate]\n  B -->|No| D[Reject]"
-        }
-      ]
-    }
+    ```
+    <bv-diagram type="mermaid" title="Authentication Flow">
+    graph TD
+      A[Request] --> B{Has Token?}
+      B -->|Yes| C[Validate]
+      B -->|No| D[Reject]
+    </bv-diagram>
     ```
 
   ## Non-Code Content Preservation
 
   **Meeting Notes and Decisions (MUST PRESERVE):**
-  - Decision text with full rationale - store in narrative.rules or narrative.highlights
-  - Action items with assignees and deadlines - store in narrative.examples
-  - Voting results and priority rankings - preserve exact numbers
-  - Status updates and blockers - store in narrative.dependencies
+  - Decision text with full rationale — emit as `<bv-decision>` (one per decision; use the `id` attribute for cross-references). Inside, use block content (`<p>`, `<ul>`, `<li>`) to preserve full prose.
+  - Action items with assignees and deadlines — emit as `<bv-task>` (one per item) or as facts under `<bv-fact category="team">` when stating an assignment as a durable fact.
+  - Voting results and priority rankings — preserve exact numbers inside `<bv-highlights>` or as `<bv-fact>` siblings (`subject`, `value`).
+  - Status updates and blockers — emit blockers as `<bv-dependencies>` and current status as `<bv-fact>` siblings.
 
   **Process Documentation:**
-  - Workflow steps with all conditions - store in rawConcept.flow and narrative.rules
-  - Metrics and KPIs with exact values - store in narrative.highlights
-  - Timeline and milestone information - store in narrative.structure
+  - Workflow steps with all conditions — emit the high-level flow as `<bv-flow>` and individual rules as `<bv-rule>` siblings
+  - Metrics and KPIs with exact values — preserve as `<bv-fact>` (use `subject` for the metric name and `value` for the value) or inside `<bv-highlights>`
+  - Timeline and milestone information — preserve inside `<bv-structure>` with full chronology
 
   ## Factual Statement Preservation
 
-  **Facts (MUST EXTRACT in content.facts array):**
-  - Personal information stated by the user (e.g., "My name is Andy") - store each as a separate fact with category: "personal"
-  - Project configuration values, versions, ports, URLs - preserve exact values with category: "project"
-  - Team conventions and processes - store with category: "convention"
-  - Preferences and opinions expressed as directives - store with category: "preference"
-  - Team structure and roles - store with category: "team"
-  - Environment and infrastructure details - store with category: "environment"
-  - Use `subject` field for the key concept in snake_case (e.g., "user_name", "database_version")
-  - Use `value` field for the extracted value (e.g., "Andy", "PostgreSQL 15")
+  **Facts (MUST EXTRACT as `<bv-fact>` siblings):**
+  - Personal information stated by the user (e.g., "My name is Andy") — emit each as a separate `<bv-fact category="personal" subject="user_name" value="Andy">My name is Andy.</bv-fact>`
+  - Project configuration values, versions, ports, URLs — preserve exact values with `category="project"`
+  - Team conventions and processes — emit with `category="convention"`
+  - Preferences and opinions expressed as directives — emit with `category="preference"`
+  - Team structure and roles — emit with `category="team"`
+  - Environment and infrastructure details — emit with `category="environment"`
+  - Use the `subject` attribute for the key concept in snake_case (e.g., `user_name`, `database_version`)
+  - Use the `value` attribute for the extracted value (e.g., `Andy`, `PostgreSQL 15`)
+  - The element's text content is the canonical statement — preserve the exact wording of the factual claim
   - Do NOT infer facts that were not explicitly stated
-  - Do NOT merge multiple facts into one compound statement
-  - ALWAYS preserve the exact wording of the factual claim in `statement`
+  - Do NOT merge multiple facts into one compound `<bv-fact>` element — one fact per element
 
   ## General Detail Preservation
 
   **Completeness over conciseness:**
-  - If a document lists 15 items, store all 15
+  - If a document lists 15 items, emit all 15 (as `<bv-rule>` / `<bv-fact>` / `<bv-task>` siblings depending on the item kind)
   - If a config file has 30 settings, capture all relevant ones
-  - If there are multiple code examples, store each one
+  - If there are multiple code examples, emit each one inside `<bv-examples>`
   - Preserve original formatting, indentation, and structure where possible
 
   **Do NOT:**
   - Summarize detailed content into brief descriptions
-  - Pick "representative examples" instead of storing all items
+  - Pick "representative examples" instead of preserving all items
   - Omit sections because they seem "less important"
   - Flatten hierarchical content into flat descriptions
+  - Mention or store JSON-schema field names like `narrative.rules`, `rawConcept.flow`, or `content.facts` — these belong to a deprecated curate-tool API. The current curate output is HTML using the closed `<bv-*>` vocabulary; map every preservation rule to the matching element.
   </CURATE_DETAIL_PRESERVATION>

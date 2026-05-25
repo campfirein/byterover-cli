@@ -21,8 +21,8 @@
 
 import {connectToTransport, type ITransportClient} from '@campfirein/brv-transport-client'
 import {randomUUID} from 'node:crypto'
-import {appendFileSync} from 'node:fs'
-import {join} from 'node:path'
+import {appendFileSync, existsSync} from 'node:fs'
+import {join, relative, sep} from 'node:path'
 
 import type {ISearchKnowledgeService} from '../../../agent/infra/sandbox/tools-sdk.js'
 import type {BrvConfig} from '../../core/domain/entities/brv-config.js'
@@ -43,10 +43,12 @@ import {loadAgentSettingsSnapshot} from '../../../agent/infra/settings/agent-set
 import {FileKeyStorage} from '../../../agent/infra/storage/file-key-storage.js'
 import {runWithReviewDisabled} from '../../../agent/infra/tools/implementations/curate-tool-task-context.js'
 import {createSearchKnowledgeService} from '../../../agent/infra/tools/implementations/search-knowledge-service.js'
+import {decodeCurateHtmlContent} from '../../../shared/transport/curate-html-content.js'
 import {AuthEvents} from '../../../shared/transport/events/auth-events.js'
+import {decodeQueryToolModeContent} from '../../../shared/transport/query-tool-mode-content.js'
 import {decodeSearchContent} from '../../../shared/transport/search-content.js'
 import {getCurrentConfig} from '../../config/environment.js'
-import {BRV_DIR, DEFAULT_LLM_MODEL, PROJECT} from '../../constants.js'
+import {BRV_DIR, CONTEXT_TREE_DIR, DEFAULT_LLM_MODEL, PROJECT} from '../../constants.js'
 import {serializeTaskError, TaskError, TaskErrorCode} from '../../core/domain/errors/task-error.js'
 import {loadSources} from '../../core/domain/source/source-schema.js'
 import {
@@ -57,6 +59,7 @@ import {
 } from '../../core/domain/transport/schemas.js'
 import {FileContextTreeArchiveService} from '../context-tree/file-context-tree-archive-service.js'
 import {RuntimeSignalStore} from '../context-tree/runtime-signal-store.js'
+import {bumpSidecarOnCurateWrite} from '../context-tree/tool-mode-sidecar-updaters.js'
 import {DreamLockService} from '../dream/dream-lock-service.js'
 import {DreamLogStore} from '../dream/dream-log-store.js'
 import {DreamStateService} from '../dream/dream-state-service.js'
@@ -66,13 +69,46 @@ import {DreamExecutor} from '../executor/dream-executor.js'
 import {FolderPackExecutor} from '../executor/folder-pack-executor.js'
 import {QueryExecutor} from '../executor/query-executor.js'
 import {SearchExecutor} from '../executor/search-executor.js'
+import {backupContextTreeFile, buildCurateHtmlLogEntry} from '../process/curate-html-log.js'
+import {validateHtmlTopic, writeHtmlTopic} from '../render/writer/html-writer.js'
 import {FileCurateLogStore} from '../storage/file-curate-log-store.js'
 import {FileReviewBackupStore} from '../storage/file-review-backup-store.js'
+import {TaskUsageAggregator} from '../telemetry/task-usage-aggregator.js'
 import {AgentInstanceDiscovery} from '../transport/agent-instance-discovery.js'
 import {createAgentLogger} from './agent-logger.js'
 import {PostWorkRegistry} from './post-work-registry.js'
 import {resolveSessionId} from './session-resolver.js'
 import {validateProviderForTask} from './task-validation.js'
+
+/**
+ * Build a per-task `llmservice:usage` listener that filters by `taskId` and
+ * folds matching events into `aggregator`. Curate and query handlers both
+ * use the same shape — keep them in sync via this helper.
+ */
+function makeUsageListener(
+  taskId: string,
+  aggregator: TaskUsageAggregator,
+): (payload: {
+  cacheCreationTokens?: number
+  cachedInputTokens?: number
+  durationMs: number
+  inputTokens: number
+  outputTokens: number
+  taskId?: string
+}) => void {
+  return (payload) => {
+    if (payload.taskId !== taskId) return
+    aggregator.addUsage(
+      {
+        ...(payload.cacheCreationTokens !== undefined && {cacheCreationTokens: payload.cacheCreationTokens}),
+        ...(payload.cachedInputTokens !== undefined && {cachedInputTokens: payload.cachedInputTokens}),
+        inputTokens: payload.inputTokens,
+        outputTokens: payload.outputTokens,
+      },
+      payload.durationMs,
+    )
+  }
+}
 
 // ============================================================================
 // Environment
@@ -463,9 +499,11 @@ async function executeTask(
     task
   if (!transport || !agent) return
 
-  // Search tasks are pure BM25 retrieval — no LLM, no provider needed.
-  // Skip provider validation so search works even without a configured provider.
-  if (type !== 'search') {
+  // Search + tool-mode query + tool-mode curate are pure deterministic
+  // paths — no LLM, no provider needed. Skip provider validation so they
+  // work even without a configured provider (the headline promise of
+  // tool mode).
+  if (type !== 'search' && type !== 'query-tool-mode' && type !== 'curate-html-direct') {
     const freshProviderConfig = await transport.requestWithAck<ProviderConfigResponse>(
       TransportStateEventNames.GET_PROVIDER_CONFIG,
     )
@@ -564,16 +602,48 @@ async function executeTask(
       let postWork: (() => Promise<void>) | undefined
       switch (type) {
         case 'curate': {
-          const curateResult = await curateExecutor.runAgentBody(agent, {
-            clientCwd,
-            content,
-            files,
-            projectRoot: projectPath,
-            taskId,
-            worktreeRoot,
-          })
-          result = curateResult.response
-          postWork = curateResult.finalize
+          // Subscribe a per-task usage aggregator to llmservice:usage events
+          // (forwarded from session bus to agentEventBus via session-event-forwarder).
+          // The executor's `onTelemetry` callback fires once at runAgentBody return —
+          // happy path before the response, error path before throwing — and forwards
+          // the rolled-up payload to the daemon via task:curateResult ahead of
+          // task:completed/task:error. Phase 4 (detached post-work) runs after
+          // task:completed, so its LLM calls intentionally don't roll into THIS
+          // curate-log entry — same boundary as the rest of the daemon's
+          // "completed" semantics.
+          const curateAggregator = new TaskUsageAggregator(taskId)
+          const curateUsageListener = makeUsageListener(taskId, curateAggregator)
+          const curateAgentBus = agent.agentEventBus
+          curateAgentBus?.on('llmservice:usage', curateUsageListener)
+          try {
+            const curateResult = await curateExecutor.runAgentBody(agent, {
+              clientCwd,
+              content,
+              files,
+              onTelemetry(record) {
+                try {
+                  // `transport` is hoisted as `let ... | undefined`; closure capture
+                  // forces an explicit guard despite the outer-scope assignment.
+                  transport?.request(TransportTaskEventNames.CURATE_RESULT, {
+                    ...(record.format !== undefined && {format: record.format}),
+                    taskId,
+                    ...(record.timing !== undefined && {timing: record.timing}),
+                    ...(record.usage !== undefined && {usage: record.usage}),
+                  })
+                } catch {
+                  agentLog(`task:curateResult send failed taskId=${taskId}`)
+                }
+              },
+              projectRoot: projectPath,
+              taskId,
+              usageAggregator: curateAggregator,
+              worktreeRoot,
+            })
+            result = curateResult.response
+            postWork = curateResult.finalize
+          } finally {
+            curateAgentBus?.off('llmservice:usage', curateUsageListener)
+          }
 
           break
         }
@@ -589,6 +659,129 @@ async function executeTask(
           })
           result = folderResult.response
           postWork = folderResult.finalize
+
+          break
+        }
+
+        case 'curate-html-direct': {
+          // Tool-mode curate: no LLM dispatch, no provider gate, no
+          // usage aggregator. Calling agent (typically over MCP) has
+          // already authored the <bv-topic> HTML; daemon validates +
+          // writes the topic file. Single-shot, single round-trip.
+          // Mirrors the post-ENG-2815 oclif `brv curate` writer-direct
+          // flow but exposed as a daemon task type so MCP clients can
+          // hit it the same way they hit `query-tool-mode`.
+          const {confirmOverwrite, html, meta} = decodeCurateHtmlContent(content)
+          const contextTreeRoot = join(projectPath, BRV_DIR, CONTEXT_TREE_DIR)
+
+          // Pre-resolve the target path so we can report whether the
+          // write replaced an existing file. validateHtmlTopic is
+          // idempotent + cheap (parse5 only); writeHtmlTopic re-runs
+          // it internally so we don't risk drift between checks.
+          const preValidation = validateHtmlTopic(html)
+          const absoluteTopicFilePath = preValidation.ok
+            ? join(contextTreeRoot, `${preValidation.topicPath}.html`)
+            : undefined
+          const existedBefore = absoluteTopicFilePath !== undefined && existsSync(absoluteTopicFilePath)
+
+          // Seed the review-backup BEFORE the destructive write. Without this,
+          // a curate over an existing topic (confirmOverwrite=true, meta.impact=high)
+          // creates a `reviewStatus: pending` log entry but leaves nothing for
+          // `brv review reject` to restore from — review-handler.ts:152 treats
+          // a missing backup as ADD and unlinks the file, destroying the user's
+          // prior knowledge. Honors task.reviewDisabled and ENOENT gracefully.
+          if (existedBefore && absoluteTopicFilePath !== undefined) {
+            await backupContextTreeFile({
+              absoluteFilePath: absoluteTopicFilePath,
+              contextTreeRoot,
+              reviewBackupStore: new FileReviewBackupStore(join(projectPath, BRV_DIR)),
+              reviewDisabled: reviewDisabled ?? false,
+            })
+          }
+
+          const startedAt = Date.now()
+          const writeResult = await writeHtmlTopic({confirmOverwrite, contextTreeRoot, rawHtml: html})
+          const completedAt = Date.now()
+
+          // HITL log entry — restores `brv review pending` surfacing for
+          // tool-mode curates. Pre-allocate the id via getNextId() so it
+          // matches FileCurateLogStore's `cur-<timestamp>` ID_PATTERN; a
+          // random UUID would silently be invisible to list()/getById().
+          // Failed writes also get an entry (status: error) so the TUI
+          // doesn't lie about what was attempted.
+          let relativeFilePath: string | undefined
+          let topicPathResolved: string | undefined
+          if (writeResult.ok) {
+            relativeFilePath = relative(contextTreeRoot, writeResult.filePath).replaceAll(sep, '/')
+            topicPathResolved = preValidation.ok
+              ? preValidation.topicPath
+              : relativeFilePath.replace(/\.html$/, '')
+
+            // Mirror the curate into the runtime-signal sidecar so prune (and
+            // any future signal-driven ranking) has real data to work with.
+            // Best-effort: never blocks the write that already succeeded;
+            // pass an agentLog-backed logger so swallowed sidecar failures
+            // (corrupt key store, permission denied) leave a breadcrumb in
+            // the daemon session log instead of being silently invisible.
+            await bumpSidecarOnCurateWrite({
+              existedBefore,
+              logger: {
+                debug: (msg: string): void => agentLog(msg),
+                error: (msg: string): void => agentLog(msg),
+                info: (msg: string): void => agentLog(msg),
+                warn: (msg: string): void => agentLog(msg),
+              },
+              relPath: relativeFilePath,
+              store: runtimeSignalStore,
+            })
+          } else if (preValidation.ok) {
+            topicPathResolved = preValidation.topicPath
+          }
+
+          try {
+            const curateLogStore = new FileCurateLogStore({baseDir: storagePath})
+            const entryId = await curateLogStore.getNextId()
+            const logEntry = buildCurateHtmlLogEntry({
+              completedAt,
+              confirmOverwrite: Boolean(confirmOverwrite),
+              existedBefore,
+              // Absolute path — the review-handler (and dream-executor) treat
+              // `op.filePath` as absolute and call `relative(contextTreeDir, ...)`
+              // to derive a display key. Storing a relative path here makes
+              // the entry unmatchable in `brv review approve`.
+              filePath: writeResult.ok ? writeResult.filePath : undefined,
+              id: entryId,
+              meta,
+              reviewDisabled: reviewDisabled ?? false,
+              startedAt,
+              taskId,
+              topicPath: topicPathResolved,
+              writeResult,
+            })
+            await curateLogStore.save(logEntry)
+            logId = entryId
+          } catch (error) {
+            // Logging must never block curate execution. Swallow + log
+            // so a transient FS error doesn't fail an otherwise-successful
+            // curate.
+            agentLog(
+              `curate-html-direct: failed to persist log entry for ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
+            )
+          }
+
+          // Validation failures emit task:completed (NOT task:error) so
+          // the calling agent sees the structured errors via the normal
+          // result payload and can retry with corrected HTML. task:error
+          // would force MCP clients into an isError path that some host
+          // renderers collapse or truncate.
+          result = writeResult.ok
+            ? JSON.stringify({
+                filePath: relativeFilePath,
+                overwrote: existedBefore && Boolean(confirmOverwrite),
+                status: 'ok',
+                topicPath: topicPathResolved,
+              })
+            : JSON.stringify({errors: writeResult.errors, status: 'validation-failed'})
 
           break
         }
@@ -638,22 +831,59 @@ async function executeTask(
         }
 
         case 'query': {
-          const queryResult = await queryExecutor.executeWithAgent(agent, {query: content, taskId, worktreeRoot})
+          // subscribe a per-task usage aggregator to llmservice:usage
+          // events forwarded from the session bus. QueryExecutor reads the
+          // rolled-up totals at completion and writes them to the result.
+          const queryAggregator = new TaskUsageAggregator(taskId)
+          const queryUsageListener = makeUsageListener(taskId, queryAggregator)
+          const queryAgentBus = agent.agentEventBus
+          queryAgentBus?.on('llmservice:usage', queryUsageListener)
+          let queryResult
+          try {
+            queryResult = await queryExecutor.executeWithAgent(agent, {
+              query: content,
+              taskId,
+              usageAggregator: queryAggregator,
+              worktreeRoot,
+            })
+          } finally {
+            queryAgentBus?.off('llmservice:usage', queryUsageListener)
+          }
+
           result = queryResult.response
 
           // Send query metadata to daemon for QueryLogHandler (crosses process boundary via transport).
           // Must arrive BEFORE task:completed so setQueryResult runs before onTaskCompleted.
           try {
             transport.request(TransportTaskEventNames.QUERY_RESULT, {
+              ...(queryResult.format !== undefined && {format: queryResult.format}),
               matchedDocs: queryResult.matchedDocs,
               searchMetadata: queryResult.searchMetadata,
               taskId,
               tier: queryResult.tier,
               timing: queryResult.timing,
+              ...(queryResult.usage !== undefined && {usage: queryResult.usage}),
             })
           } catch {
             agentLog(`task:queryResult send failed taskId=${taskId}`)
           }
+
+          break
+        }
+
+        case 'query-tool-mode': {
+          // Tool-mode query: no LLM dispatch, no provider gate, no
+          // usage aggregator. Daemon runs Tier 0/1 cache + Tier-2-style
+          // retrieval (without the canRespondDirectly threshold) and
+          // returns the wire envelope. Wire contract: bundled SKILL.md
+          // (section 1, "Tool mode — run query without an LLM provider").
+          const toolModeOptions = decodeQueryToolModeContent(content)
+          const toolModeResult = await queryExecutor.executeToolMode({
+            limit: toolModeOptions.limit,
+            query: toolModeOptions.query,
+            worktreeRoot,
+          })
+          result = JSON.stringify(toolModeResult)
 
           break
         }

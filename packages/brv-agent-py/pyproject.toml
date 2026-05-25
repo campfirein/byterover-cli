@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "brv-agent"
+version = "0.1.0"
+description = "Thin ergonomic wrapper over the Agent Client Protocol for building agents that join brv channels."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+keywords = ["acp", "agent-client-protocol", "byterover", "channels"]
+dependencies = [
+    # PyPI distribution name is `agent-client-protocol`; Python import is `acp`.
+    # Pinned to the same range kimi-cli ships so the two interop cleanly.
+    "agent-client-protocol>=0.8.0,<0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "build>=1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/brv_agent"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
