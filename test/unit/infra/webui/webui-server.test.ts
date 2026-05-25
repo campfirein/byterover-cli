@@ -2,6 +2,7 @@ import {expect} from 'chai'
 import express from 'express'
 import {createServer} from 'node:http'
 
+import {WebUiPortInUseError} from '../../../../src/server/core/domain/errors/webui-error.js'
 import {WebUiServer} from '../../../../src/server/infra/webui/webui-server.js'
 
 describe('WebUiServer', () => {
@@ -34,7 +35,7 @@ describe('WebUiServer', () => {
     expect(server.getPort()).to.be.undefined
   })
 
-  it('should reject with error when port is in use', async () => {
+  it('should reject with WebUiPortInUseError when port is in use', async () => {
     // Occupy a port first
     const blockingServer = createServer()
     const occupiedPort = await new Promise<number>((resolve, reject) => {
@@ -53,7 +54,8 @@ describe('WebUiServer', () => {
         await server.start(occupiedPort)
         expect.fail('Expected start to reject')
       } catch (error) {
-        expect(error).to.be.an.instanceOf(Error)
+        expect(error).to.be.an.instanceOf(WebUiPortInUseError)
+        expect((error as WebUiPortInUseError).port).to.equal(occupiedPort)
         expect((error as Error).message).to.include('in use')
       }
 

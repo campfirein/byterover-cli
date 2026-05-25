@@ -3,6 +3,7 @@ import type {Express} from 'express'
 import {createServer, type Server as HttpServer} from 'node:http'
 
 import {TRANSPORT_HOST} from '../../constants.js'
+import {WebUiPortInUseError} from '../../core/domain/errors/webui-error.js'
 
 /**
  * Standalone HTTP server for the web UI.
@@ -36,7 +37,7 @@ export class WebUiServer {
 
       this.httpServer.on('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
-          reject(new Error(`Web UI port ${port} is already in use`))
+          reject(new WebUiPortInUseError(port))
         } else {
           reject(err)
         }
