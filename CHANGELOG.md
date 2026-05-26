@@ -2,6 +2,16 @@
 
 All notable user-facing changes to ByteRover CLI will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **ByteRover preserves your input language by default.** When you curate context in Russian, Chinese, Japanese, Vietnamese, or any other language, the calling agent's LLM is now instructed to author body text in the same language (the schema — tag names, attribute names, enum values, paths — stays English so tooling is unaffected). Configure with the new `brv config set` command:
+  - `brv config set language.mode auto` — match the user's input language (default).
+  - `brv config set language.mode fixed` + `brv config set language.code <iso>` — force a specific language. ISO 639-1 codes accepted: `ar`, `de`, `el`, `en`, `es`, `fi`, `fr`, `he`, `hi`, `id`, `it`, `ja`, `ko`, `nl`, `no`, `pl`, `pt`, `ru`, `sv`, `th`, `tr`, `uk`, `vi`, `zh`.
+  - `brv config get language.mode` / `brv config get language.code` — read back the current setting.
+
+  CJK queries (Chinese, Japanese, Korean) are now searchable in BM25 — the tokenizer was previously whitespace-only and treated entire CJK sentences as one token. **Restoration recipe** for users who prefer the prior implicit-English behavior: `brv config set language.code en` then `brv config set language.mode fixed`. Reported by Dmitriy K — thanks for the thorough reproduction in [#616](https://github.com/campfirein/byterover-cli/issues/616).
+
 ## [3.16.0]
 
 ### Added
