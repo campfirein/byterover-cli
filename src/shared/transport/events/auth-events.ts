@@ -13,7 +13,7 @@ export const AuthEvents = {
 } as const
 
 export interface AuthGetStateRequest {
-  projectPath: string
+  projectPath?: string
 }
 
 export interface AuthGetStateResponse {
