@@ -249,11 +249,48 @@ describe('curate-prompt-builder', () => {
       // Schema slice is ~2-3 KB; the surrounding prose adds ~1.5 KB
       // for explicit contract rules covering `<li>` bullet prefixes,
       // `<bv-diagram>` CDATA, and `related` file-vs-folder routing;
-      // the user intent is bounded by the caller. Each rule prevents
-      // a distinct FE-breaking output class. Bumping the budget should
-      // be a deliberate decision, not a silent drift.
+      // the language clause adds ~340 chars; the user intent is bounded
+      // by the caller. Each rule prevents a distinct FE-breaking output
+      // class. Bumping the budget should be a deliberate decision, not a
+      // silent drift.
       const prompt = buildGeneratePrompt({userIntent: 'remember we use RS256'})
       expect(prompt.length).to.be.lessThan(6144)
+    })
+
+    it('emits a `# Language` section between path format and element vocabulary', () => {
+      // Section ordering matters: the language clause is part of the
+      // byterover-controlled framing that must commit BEFORE the
+      // element vocabulary (so the LLM authors `<bv-*>` body text in
+      // the configured language) and BEFORE the user-intent block (so
+      // a malicious intent can't shadow it).
+      const prompt = buildGeneratePrompt({userIntent: 'x'})
+      const pathIdx = prompt.indexOf('# Path format')
+      const languageIdx = prompt.indexOf('# Language')
+      const schemaIdx = prompt.indexOf('# Element vocabulary')
+
+      expect(languageIdx, 'language section present').to.be.greaterThan(-1)
+      expect(languageIdx, 'language section after path format').to.be.greaterThan(pathIdx)
+      expect(languageIdx, 'language section before element vocabulary').to.be.lessThan(schemaIdx)
+    })
+
+    it('emits the auto-mode clause when language is not provided', () => {
+      const prompt = buildGeneratePrompt({userIntent: 'x'})
+      expect(prompt).to.include("Match the user's input language")
+    })
+
+    it('emits the auto-mode clause when language.mode is auto', () => {
+      const prompt = buildGeneratePrompt({language: {mode: 'auto'}, userIntent: 'x'})
+      expect(prompt).to.include("Match the user's input language")
+    })
+
+    it('emits the fixed-mode clause with the mapped language name', () => {
+      // Threading proof — confirms `language` from options reaches
+      // buildLanguageClause. A regression dropping the param (e.g. a
+      // future destructuring miss in the orchestrator) would surface
+      // here as the auto clause leaking into fixed-mode prompts.
+      const prompt = buildGeneratePrompt({language: {code: 'ru', mode: 'fixed'}, userIntent: 'x'})
+      expect(prompt).to.include('in Russian')
+      expect(prompt).to.not.include("Match the user's input language")
     })
   })
 
@@ -424,6 +461,45 @@ describe('curate-prompt-builder', () => {
         userIntent,
       })
       expect(prompt).to.not.include(CURATE_SCHEMA_PROMPT)
+    })
+
+    it('emits a `# Language` section between output contract and errors', () => {
+      // Correction prompts can't drop the language clause — if the
+      // first attempt failed validation, the LLM may also have drifted
+      // off language. The clause reasserts the contract on every
+      // retry.
+      const prompt = buildCorrectionPrompt({
+        errors: [{kind: 'missing-path-attribute', message: 'm'}],
+        previousHtml,
+        userIntent,
+      })
+      const contractIdx = prompt.indexOf('# Output contract')
+      const languageIdx = prompt.indexOf('# Language')
+      const errorsIdx = prompt.indexOf('# Errors to fix')
+
+      expect(languageIdx, 'language section present').to.be.greaterThan(-1)
+      expect(languageIdx, 'language after output contract').to.be.greaterThan(contractIdx)
+      expect(languageIdx, 'language before errors block').to.be.lessThan(errorsIdx)
+    })
+
+    it('emits the auto-mode clause when language is not provided', () => {
+      const prompt = buildCorrectionPrompt({
+        errors: [{kind: 'missing-path-attribute', message: 'm'}],
+        previousHtml,
+        userIntent,
+      })
+      expect(prompt).to.include("Match the user's input language")
+    })
+
+    it('emits the fixed-mode clause with the mapped language name', () => {
+      const prompt = buildCorrectionPrompt({
+        errors: [{kind: 'missing-path-attribute', message: 'm'}],
+        language: {code: 'ru', mode: 'fixed'},
+        previousHtml,
+        userIntent,
+      })
+      expect(prompt).to.include('in Russian')
+      expect(prompt).to.not.include("Match the user's input language")
     })
   })
 })

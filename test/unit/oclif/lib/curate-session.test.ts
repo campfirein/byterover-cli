@@ -219,6 +219,25 @@ describe('curate-session', () => {
       const b = await kickoffSession({content: 'b', projectRoot})
       expect(a.sessionId).to.not.equal(b.sessionId)
     })
+
+    it('threads `language` into the kickoff prompt (auto when omitted)', async () => {
+      // End-to-end threading proof: orchestrator → buildGeneratePrompt →
+      // buildLanguageClause. Auto when no language preference is set.
+      const env = await kickoffSession({content: 'x', projectRoot})
+      expect(env.prompt).to.include("Match the user's input language")
+    })
+
+    it('threads `language` into the kickoff prompt (fixed-mode emits the mapped name)', async () => {
+      // A regression dropping the param in the orchestrator would surface
+      // here as the auto clause leaking into a fixed-mode kickoff.
+      const env = await kickoffSession({
+        content: 'x',
+        language: {code: 'ru', mode: 'fixed'},
+        projectRoot,
+      })
+      expect(env.prompt).to.include('in Russian')
+      expect(env.prompt).to.not.include("Match the user's input language")
+    })
   })
 
   // ─── continueSession — dispatch to daemon ────────────────────────────────────
