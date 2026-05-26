@@ -199,8 +199,13 @@ function generateFrontmatter(
 /**
  * Parse YAML frontmatter from markdown content.
  * Returns null if no frontmatter is found (backward compat with old format).
+ *
+ * Exported for cross-module reuse by daemon-side telemetry harvest
+ * (M12.3: AnalyticsHook reads frontmatter from affected files post-op
+ * to populate per-event `tags` / `keywords` / `related` arrays). Existing
+ * in-file callers are unaffected by the export-keyword addition.
  */
-function parseFrontmatter(content: string): null | ParsedFrontmatter {
+export function parseFrontmatter(content: string): null | ParsedFrontmatter {
   if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) {
     return null
   }

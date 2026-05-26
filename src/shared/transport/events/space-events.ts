@@ -1,3 +1,5 @@
+ 
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
 import type {BrvConfigDTO, SpaceDTO} from '../types/dto.js'
 
 export const SpaceEvents = {
@@ -16,6 +18,7 @@ export interface SpaceListResponse {
 }
 
 export interface SpaceSwitchRequest {
+  cli_metadata?: CliMetadata
   spaceId: string
 }
 

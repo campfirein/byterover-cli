@@ -1,7 +1,7 @@
 import {expect} from 'chai'
 
-import {GLOBAL_CONFIG_VERSION} from '../../../../../src/server/constants.js'
-import {GlobalConfig} from '../../../../../src/server/core/domain/entities/global-config.js'
+import {GLOBAL_CONFIG_VERSION} from '../../../../../../src/server/constants.js'
+import {GlobalConfig} from '../../../../../../src/server/core/domain/entities/global-config.js'
 
 describe('GlobalConfig', () => {
   const validDeviceId = '550e8400-e29b-41d4-a716-446655440000'
@@ -117,6 +117,7 @@ describe('GlobalConfig', () => {
       const json = config.toJson()
 
       expect(json).to.deep.equal({
+        analytics: false,
         deviceId: validDeviceId,
         version: GLOBAL_CONFIG_VERSION,
       })
@@ -130,6 +131,90 @@ describe('GlobalConfig', () => {
       expect(restored).to.not.be.undefined
       expect(restored?.deviceId).to.equal(original.deviceId)
       expect(restored?.version).to.equal(original.version)
+      expect(restored?.analytics).to.equal(original.analytics)
+    })
+  })
+
+  describe('analytics field (ENG-2611)', () => {
+    it('should default analytics to false when absent (legacy upgrade)', () => {
+      const config = GlobalConfig.fromJson({deviceId: validDeviceId, version: '0.0.1'})
+
+      expect(config).to.not.be.undefined
+      expect(config?.analytics).to.equal(false)
+    })
+
+    it('should preserve analytics: true when explicitly set', () => {
+      const config = GlobalConfig.fromJson({analytics: true, deviceId: validDeviceId, version: '0.0.1'})
+
+      expect(config).to.not.be.undefined
+      expect(config?.analytics).to.equal(true)
+    })
+
+    it('should preserve analytics: false when explicitly set', () => {
+      const config = GlobalConfig.fromJson({analytics: false, deviceId: validDeviceId, version: '0.0.1'})
+
+      expect(config).to.not.be.undefined
+      expect(config?.analytics).to.equal(false)
+    })
+
+    it('should reject non-boolean analytics value', () => {
+      const config = GlobalConfig.fromJson({analytics: 'yes', deviceId: validDeviceId, version: '0.0.1'})
+
+      expect(config).to.be.undefined
+    })
+
+    it('should round-trip analytics: true through toJson/fromJson', () => {
+      const fromTrue = GlobalConfig.fromJson({analytics: true, deviceId: validDeviceId, version: '0.0.1'})
+      expect(fromTrue, 'fromJson must accept valid analytics: true input').to.not.be.undefined
+      if (!fromTrue) throw new Error('fromJson returned undefined for valid input')
+      const restoredTrue = GlobalConfig.fromJson(fromTrue.toJson())
+      expect(restoredTrue?.analytics).to.equal(true)
+
+      const fromFalse = GlobalConfig.fromJson({analytics: false, deviceId: validDeviceId, version: '0.0.1'})
+      expect(fromFalse, 'fromJson must accept valid analytics: false input').to.not.be.undefined
+      if (!fromFalse) throw new Error('fromJson returned undefined for valid input')
+      const restoredFalse = GlobalConfig.fromJson(fromFalse.toJson())
+      expect(restoredFalse?.analytics).to.equal(false)
+    })
+
+    it('should default analytics to false on create()', () => {
+      const config = GlobalConfig.create(validDeviceId)
+
+      expect(config.analytics).to.equal(false)
+    })
+
+    it('should include analytics: false explicitly in toJson() of default-created instance', () => {
+      const config = GlobalConfig.create(validDeviceId)
+      const json = config.toJson()
+
+      expect(json).to.have.property('analytics', false)
+    })
+  })
+
+  describe('withAnalytics()', () => {
+    it('should produce a new instance with the given analytics value', () => {
+      const original = GlobalConfig.create(validDeviceId)
+      const updated = original.withAnalytics(true)
+
+      expect(updated.analytics).to.equal(true)
+      expect(updated.deviceId).to.equal(validDeviceId)
+      expect(updated.version).to.equal(GLOBAL_CONFIG_VERSION)
+    })
+
+    it('should not mutate the original instance', () => {
+      const original = GlobalConfig.create(validDeviceId)
+      original.withAnalytics(true)
+
+      expect(original.analytics).to.equal(false)
+    })
+
+    it('should return a new instance even when value matches current', () => {
+      const original = GlobalConfig.create(validDeviceId)
+      const same = original.withAnalytics(false)
+
+      expect(same).to.not.equal(original)
+      expect(same.analytics).to.equal(false)
+      expect(same.deviceId).to.equal(original.deviceId)
     })
   })
 

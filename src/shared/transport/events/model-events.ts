@@ -1,3 +1,5 @@
+ 
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
 import type {ModelDTO} from '../types/dto.js'
 
 export const ModelEvents = {
@@ -7,6 +9,7 @@ export const ModelEvents = {
 } as const
 
 export interface ModelListRequest {
+  cli_metadata?: CliMetadata
   providerId: string
 }
 
@@ -19,6 +22,7 @@ export interface ModelListResponse {
 }
 
 export interface ModelListByProvidersRequest {
+  cli_metadata?: CliMetadata
   providerIds: string[]
 }
 
@@ -28,6 +32,7 @@ export interface ModelListByProvidersResponse {
 }
 
 export interface ModelSetActiveRequest {
+  cli_metadata?: CliMetadata
   contextLength?: number
   modelId: string
   providerId: string

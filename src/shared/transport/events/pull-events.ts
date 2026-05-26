@@ -1,3 +1,6 @@
+ 
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
+
 export const PullEvents = {
   EXECUTE: 'pull:execute',
   PREPARE: 'pull:prepare',
@@ -6,6 +9,7 @@ export const PullEvents = {
 
 export interface PullPrepareRequest {
   branch: string
+  cli_metadata?: CliMetadata
 }
 
 export interface PullPrepareResponse {
@@ -15,6 +19,7 @@ export interface PullPrepareResponse {
 
 export interface PullExecuteRequest {
   branch: string
+  cli_metadata?: CliMetadata
 }
 
 export interface PullExecuteResponse {

@@ -1,3 +1,6 @@
+ 
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
+
 export const WorktreeEvents = {
   ADD: 'worktree:add',
   LIST: 'worktree:list',
@@ -5,6 +8,7 @@ export const WorktreeEvents = {
 } as const
 
 export interface WorktreeAddRequest {
+  cli_metadata?: CliMetadata
   force?: boolean
   worktreePath: string
 }
@@ -16,6 +20,7 @@ export interface WorktreeAddResponse {
 }
 
 export interface WorktreeRemoveRequest {
+  cli_metadata?: CliMetadata
   worktreePath: string
 }
 
@@ -24,7 +29,14 @@ export interface WorktreeRemoveResponse {
   success: boolean
 }
 
-export type WorktreeListRequest = void
+/**
+ * M13.2 — `WorktreeListRequest` upgraded from `void` to an interface with
+ * optional `cli_metadata` so client-side callers can attach invocation
+ * metadata. Field stays optional, so wire-level back-compat is preserved.
+ */
+export interface WorktreeListRequest {
+  cli_metadata?: CliMetadata
+}
 
 export interface WorktreeListResponse {
   projectRoot: string

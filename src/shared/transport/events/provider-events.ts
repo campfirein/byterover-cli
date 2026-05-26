@@ -1,3 +1,5 @@
+ 
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
 import type {ProviderDTO} from '../types/dto.js'
 
 export const ProviderEvents = {
@@ -14,6 +16,14 @@ export const ProviderEvents = {
   VALIDATE_API_KEY: 'provider:validateApiKey',
 } as const
 
+/**
+ * M13.2 Group C — `provider:list` is a no-payload oclif call. Define the Request
+ * interface so M13.3 can attach `cli_metadata`.
+ */
+export interface ProviderListRequest {
+  cli_metadata?: CliMetadata
+}
+
 export interface ProviderListResponse {
   providers: ProviderDTO[]
 }
@@ -21,6 +31,7 @@ export interface ProviderListResponse {
 export interface ProviderConnectRequest {
   apiKey?: string
   baseUrl?: string
+  cli_metadata?: CliMetadata
   providerId: string
 }
 
@@ -30,6 +41,7 @@ export interface ProviderConnectResponse {
 }
 
 export interface ProviderDisconnectRequest {
+  cli_metadata?: CliMetadata
   providerId: string
 }
 
@@ -39,12 +51,20 @@ export interface ProviderDisconnectResponse {
 
 export interface ProviderValidateApiKeyRequest {
   apiKey: string
+  cli_metadata?: CliMetadata
   providerId: string
 }
 
 export interface ProviderValidateApiKeyResponse {
   error?: string
   isValid: boolean
+}
+
+/**
+ * M13.2 Group C — `provider:getActive` is a no-payload oclif call.
+ */
+export interface ProviderGetActiveRequest {
+  cli_metadata?: CliMetadata
 }
 
 export interface ProviderGetActiveResponse {
@@ -55,6 +75,7 @@ export interface ProviderGetActiveResponse {
 }
 
 export interface ProviderSetActiveRequest {
+  cli_metadata?: CliMetadata
   providerId: string
 }
 
@@ -66,6 +87,7 @@ export interface ProviderSetActiveResponse {
 // ==================== OAuth Events ====================
 
 export interface ProviderCancelOAuthRequest {
+  cli_metadata?: CliMetadata
   providerId: string
 }
 
@@ -74,6 +96,7 @@ export interface ProviderCancelOAuthResponse {
 }
 
 export interface ProviderStartOAuthRequest {
+  cli_metadata?: CliMetadata
   mode?: string
   providerId: string
 }
@@ -86,6 +109,7 @@ export interface ProviderStartOAuthResponse {
 }
 
 export interface ProviderAwaitOAuthCallbackRequest {
+  cli_metadata?: CliMetadata
   providerId: string
 }
 
@@ -95,6 +119,7 @@ export interface ProviderAwaitOAuthCallbackResponse {
 }
 
 export interface ProviderSubmitOAuthCodeRequest {
+  cli_metadata?: CliMetadata
   code: string
   providerId: string
 }

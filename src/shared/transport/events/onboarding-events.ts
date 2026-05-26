@@ -1,3 +1,6 @@
+ 
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
+
 export const OnboardingEvents = {
   AUTO_SETUP: 'onboarding:autoSetup',
   COMPLETE: 'onboarding:complete',
@@ -14,6 +17,7 @@ export interface OnboardingAutoSetupResponse {
 }
 
 export interface OnboardingCompleteRequest {
+  cli_metadata?: CliMetadata
   skipped?: boolean
 }
 

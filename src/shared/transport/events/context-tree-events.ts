@@ -1,3 +1,5 @@
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
+
 /** Transport events for context tree operations (webui ↔ daemon). */
 export const ContextTreeEvents = {
   GET_FILE: 'contextTree:getFile',
@@ -12,6 +14,7 @@ export const ContextTreeEvents = {
 export interface ContextTreeGetNodesRequest {
   /** Branch to read from. Defaults to current checked-out branch if omitted. */
   branch?: string
+  cli_metadata?: CliMetadata
   /** Explicit project path. When omitted, uses the client's registered project. */
   projectPath?: string
 }
@@ -39,6 +42,7 @@ export interface ContextTreeGetNodesResponse {
 
 export interface ContextTreeGetFileRequest {
   branch?: string
+  cli_metadata?: CliMetadata
   /** Relative path within the context tree (e.g. `"architecture/auth.md"`). */
   path: string
   /** Explicit project path. When omitted, uses the client's registered project. */
@@ -65,6 +69,7 @@ export interface ContextTreeGetFileResponse {
 
 export interface ContextTreeUpdateFileRequest {
   branch?: string
+  cli_metadata?: CliMetadata
   /** New file content to write. */
   content: string
   /** Relative path within the context tree. */
@@ -80,6 +85,8 @@ export interface ContextTreeUpdateFileResponse {
 // --- GET_FILE_METADATA ---
 
 export interface ContextTreeGetFileMetadataRequest {
+  cli_metadata?: CliMetadata
+  /** File paths to fetch metadata for. */
   /**
    * File or folder paths to fetch metadata for. Folder paths resolve to the
    * latest commit that modified any descendant of the folder.
@@ -102,6 +109,7 @@ export interface ContextTreeGetFileMetadataResponse {
 // --- GET_HISTORY ---
 
 export interface ContextTreeGetHistoryRequest {
+  cli_metadata?: CliMetadata
   /** SHA of the last commit from the previous page (for cursor-based pagination). */
   cursor?: string
   /** Max commits per page. Defaults to 10. */

@@ -9,6 +9,7 @@ import sinon, {restore, stub} from 'sinon'
 import type {AuthLogoutResponse} from '../../src/shared/transport/events/auth-events.js'
 
 import Logout from '../../src/oclif/commands/logout.js'
+import {buildCliMetadata} from '../../src/oclif/lib/build-cli-metadata.js'
 import {AuthEvents} from '../../src/shared/transport/events/auth-events.js'
 
 // ==================== TestableLogoutCommand ====================
@@ -21,8 +22,10 @@ class TestableLogoutCommand extends Logout {
     this.mockConnector = mockConnector
   }
 
-  protected override async performLogout(): Promise<AuthLogoutResponse> {
-    return super.performLogout({
+  protected override async performLogout(
+    cliMetadata: ReturnType<typeof buildCliMetadata>,
+  ): Promise<AuthLogoutResponse> {
+    return super.performLogout(cliMetadata, {
       maxRetries: 1,
       retryDelayMs: 0,
       transportConnector: this.mockConnector,
@@ -118,15 +121,19 @@ describe('Logout Command', () => {
       expect(loggedMessages.some((m) => m.includes('Logged out successfully'))).to.be.true
     })
 
-    it('should send correct event to transport handler', async () => {
+    it('should send correct event to transport handler with cli_metadata payload', async () => {
       mockLogoutResponse({success: true})
 
       await createCommand().run()
 
       expect(mockClient.requestWithAck.calledOnce).to.be.true
-      const [event, ...rest] = mockClient.requestWithAck.firstCall.args
+      const [event, payload] = mockClient.requestWithAck.firstCall.args
       expect(event).to.equal(AuthEvents.LOGOUT)
-      expect(rest).to.deep.equal([])
+      // M13.3: oclif now attaches cli_metadata to every daemon-bound payload.
+      // The cli_metadata block is structurally validated by CliMetadataSchema in the daemon;
+      // here we just assert it is present with the expected shape (command_id is the most stable key).
+      expect(payload).to.be.an('object')
+      expect((payload as {cli_metadata: {command_id: string}}).cli_metadata.command_id).to.equal('logout')
     })
   })
 

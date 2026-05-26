@@ -2,6 +2,22 @@
 
 All notable user-facing changes to ByteRover CLI will be documented in this file.
 
+## [3.15.1]
+
+### Fixed
+- **Review settings panel restored in `brv webui`.** The on/off toggle for review-before-changes (Configuration → Version Control) went missing in 3.15.0. It is back in the same spot, alongside Identity and Remotes.
+- **`brv update` tidies up old versions.** Each upgrade used to leave previous CLI versions sitting in the plugin cache, slowly eating disk space. The cache now keeps only the version you just installed.
+
+## [3.15.0]
+
+### Added
+- **Tune BRV with `brv settings`.** Adjust knobs like agent pool size, concurrent tasks per project, LLM iteration budget, and task-history retention without editing source or rebuilding. `brv settings` lists every option by category (concurrency, LLM, task history); `brv settings get/set/reset <key>` operates on a single value. Use plain numbers for count keys (e.g. `agentPool.maxSize 25`) and duration strings for time keys (e.g. `llm.iterationBudgetMs 30m` or `1h 30m` or raw ms). Every subcommand also accepts `--format json`. Values persist at `<BRV_DATA_DIR>/settings.json` and can be browsed from the Configuration page in `brv webui`. Run `brv restart` after a change.
+- **Folder metadata in `brv webui` Contexts.** Folders in the context tree now render their title, summary, tags, and related links in the detail panel, the same way files already did.
+
+### Changed
+- **Configuration page in `brv webui` reorganized.** Settings now live under three sections (General, Connectors, Version Control) instead of one long page, so the new agent-pool and task-history controls have room alongside the existing identity, provider, and remote settings.
+- **`--timeout` flag is deprecated.** Passing `--timeout` on commands that accepted it now logs a one-line deprecation notice and has no effect. Use `brv settings set llm.iterationBudgetMs <duration>` (e.g. `30m`, `1h`, or raw ms) to change the LLM iteration budget instead, then run `brv restart`.
+
 ## [3.14.0]
 
 ### Added

@@ -1,6 +1,12 @@
+/* eslint-disable camelcase */
 import {Command, Flags} from '@oclif/core'
 
-import {AuthEvents, type AuthLogoutResponse} from '../../shared/transport/events/auth-events.js'
+import {
+  AuthEvents,
+  type AuthLogoutRequest,
+  type AuthLogoutResponse,
+} from '../../shared/transport/events/auth-events.js'
+import {buildCliMetadata} from '../lib/build-cli-metadata.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../lib/daemon-client.js'
 import {writeJsonResponse} from '../lib/json-response.js'
 
@@ -20,23 +26,30 @@ export default class Logout extends Command {
     }),
   }
 
-  protected async performLogout(options?: DaemonClientOptions): Promise<AuthLogoutResponse> {
+  protected async performLogout(
+    cliMetadata: ReturnType<typeof buildCliMetadata>,
+    options?: DaemonClientOptions,
+  ): Promise<AuthLogoutResponse> {
     return withDaemonRetry<AuthLogoutResponse>(
-      async (client) => client.requestWithAck<AuthLogoutResponse>(AuthEvents.LOGOUT),
+      async (client) => {
+        const request: AuthLogoutRequest = {cli_metadata: cliMetadata}
+        return client.requestWithAck<AuthLogoutResponse, AuthLogoutRequest>(AuthEvents.LOGOUT, request)
+      },
       options,
     )
   }
 
   public async run(): Promise<void> {
-    const {flags} = await this.parse(Logout)
+    const {flags, metadata} = await this.parse(Logout)
     const format = flags.format ?? 'text'
+    const cliMetadata = buildCliMetadata(this.id ?? 'logout', {flags, metadata})
 
     try {
       if (format === 'text') {
         this.log('Logging out...')
       }
 
-      const response = await this.performLogout()
+      const response = await this.performLogout(cliMetadata)
 
       if (response.success) {
         if (format === 'json') {

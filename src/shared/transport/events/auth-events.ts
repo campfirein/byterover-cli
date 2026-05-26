@@ -1,3 +1,5 @@
+ 
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
 import type {AuthTokenDTO, BrvConfigDTO, UserDTO} from '../types/dto.js'
 
 export const AuthEvents = {
@@ -24,6 +26,7 @@ export interface AuthGetStateResponse {
 }
 
 export interface AuthStartLoginRequest {
+  cli_metadata?: CliMetadata
   /**
    * When true, the daemon returns the auth URL without launching the system browser.
    * Used by clients (e.g. web UI) that prefer to open the URL themselves.
@@ -43,12 +46,22 @@ export interface AuthLoginCompletedEvent {
 
 export interface AuthLoginWithApiKeyRequest {
   apiKey: string
+  cli_metadata?: CliMetadata
 }
 
 export interface AuthLoginWithApiKeyResponse {
   error?: string
   success: boolean
   userEmail?: string
+}
+
+/**
+ * M13.2 Group C — `auth:logout` is a no-payload oclif call today. Define the
+ * Request interface here so M13.3 can attach `cli_metadata`. Handler-side type-
+ * parameter update is out of scope (deferred emit ticket).
+ */
+export interface AuthLogoutRequest {
+  cli_metadata?: CliMetadata
 }
 
 export interface AuthLogoutResponse {

@@ -3,12 +3,14 @@ export * from '../types/dto.js'
 
 // Event constants and types
 export * from './agent-events.js'
+export * from './analytics-events.js'
 export * from './auth-events.js'
 export * from './billing-events.js'
 export * from './client-events.js'
 export * from './config-events.js'
 export * from './connector-events.js'
 export * from './context-tree-events.js'
+export * from './global-config-events.js'
 export * from './hub-events.js'
 export * from './init-events.js'
 export * from './llm-events.js'
@@ -32,12 +34,14 @@ export * from './worktree-events.js'
 
 // Utility exports
 import {AgentEvents} from './agent-events.js'
+import {AnalyticsEvents} from './analytics-events.js'
 import {AuthEvents} from './auth-events.js'
 import {BillingEvents} from './billing-events.js'
 import {ClientEvents} from './client-events.js'
 import {ConfigEvents} from './config-events.js'
 import {ConnectorEvents} from './connector-events.js'
 import {ContextTreeEvents} from './context-tree-events.js'
+import {GlobalConfigEvents} from './global-config-events.js'
 import {HubEvents} from './hub-events.js'
 import {InitEvents} from './init-events.js'
 import {LlmEvents} from './llm-events.js'
@@ -65,12 +69,14 @@ import {WorktreeEvents} from './worktree-events.js'
  */
 export const AllEventGroups = [
   AgentEvents,
+  AnalyticsEvents,
   AuthEvents,
   BillingEvents,
   ClientEvents,
   ConfigEvents,
   ConnectorEvents,
   ContextTreeEvents,
+  GlobalConfigEvents,
   HubEvents,
   InitEvents,
   LlmEvents,

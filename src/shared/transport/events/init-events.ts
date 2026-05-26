@@ -1,3 +1,5 @@
+ 
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
 import type {Agent} from '../../types/agent.js'
 import type {ConnectorType} from '../../types/connector-type.js'
 import type {AgentDTO, BrvConfigDTO, SpaceDTO, TeamDTO} from '../types/dto.js'
@@ -17,6 +19,7 @@ export interface InitGetTeamsResponse {
 }
 
 export interface InitGetSpacesRequest {
+  cli_metadata?: CliMetadata
   teamId: string
 }
 
@@ -30,6 +33,7 @@ export interface InitGetAgentsResponse {
 
 export interface InitExecuteRequest {
   agentId: Agent
+  cli_metadata?: CliMetadata
   connectorType: ConnectorType
   force?: boolean
   spaceId: string
@@ -41,6 +45,7 @@ export interface InitExecuteResponse {
 }
 
 export interface InitLocalRequest {
+  cli_metadata?: CliMetadata
   force?: boolean
 }
 

@@ -34,7 +34,7 @@ function telemetryFields(result: QueryResultMetadata | undefined): {
 }
 
 /** Query metadata without the response string (response arrives via task:completed). */
-type QueryResultMetadata = Omit<QueryExecutorResult, 'response'>
+export type QueryResultMetadata = Omit<QueryExecutorResult, 'response'>
 
 type TaskState = {
   /** Cached initial entry — used in onTaskCompleted/onTaskError to avoid a getById round-trip. */
@@ -44,7 +44,7 @@ type TaskState = {
   queryResult?: QueryResultMetadata
 }
 
-const QUERY_TASK_TYPES: ReadonlySet<string> = new Set(['query'])
+export const QUERY_TASK_TYPES: ReadonlySet<string> = new Set(['query'])
 
 // ── QueryLogHandler ──────────────────────────────────────────────────────────
 

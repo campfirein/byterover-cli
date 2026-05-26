@@ -1,3 +1,4 @@
+/* eslint-disable camelcase */
 import type {ITransportClient, TaskAck} from '@campfirein/brv-transport-client'
 
 import {Args, Command, Flags} from '@oclif/core'
@@ -7,6 +8,7 @@ import type {SearchKnowledgeResult} from '../../agent/infra/sandbox/tools-sdk.js
 
 import {TaskEvents} from '../../shared/transport/events/index.js'
 import {encodeSearchContent} from '../../shared/transport/search-content.js'
+import {buildCliMetadata} from '../lib/build-cli-metadata.js'
 import {
   type DaemonClientOptions,
   formatConnectionError,
@@ -64,10 +66,12 @@ Use "brv query" when you need a synthesized answer.`
   }
 
   public async run(): Promise<void> {
-    const {args, flags} = await this.parse(Search)
+    const {args, flags, metadata} = await this.parse(Search)
     const format: 'json' | 'text' = flags.format === 'json' ? 'json' : 'text'
 
     if (!this.validateInput(args.query, format)) return
+
+    const cliMetadata = buildCliMetadata(this.id ?? 'search', {flags, metadata})
 
     try {
       await withDaemonRetry(
@@ -75,6 +79,7 @@ Use "brv query" when you need a synthesized answer.`
           // No provider validation — search is pure BM25, no LLM needed.
           await this.submitTask({
             client,
+            cliMetadata,
             format,
             limit: flags.limit,
             projectRoot,
@@ -114,6 +119,7 @@ Use "brv query" when you need a synthesized answer.`
 
   private async submitTask(props: {
     client: ITransportClient
+    cliMetadata: ReturnType<typeof buildCliMetadata>
     format: 'json' | 'text'
     limit?: number
     projectRoot?: string
@@ -121,12 +127,13 @@ Use "brv query" when you need a synthesized answer.`
     scope?: string
     worktreeRoot?: string
   }): Promise<void> {
-    const {client, format, projectRoot, query, worktreeRoot} = props
+    const {client, cliMetadata, format, projectRoot, query, worktreeRoot} = props
     const taskId = randomUUID()
 
     const contentPayload = encodeSearchContent({limit: props.limit, query, scope: props.scope})
 
     const taskPayload = {
+      cli_metadata: cliMetadata,
       clientCwd: process.cwd(),
       content: contentPayload,
       ...(projectRoot ? {projectPath: projectRoot} : {}),

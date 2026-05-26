@@ -1,3 +1,6 @@
+ 
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
+
 export const ReviewEvents = {
   DECIDE_TASK: 'review:decideTask',
   GET_DISABLED: 'review:getDisabled',
@@ -12,6 +15,7 @@ export interface ReviewGetDisabledResponse {
 }
 
 export interface ReviewSetDisabledRequest {
+  cli_metadata?: CliMetadata
   reviewDisabled: boolean
 }
 
@@ -27,6 +31,7 @@ export interface ReviewNotifyEvent {
 }
 
 export interface ReviewDecideTaskRequest {
+  cli_metadata?: CliMetadata
   decision: 'approved' | 'rejected'
   /** When provided, only operations targeting these context-tree-relative paths are affected. */
   filePaths?: string[]

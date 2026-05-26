@@ -1,3 +1,6 @@
+ 
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
+
 export const PushEvents = {
   EXECUTE: 'push:execute',
   PREPARE: 'push:prepare',
@@ -6,6 +9,7 @@ export const PushEvents = {
 
 export interface PushPrepareRequest {
   branch: string
+  cli_metadata?: CliMetadata
 }
 
 export interface PushPrepareResponse {
@@ -22,6 +26,7 @@ export interface PushPrepareResponse {
 
 export interface PushExecuteRequest {
   branch: string
+  cli_metadata?: CliMetadata
 }
 
 export interface PushExecuteResponse {

@@ -1,3 +1,6 @@
+ 
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
+
 /**
  * Persisted-entry schema version. Bumped only on shape-breaking changes to
  * `TaskHistoryEntry`. The Zod schema in `server/core/domain/entities/` uses
@@ -35,6 +38,7 @@ export interface TaskHeartbeatEvent {
 }
 
 export interface TaskCreateRequest {
+  cli_metadata?: CliMetadata
   clientCwd?: string
   content: string
   files?: string[]
@@ -50,6 +54,7 @@ export interface TaskAckResponse {
 }
 
 export interface TaskCancelRequest {
+  cli_metadata?: CliMetadata
   taskId: string
 }
 
@@ -119,6 +124,7 @@ export interface TaskListItem {
  * All filter dims are optional; AND-combined when multiple are set.
  */
 export interface TaskListRequest {
+  cli_metadata?: CliMetadata
   /** createdAt >= this epoch ms */
   createdAfter?: number
   /** createdAt <= this epoch ms */
@@ -187,6 +193,7 @@ export interface TaskListResponse {
 }
 
 export type TaskClearCompletedRequest = {
+  cli_metadata?: CliMetadata
   projectPath?: string
 }
 
@@ -196,6 +203,7 @@ export type TaskClearCompletedResponse = {
 }
 
 export type TaskDeleteBulkRequest = {
+  cli_metadata?: CliMetadata
   taskIds: string[]
 }
 
@@ -205,6 +213,7 @@ export type TaskDeleteBulkResponse = {
 }
 
 export type TaskDeleteRequest = {
+  cli_metadata?: CliMetadata
   taskId: string
 }
 
@@ -224,6 +233,7 @@ export type TaskDeletedEvent = {
 }
 
 export type TaskGetRequest = {
+  cli_metadata?: CliMetadata
   taskId: string
 }
 

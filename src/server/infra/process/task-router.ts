@@ -1675,9 +1675,12 @@ export class TaskRouter {
   }
 
   private registerLlmEvent<E extends LlmEventName>(eventName: E): void {
-    this.transport.onRequest<LlmEventPayloadMap[E], void>(eventName, (data) => {
+    this.transport.onRequest<LlmEventPayloadMap[E], void>(eventName, async (data) => {
       if (!hasTaskId(data)) return
-      this.routeLlmEvent(eventName, data)
+      // `routeLlmEvent` is async because TOOL_RESULT hooks (AnalyticsHook)
+      // do disk I/O. socket-io-transport-server awaits this handler, so
+      // OTHER sockets remain serviceable while this one's hook chain runs.
+      await this.routeLlmEvent(eventName, data)
     })
   }
 
@@ -1730,8 +1733,15 @@ export class TaskRouter {
    * Generic handler for routing LLM events from Agent to clients.
    * Checks both active and recently completed tasks (within grace period).
    * onToolResult hooks are called only for ACTIVE tasks (not grace-period).
+   *
+   * Async because TOOL_RESULT hooks may do disk I/O (AnalyticsHook reads
+   * post-op frontmatter). The hook chain is awaited sequentially so a
+   * caught sync throw OR an awaited rejection both land in the same
+   * try/catch — no unhandled rejection can escape. Intra-task ordering
+   * across concurrent TOOL_RESULT events is enforced INSIDE the hook
+   * (e.g. `AnalyticsHook.pendingByTask` queue), not here.
    */
-  private routeLlmEvent(eventName: string, data: {[key: string]: unknown; taskId: string}): void {
+  private async routeLlmEvent(eventName: string, data: {[key: string]: unknown; taskId: string}): Promise<void> {
     const {taskId, ...rest} = data
     const activeTask = this.tasks.get(taskId)
     const task = activeTask ?? this.completedTasks.get(taskId)?.task
@@ -1748,11 +1758,35 @@ export class TaskRouter {
       this.accumulateLlmEvent(taskId, eventName, data)
     }
 
-    // Notify onToolResult hooks only for active tasks
+    // Notify onToolResult hooks only for active tasks.
+    //
+    // Two-pass dispatch: (1) call every hook's onToolResult SYNCHRONOUSLY so
+    // each hook's sync registration code runs before any await yields
+    // (critical for `AnalyticsHook.pendingByTask` — the per-task queue must
+    // observe THIS op before a racing TASK_COMPLETED handler reads it);
+    // (2) await each returned Promise in array order so per-hook async work
+    // settles before the broadcast and rejections still land in the try/catch.
+    // The single-pass `for-await` shape would defer hook[N]'s sync body until
+    // hook[N-1]'s Promise resolves, leaving racing terminal handlers a
+    // window in which `pendingByTask` is still empty.
     if (activeTask && eventName === LlmEventNames.TOOL_RESULT) {
+      const promises: Array<Promise<void> | undefined> = []
       for (const hook of this.lifecycleHooks) {
         try {
-          hook.onToolResult?.(taskId, data as unknown as LlmToolResultEvent)
+          promises.push(hook.onToolResult?.(taskId, data as unknown as LlmToolResultEvent))
+        } catch (error) {
+          transportLog(
+            `LifecycleHook.onToolResult sync error for ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
+          )
+          promises.push(undefined)
+        }
+      }
+
+      for (const p of promises) {
+        if (p === undefined) continue
+        try {
+          // eslint-disable-next-line no-await-in-loop -- sequential await by design
+          await p
         } catch (error) {
           transportLog(
             `LifecycleHook.onToolResult error for ${taskId}: ${error instanceof Error ? error.message : String(error)}`,

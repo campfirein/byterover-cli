@@ -26,6 +26,7 @@ export const ENVIRONMENT: Environment = isEnvironment(envValue) ? envValue : 'de
  * that does not follow the general "API version at point of use" pattern.
  */
 type EnvironmentConfig = {
+  analyticsBaseUrl: string
   authorizationUrl: string
   billingBaseUrl: string
   clientId: string
@@ -42,8 +43,16 @@ type EnvironmentConfig = {
 
 /**
  * Non-infrastructure config that stays in source (same across envs or not sensitive).
+ *
+ * `analyticsBaseUrl` defaults to the dev-beta telemetry endpoint so the
+ * daemon ships events out of the box; setting `BRV_ANALYTICS_BASE_URL`
+ * overrides it (M4.2). Unlike the IAM / Cogit base URLs this is NOT
+ * `readRequiredEnv` because analytics is opt-in: a missing env var must
+ * not block daemon startup, and the default keeps M4.7's smoke test
+ * pointing at the right backend without per-developer setup.
  */
 const DEFAULTS = {
+  analyticsBaseUrl: 'https://telemetry-dev.byterover.dev',
   clientId: 'byterover-cli-client',
   hubRegistryUrl: 'https://hub.byterover.dev/r/registry.json',
   scopes: {
@@ -88,7 +97,15 @@ export const getCurrentConfig = (): EnvironmentConfig => {
 
   const oidcBase = `${iamBaseUrl}${API_V1_PATH}/oidc`
 
+  // M4.2: BRV_ANALYTICS_BASE_URL overrides the default dev-beta endpoint
+  // for analytics POSTs. Trailing slashes normalised so axios's baseURL
+  // composes cleanly with the `/v1/events` request path.
+  const analyticsBaseUrl = normalizeUrl(
+    process.env.BRV_ANALYTICS_BASE_URL?.trim() ?? DEFAULTS.analyticsBaseUrl,
+  )
+
   return {
+    analyticsBaseUrl,
     authorizationUrl: `${oidcBase}/authorize`,
     billingBaseUrl,
     clientId: DEFAULTS.clientId,
