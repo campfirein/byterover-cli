@@ -1,5 +1,8 @@
 import {Args, Command, Flags} from '@oclif/core'
 
+import type {BrvConfigLanguage} from '../../../server/core/domain/entities/brv-config.js'
+
+import {ProjectConfigStore} from '../../../server/infra/config/file-config-store.js'
 import {continueSession, kickoffSession, resolveProjectRoot} from '../../lib/curate-session.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
@@ -202,13 +205,16 @@ Bad examples:
     // to emit the generate prompt.
     const {response} = flags
     const confirmOverwrite = flags.overwrite ?? false
+    const projectRoot = resolveProjectRoot()
+    const language = await this.resolveLanguagePreference(projectRoot)
     try {
       await withDaemonRetry(async (client) => {
         const envelope = await continueSession({
           client,
           confirmOverwrite,
           format,
-          projectRoot: resolveProjectRoot(),
+          language,
+          projectRoot,
           response,
           sessionId,
         })
@@ -249,7 +255,25 @@ Bad examples:
       return
     }
 
-    const envelope = await kickoffSession({content, projectRoot: resolveProjectRoot()})
+    const projectRoot = resolveProjectRoot()
+    const language = await this.resolveLanguagePreference(projectRoot)
+    const envelope = await kickoffSession({content, language, projectRoot})
     this.emitToolModeEnvelope(envelope, format)
+  }
+
+  /**
+   * Read the per-project language preference from `.brv/config.json`.
+   * Missing config (fresh project) or missing field returns `undefined`,
+   * which the kickoff / correction prompts treat as the auto clause —
+   * match the user's input language. Read failures degrade silently to
+   * `undefined` so a corrupt config never blocks curate.
+   */
+  private async resolveLanguagePreference(projectRoot: string): Promise<BrvConfigLanguage | undefined> {
+    try {
+      const config = await new ProjectConfigStore().read(projectRoot)
+      return config?.language
+    } catch {
+      return undefined
+    }
   }
 }

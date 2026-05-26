@@ -1,7 +1,9 @@
 import type {HtmlWriteError} from '../../../infra/render/writer/html-writer.js'
+import type {BrvConfigLanguage} from '../entities/brv-config.js'
 
 import {ELEMENT_REGISTRY} from '../../../infra/render/elements/registry.js'
 import {ELEMENT_NAMES} from './element-types.js'
+import {buildLanguageClause} from './language-clause.js'
 
 /**
  * Curate-prompt builder for tool mode.
@@ -52,7 +54,7 @@ export const CURATE_SCHEMA_PROMPT: string = buildSchemaPrompt()
  * agent ingested (READMEs, files, prior chat) so it cannot be
  * trusted as plain text.
  */
-export function buildGeneratePrompt(options: {userIntent: string}): string {
+export function buildGeneratePrompt(options: {language?: BrvConfigLanguage; userIntent: string}): string {
   return [
     'You are authoring a `<bv-topic>` HTML document for a knowledge base.',
     '',
@@ -63,6 +65,10 @@ export function buildGeneratePrompt(options: {userIntent: string}): string {
     '# Path format',
     '',
     PATH_FORMAT,
+    '',
+    '# Language',
+    '',
+    buildLanguageClause(options.language),
     '',
     '# Element vocabulary (closed)',
     '',
@@ -88,10 +94,11 @@ export function buildGeneratePrompt(options: {userIntent: string}): string {
  */
 export function buildCorrectionPrompt(options: {
   errors: readonly HtmlWriteError[]
+  language?: BrvConfigLanguage
   previousHtml: string
   userIntent: string
 }): string {
-  const {errors, previousHtml, userIntent} = options
+  const {errors, language, previousHtml, userIntent} = options
 
   const fixInstructions = errors.length === 0
     ? 'No structured errors were reported. Re-emit the document carefully and double-check every required attribute.'
@@ -129,6 +136,10 @@ export function buildCorrectionPrompt(options: {
     '# Output contract',
     '',
     OUTPUT_CONTRACT,
+    '',
+    '# Language',
+    '',
+    buildLanguageClause(language),
     '',
     '# Errors to fix',
     '',

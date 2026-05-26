@@ -6,6 +6,7 @@ import {mkdir, readFile, rm, writeFile} from 'node:fs/promises'
 import {dirname, join} from 'node:path'
 import {z} from 'zod'
 
+import type {BrvConfigLanguage} from '../../server/core/domain/entities/brv-config.js'
 import type {CurateHtmlDirectResult} from '../../server/core/interfaces/executor/i-curate-executor.js'
 import type {HtmlWriteError} from '../../server/infra/render/writer/html-writer.js'
 import type {CurateMeta} from '../../shared/curate-meta.js'
@@ -174,6 +175,13 @@ type CurateSessionState = {
 
 type KickoffOptions = {
   content: string
+  /**
+   * Per-project language preference loaded from `.brv/config.json`. Threaded
+   * into the kickoff prompt so the calling agent's LLM authors body text in
+   * the configured language. `undefined` (no config or no language field)
+   * defaults to the auto clause — match the user's input language.
+   */
+  language?: BrvConfigLanguage
   projectRoot: string
 }
 
@@ -195,6 +203,12 @@ type ContinueOptions = {
    * mode). Defaults to 'json' — matches the agent-facing default.
    */
   format?: 'json' | 'text'
+  /**
+   * Per-project language preference loaded from `.brv/config.json`. Threaded
+   * into the correction prompt — read fresh on each continuation, so a
+   * mid-session config change (rare) is honored on the next retry.
+   */
+  language?: BrvConfigLanguage
   projectRoot: string
   response: string
   sessionId: string
@@ -207,7 +221,7 @@ type ContinueOptions = {
  * to author HTML".
  */
 export async function kickoffSession(options: KickoffOptions): Promise<CurateSessionEnvelope> {
-  const {content, projectRoot} = options
+  const {content, language, projectRoot} = options
   const sessionId = randomUUID()
 
   const state: CurateSessionState = {
@@ -222,7 +236,7 @@ export async function kickoffSession(options: KickoffOptions): Promise<CurateSes
 
   return {
     ok: true,
-    prompt: buildGeneratePrompt({userIntent: content}),
+    prompt: buildGeneratePrompt({language, userIntent: content}),
     sessionId,
     status: 'needs-llm-step',
     step: 'generate-html',
@@ -299,7 +313,7 @@ export function parseCurateResponse(raw: string): {html: string; meta?: CurateMe
  * is the session-protocol envelope only.
  */
 export async function continueSession(options: ContinueOptions): Promise<CurateSessionEnvelope> {
-  const {client, confirmOverwrite = false, format = 'json', projectRoot, response, sessionId} = options
+  const {client, confirmOverwrite = false, format = 'json', language, projectRoot, response, sessionId} = options
 
   // Reject non-uuid session ids before any path join — see SESSION_ID_RE
   // for the threat model. Same `kind` as "session not found" because
@@ -401,6 +415,7 @@ export async function continueSession(options: ContinueOptions): Promise<CurateS
     ok: false,
     prompt: buildCorrectionPrompt({
       errors: writeResult.errors,
+      language,
       previousHtml: response,
       userIntent: state.userIntent,
     }),
