@@ -23,10 +23,12 @@ import {AnalyticsEventNames} from '../../../../../src/shared/analytics/event-nam
  */
 function makeCurateOpProps(overrides: Partial<CurateOperationAppliedProps> = {}): CurateOperationAppliedProps {
   return {
-    absolute_path: '/tmp/file.md',
+    keywords: [],
     knowledge_path: 'cli_architecture/test.md',
     needs_review: false,
     operation_type: 'ADD',
+    relative_path: 'tmp/file.md',
+    tags: [],
     task_id: 'task-1',
     ...overrides,
   }
@@ -233,7 +235,7 @@ describe('AnalyticsClient', () => {
       })
 
       const before = Date.now()
-      const opProps = makeCurateOpProps({absolute_path: '/tmp/merge-fixture.md'})
+      const opProps = makeCurateOpProps({relative_path: 'tmp/merge-fixture.md'})
       client.track(AnalyticsEventNames.CURATE_OPERATION_APPLIED, opProps)
       await flushMicrotasks()
       const after = Date.now()
@@ -248,7 +250,7 @@ describe('AnalyticsClient', () => {
       expect(event.timestamp).to.be.at.most(after)
 
       // user properties merged through
-      expect(event.properties.absolute_path).to.equal('/tmp/merge-fixture.md')
+      expect(event.properties.relative_path).to.equal('tmp/merge-fixture.md')
       expect(event.properties.operation_type).to.equal('ADD')
       // all 5 super properties stamped
       expect(event.properties.cli_version).to.equal('3.10.3')

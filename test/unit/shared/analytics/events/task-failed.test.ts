@@ -1,10 +1,11 @@
 /* eslint-disable camelcase */
 import {expect} from 'chai'
 
-import {TaskFailedSchema} from '../../../../../src/shared/analytics/events/task-failed.js'
+import {FailureKindValues, TaskFailedSchema} from '../../../../../src/shared/analytics/events/task-failed.js'
 
 const baseValid = {
   duration_ms: 9000,
+  failure_kind: 'unknown' as const,
   task_id: '550e8400-e29b-41d4-a716-446655440000',
   task_type: 'curate' as const,
 }
@@ -42,5 +43,23 @@ describe('TaskFailedSchema', () => {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const {task_id: _, ...withoutTaskId} = baseValid
     expect(TaskFailedSchema.safeParse(withoutTaskId).success).to.equal(false)
+  })
+
+  describe('failure_kind (M15.6)', () => {
+    it('accepts every canonical FailureKindValues entry', () => {
+      for (const kind of FailureKindValues) {
+        expect(TaskFailedSchema.safeParse({...baseValid, failure_kind: kind}).success).to.equal(true)
+      }
+    })
+
+    it('rejects an out-of-vocabulary failure_kind', () => {
+      expect(TaskFailedSchema.safeParse({...baseValid, failure_kind: 'oom'}).success).to.equal(false)
+    })
+
+    it('rejects missing failure_kind', () => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const {failure_kind: _, ...withoutKind} = baseValid
+      expect(TaskFailedSchema.safeParse(withoutKind).success).to.equal(false)
+    })
   })
 })

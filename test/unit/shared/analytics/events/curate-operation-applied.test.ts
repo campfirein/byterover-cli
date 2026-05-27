@@ -4,10 +4,12 @@ import {expect} from 'chai'
 import {CurateOperationAppliedSchema} from '../../../../../src/shared/analytics/events/curate-operation-applied.js'
 
 const baseValid = {
-  absolute_path: '/Users/dev/project/.brv/context-tree/notes/test.md',
+  keywords: [],
   knowledge_path: 'notes/test',
   needs_review: false,
   operation_type: 'ADD' as const,
+  relative_path: '.brv/context-tree/notes/test.md',
+  tags: [],
   task_id: 'task-uuid-123',
 }
 
@@ -33,7 +35,9 @@ describe('CurateOperationAppliedSchema', () => {
       expect(CurateOperationAppliedSchema.safeParse({...baseValid, needs_review: true}).success).to.equal(true)
     })
 
-    it('accepts payloads omitting any/all of tags, keywords, related', () => {
+    it('accepts payloads with keywords / tags as required arrays (default empty) and optional related', () => {
+      // keywords/tags are required after the M14 review tightening; the
+      // base payload already carries them as [].
       expect(CurateOperationAppliedSchema.safeParse({...baseValid}).success).to.equal(true)
       expect(CurateOperationAppliedSchema.safeParse({...baseValid, tags: ['a']}).success).to.equal(true)
       expect(CurateOperationAppliedSchema.safeParse({...baseValid, keywords: ['k']}).success).to.equal(true)
@@ -41,6 +45,15 @@ describe('CurateOperationAppliedSchema', () => {
       expect(
         CurateOperationAppliedSchema.safeParse({...baseValid, keywords: ['k'], related: ['r'], tags: ['t']}).success,
       ).to.equal(true)
+    })
+
+    it('rejects payloads missing the required keywords / tags arrays', () => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const {keywords: _k, ...withoutKeywords} = baseValid
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const {tags: _t, ...withoutTags} = baseValid
+      expect(CurateOperationAppliedSchema.safeParse(withoutKeywords).success).to.equal(false)
+      expect(CurateOperationAppliedSchema.safeParse(withoutTags).success).to.equal(false)
     })
 
     it('accepts tags / keywords / related with exactly 50 entries each', () => {
@@ -75,8 +88,8 @@ describe('CurateOperationAppliedSchema', () => {
       expect(CurateOperationAppliedSchema.safeParse({...baseValid, confidence: 'maybe'}).success).to.equal(false)
     })
 
-    it('rejects empty absolute_path / knowledge_path / task_id', () => {
-      expect(CurateOperationAppliedSchema.safeParse({...baseValid, absolute_path: ''}).success).to.equal(false)
+    it('rejects empty relative_path / knowledge_path / task_id', () => {
+      expect(CurateOperationAppliedSchema.safeParse({...baseValid, relative_path: ''}).success).to.equal(false)
       expect(CurateOperationAppliedSchema.safeParse({...baseValid, knowledge_path: ''}).success).to.equal(false)
       expect(CurateOperationAppliedSchema.safeParse({...baseValid, task_id: ''}).success).to.equal(false)
     })

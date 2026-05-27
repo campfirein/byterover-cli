@@ -1,10 +1,13 @@
 /* eslint-disable camelcase */
 import {readFile as readFileAsync} from 'node:fs/promises'
+import {basename, isAbsolute as isAbsolutePath, relative as relativePath} from 'node:path'
 
 import type {AnalyticsEventName} from '../../../shared/analytics/event-names.js'
 import type {CurateRunCompletedProps} from '../../../shared/analytics/events/curate-run-completed.js'
 import type {PropsArg} from '../../../shared/analytics/events/index.js'
 import type {QueryCompletedProps} from '../../../shared/analytics/events/query-completed.js'
+import type {FailureKind} from '../../../shared/analytics/events/task-failed.js'
+import type {TaskType} from '../../../shared/analytics/task-types.js'
 import type {LlmToolResultEvent} from '../../core/domain/transport/schemas.js'
 import type {TaskInfo} from '../../core/domain/transport/task-info.js'
 import type {IAnalyticsClient} from '../../core/interfaces/analytics/i-analytics-client.js'
@@ -12,11 +15,97 @@ import type {ITaskLifecycleHook} from '../../core/interfaces/process/i-task-life
 import type {QueryResultMetadata} from './query-log-handler.js'
 
 import {AnalyticsEventNames} from '../../../shared/analytics/event-names.js'
+import {TaskTypes} from '../../../shared/analytics/task-types.js'
 import {parseFrontmatter} from '../../core/domain/knowledge/markdown-writer.js'
 import {extractCurateOperations} from '../../utils/curate-result-parser.js'
 import {processLog} from '../../utils/process-logger.js'
 import {CURATE_TASK_TYPES} from './curate-log-handler.js'
 import {QUERY_TASK_TYPES} from './query-log-handler.js'
+
+/**
+ * Set of canonical task types accepted by the wire schema. Membership check
+ * runs in `toAnalyticsTaskType` to gate emits against the daemon dispatching
+ * a string TASK_TYPE_VALUES doesn't enumerate.
+ */
+const ANALYTICS_TASK_TYPE_SET: ReadonlySet<TaskType> = new Set(Object.values(TaskTypes) as TaskType[])
+
+const isCanonicalTaskType = (value: string): value is TaskType => (ANALYTICS_TASK_TYPE_SET as Set<string>).has(value)
+
+/**
+ * Translate the daemon's runtime task type string to the canonical
+ * analytics wire value. The daemon still dispatches the pre-ENG-2925
+ * name `'curate-html-direct'`; analytics emits the post-rename
+ * `'curate-tool-mode'`. Once the rename PR lands, the alias becomes
+ * dead code and can be inlined.
+ *
+ * Drift guard (PR #722 review re-review): if the daemon dispatches a
+ * type that isn't enumerated in `TASK_TYPE_VALUES`, fall back to
+ * `TaskTypes.UNKNOWN` (which is in the wire vocabulary, so the backend
+ * accepts the row) and log a daemon-side breadcrumb. The previous
+ * implementation cast a non-enumerated string back to `TaskType`,
+ * which silently failed the backend Zod check.
+ */
+function toAnalyticsTaskType(daemonType: string): TaskType {
+  if (daemonType === 'curate-html-direct') return TaskTypes.CURATE_TOOL_MODE
+  if (isCanonicalTaskType(daemonType)) return daemonType
+  processLog(`AnalyticsHook: unknown task type '${daemonType}' — falling back to '${TaskTypes.UNKNOWN}'`)
+  return TaskTypes.UNKNOWN
+}
+
+/**
+ * Stable sentinel for paths that can't be safely emitted as project-
+ * relative — either outside the project root or the project root itself
+ * is unknown. The backend can group these without leaking host layout.
+ */
+const OUTSIDE_PROJECT_PATH = '<outside-project>'
+
+/**
+ * Convert an absolute filesystem path to a project-relative path for the
+ * analytics wire. Keeps emits free of `/Users/{name}` PII while still
+ * letting PMs reason about which file inside a project an operation touched.
+ *
+ * PR #722 review: `path.relative('/proj', '/Users/dev/other/x.md')` yields
+ * `'../../Users/dev/other/x.md'` — still encodes the host layout. When the
+ * relative path escapes the project root (or projectPath is unset), surface
+ * a stable sentinel + basename rather than the raw absolute path. The
+ * sentinel preserves enough signal for backend grouping without becoming
+ * PII.
+ */
+function toRelativePath(filePath: string, projectPath?: string): string {
+  if (!projectPath) return `${OUTSIDE_PROJECT_PATH}/${basename(filePath)}`
+  const rel = relativePath(projectPath, filePath)
+  // `path.relative` returns '' when paths are identical — defensively
+  // surface a leaf token rather than emit a zero-length wire string that
+  // would fail `z.string().min(1)`.
+  if (rel === '') return '.'
+  // Anything that escapes the project root (`../foo`) or stays absolute
+  // (Windows drive letter switches) is treated as outside-project.
+  if (rel.startsWith('..') || isAbsolutePath(rel)) {
+    return `${OUTSIDE_PROJECT_PATH}/${basename(filePath)}`
+  }
+
+  return rel
+}
+
+/**
+ * Classify a daemon-side error message into a coarse failure_kind tag.
+ *
+ * Precedence (PR #722 review — pinned so the if-order can't silently rebucket
+ * the funnel later): `timeout` > `agent_error` > `unknown`. A message
+ * containing both `'timeout'` and `'agent'` classifies as `'timeout'`.
+ *
+ * Word-boundary matching keeps unrelated tokens (`'tooltip'`, `'engagement'`,
+ * `'urgent'`) from bumping into the `agent_error` bucket. The raw message
+ * NEVER ends up on the analytics wire — only the canonical tag.
+ */
+const TIMEOUT_PATTERN = /\b(timeout|timed out|deadline exceeded)\b/
+const AGENT_ERROR_PATTERN = /\b(agent|llm|provider|tool)\b/
+function classifyFailureKind(errorMessage: string): FailureKind {
+  const m = errorMessage.toLowerCase()
+  if (TIMEOUT_PATTERN.test(m)) return 'timeout'
+  if (AGENT_ERROR_PATTERN.test(m)) return 'agent_error'
+  return 'unknown'
+}
 
 // `CURATE_TASK_TYPES` is exported as a readonly tuple; wrap in a Set<string>
 // for cast-free `.has()` lookups against TaskInfo.type (string).
@@ -67,6 +156,8 @@ type CurateCounters = {
 type CurateTaskAnalyticsState = {
   counters: CurateCounters
   flavor: 'curate'
+  /** Captured at onTaskCreate so onToolResult emits can relativize op.filePath. */
+  projectPath?: string
   taskType: CurateTaskTypeLiteral
 }
 
@@ -142,36 +233,57 @@ export class AnalyticsHook implements ITaskLifecycleHook {
 
   async onTaskCancelled(taskId: string, task: TaskInfo): Promise<void> {
     await this.dispatchTerminal(taskId, task, 'cancelled')
+    this.emitTaskFailed(taskId, task, 'cancelled')
   }
 
   async onTaskCompleted(taskId: string, _result: string, task: TaskInfo): Promise<void> {
     const state = this.tasks.get(taskId)
-    if (!state) return
+    if (state) {
+      // Drain any in-flight per-op processing so CURATE_OPERATION_APPLIED emits
+      // land BEFORE the run-completion emit on the wire. The chain never
+      // rejects (see `onToolResult`), so this await is safe.
+      await this.pendingByTask.get(taskId)
 
-    // Drain any in-flight per-op processing so CURATE_OPERATION_APPLIED emits
-    // land BEFORE the run-completion emit on the wire. The chain never
-    // rejects (see `onToolResult`), so this await is safe.
-    await this.pendingByTask.get(taskId)
-
-    if (state.flavor === 'curate') {
-      const outcome = state.counters.failed > 0 ? 'partial' : 'completed'
-      this.emit(
-        AnalyticsEventNames.CURATE_RUN_COMPLETED,
-        this.buildCurateRunPayload({outcome, state, task, taskId}),
-      )
-    } else {
-      this.emit(
-        AnalyticsEventNames.QUERY_COMPLETED,
-        await this.buildQueryCompletedPayload({outcome: 'completed', state, task, taskId}),
-      )
+      if (state.flavor === 'curate') {
+        const outcome = state.counters.failed > 0 ? 'partial' : 'completed'
+        this.emit(
+          AnalyticsEventNames.CURATE_RUN_COMPLETED,
+          this.buildCurateRunPayload({outcome, state, task, taskId}),
+        )
+      } else {
+        this.emit(
+          AnalyticsEventNames.QUERY_COMPLETED,
+          await this.buildQueryCompletedPayload({outcome: 'completed', state, task, taskId}),
+        )
+      }
     }
+
+
+    // M14.3 generic funnel emit. Fires for EVERY task type AFTER any
+    // per-flavor M12 emit (terminal-event-last convention).
+    this.emit(AnalyticsEventNames.TASK_COMPLETED, {
+      duration_ms: this.durationMs(task),
+      task_id: taskId,
+      task_type: toAnalyticsTaskType(task.type),
+    })
   }
 
   async onTaskCreate(task: TaskInfo): Promise<void> {
+    // M14.3 generic funnel-entry emit. Fires for EVERY task type BEFORE
+    // the M12 per-flavor state init so the entry event lands even if
+    // state setup throws downstream.
+    this.emit(AnalyticsEventNames.TASK_CREATED, {
+      has_files: (task.files?.length ?? 0) > 0,
+      has_folder: typeof task.folderPath === 'string' && task.folderPath.length > 0,
+      task_id: task.taskId,
+      task_type: toAnalyticsTaskType(task.type),
+    })
+
     if (isCurateLiteral(task.type)) {
       this.tasks.set(task.taskId, {
         counters: {added: 0, deleted: 0, failed: 0, merged: 0, pendingReview: 0, updated: 0},
         flavor: 'curate',
+        projectPath: task.projectPath,
         taskType: task.type,
       })
       return
@@ -182,8 +294,9 @@ export class AnalyticsHook implements ITaskLifecycleHook {
     }
   }
 
-  async onTaskError(taskId: string, _errorMessage: string, task: TaskInfo): Promise<void> {
+  async onTaskError(taskId: string, errorMessage: string, task: TaskInfo): Promise<void> {
     await this.dispatchTerminal(taskId, task, 'error')
+    this.emitTaskFailed(taskId, task, classifyFailureKind(errorMessage))
   }
 
   async onToolResult(taskId: string, payload: LlmToolResultEvent): Promise<void> {
@@ -246,7 +359,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
       outcome,
       pending_review_count: state.counters.pendingReview,
       task_id: taskId,
-      task_type: state.taskType,
+      task_type: toAnalyticsTaskType(state.taskType),
     }
   }
 
@@ -303,17 +416,24 @@ export class AnalyticsHook implements ITaskLifecycleHook {
 
     // M12.3: harvest per-path frontmatter on the same async read path used
     // for curate emits. Entries whose file is unreadable / has no frontmatter
-    // carry `absolute_path` alone (the three array fields stay absent).
-    // `Promise.all` preserves input-array order in the result regardless of
-    // which read settles first.
+    // carry empty keywords / tags / related_paths arrays — the wire shape
+    // is uniform regardless of read success. `Promise.all` preserves
+    // input-array order in the result regardless of which read settles first.
     const readPathsWithMetadata = await Promise.all(
       cappedPaths.map(async (p) => {
         const fm = await this.readFrontmatterFields(p)
         return {
-          absolute_path: p,
-          ...(fm.keywords ? {keywords: fm.keywords} : {}),
-          ...(fm.related ? {related: fm.related} : {}),
-          ...(fm.tags ? {tags: fm.tags} : {}),
+          keywords: fm.keywords ?? [],
+          // M14 review tightening: each related entry is structured so a
+          // later FU can populate the linked file's own keywords/tags
+          // without changing the wire shape.
+          related_paths: (fm.related ?? []).map((r) => ({
+            keywords: [],
+            relative_path: r,
+            tags: [],
+          })),
+          relative_path: toRelativePath(p, task.projectPath),
+          tags: fm.tags ?? [],
         }
       }),
     )
@@ -331,7 +451,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
       read_tool_call_count: readToolCallCount,
       search_call_count: searchCallCount,
       task_id: taskId,
-      task_type: 'query',
+      task_type: toAnalyticsTaskType(task.type),
       ...(tier === undefined ? {} : {tier}),
     }
   }
@@ -369,6 +489,26 @@ export class AnalyticsHook implements ITaskLifecycleHook {
     } catch (error) {
       processLog(`AnalyticsHook: ${event} track failed: ${error instanceof Error ? error.message : String(error)}`)
     }
+  }
+
+  /**
+   * M14.3 generic terminal-failure emit. Fired by both onTaskError and
+   * onTaskCancelled AFTER dispatchTerminal so M12 per-flavor failure
+   * emits land first on the wire. Cancellation maps to task_failed
+   * (not a distinct event) per the schema's docblock.
+   *
+   * M15.6: failure_kind is a coarse classifier passed by the caller —
+   * 'cancelled' from onTaskCancelled, classified-from-errorMessage from
+   * onTaskError (see classifyFailureKind). Raw error.message MUST NOT
+   * leak into the emit; only the canonical FailureKind tag does.
+   */
+  private emitTaskFailed(taskId: string, task: TaskInfo, failureKind: FailureKind): void {
+    this.emit(AnalyticsEventNames.TASK_FAILED, {
+      duration_ms: this.durationMs(task),
+      failure_kind: failureKind,
+      task_id: taskId,
+      task_type: toAnalyticsTaskType(task.type),
+    })
   }
 
   private async processToolResult(taskId: string, payload: LlmToolResultEvent): Promise<void> {
@@ -423,20 +563,21 @@ export class AnalyticsHook implements ITaskLifecycleHook {
 
       // M12.3: read post-op frontmatter for ADD / UPDATE / MERGE-target /
       // UPSERT. DELETE skips the read (file is gone). Frontmatter fields
-      // stay absent when the read fails (ENOENT, EACCES, malformed YAML).
+      // default to empty arrays when the read fails (ENOENT, EACCES,
+      // malformed YAML) so the wire shape stays uniform.
       // eslint-disable-next-line no-await-in-loop -- emit order MUST match op order
       const frontmatter = op.type === 'DELETE' ? {} : await this.readFrontmatterFields(op.filePath)
 
       this.emit(AnalyticsEventNames.CURATE_OPERATION_APPLIED, {
-        absolute_path: op.filePath,
         ...(op.confidence ? {confidence: op.confidence} : {}),
         ...(op.impact ? {impact: op.impact} : {}),
-        ...(frontmatter.keywords ? {keywords: frontmatter.keywords} : {}),
+        keywords: frontmatter.keywords ?? [],
         knowledge_path: op.path,
         needs_review: op.needsReview ?? false,
         operation_type: op.type,
         ...(frontmatter.related ? {related: frontmatter.related} : {}),
-        ...(frontmatter.tags ? {tags: frontmatter.tags} : {}),
+        relative_path: toRelativePath(op.filePath, state.projectPath),
+        tags: frontmatter.tags ?? [],
         task_id: taskId,
       })
     }

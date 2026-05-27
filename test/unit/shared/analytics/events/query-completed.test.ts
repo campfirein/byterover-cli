@@ -16,6 +16,13 @@ const baseValid = {
   task_type: 'query' as const,
 }
 
+const baseEntry = {
+  keywords: [],
+  related_paths: [],
+  relative_path: '.brv/notes/a.md',
+  tags: [],
+}
+
 describe('QueryCompletedSchema', () => {
   describe('valid payloads', () => {
     it('accepts the minimal required payload with empty read_paths_with_metadata', () => {
@@ -48,25 +55,52 @@ describe('QueryCompletedSchema', () => {
       expect(QueryCompletedSchema.safeParse({...baseValid, cache_hit: true}).success).to.equal(true)
     })
 
-    it('accepts read_paths_with_metadata entries with no metadata', () => {
-      const entries = [{absolute_path: '/a.md'}, {absolute_path: '/b.md'}]
+    it('accepts read_paths_with_metadata entries with empty metadata arrays', () => {
+      const entries = [
+        {...baseEntry, relative_path: '.brv/a.md'},
+        {...baseEntry, relative_path: '.brv/b.md'},
+      ]
       expect(QueryCompletedSchema.safeParse({...baseValid, read_paths_with_metadata: entries}).success).to.equal(true)
     })
 
-    it('accepts entries with full optional metadata', () => {
-      const entries = [{absolute_path: '/a.md', keywords: ['k1'], related: ['r1'], tags: ['t1']}]
+    it('accepts entries with populated keywords, tags, and structured related_paths', () => {
+      const entries = [
+        {
+          keywords: ['k1'],
+          related_paths: [{keywords: [], relative_path: 'r1', tags: []}],
+          relative_path: '.brv/a.md',
+          tags: ['t1'],
+        },
+      ]
       expect(QueryCompletedSchema.safeParse({...baseValid, read_paths_with_metadata: entries}).success).to.equal(true)
     })
 
     it('accepts read_paths_with_metadata with exactly 10 entries', () => {
-      const entries = Array.from({length: 10}, (_, i) => ({absolute_path: `/file-${i}.md`}))
+      const entries = Array.from({length: 10}, (_, i) => ({...baseEntry, relative_path: `.brv/file-${i}.md`}))
       expect(QueryCompletedSchema.safeParse({...baseValid, read_paths_with_metadata: entries}).success).to.equal(true)
     })
 
-    it('accepts entries with tags / keywords / related at the 50-entry cap and 256-char cap', () => {
+    it('accepts entries with keywords / tags at the 50-entry cap and 256-char strings', () => {
       const fifty = Array.from({length: 50}, (_, i) => `entry-${i}`)
       const at256 = 'x'.repeat(256)
-      const entries = [{absolute_path: '/a.md', keywords: fifty, related: [at256], tags: fifty}]
+      const entries = [
+        {
+          keywords: fifty,
+          related_paths: [{keywords: [], relative_path: at256, tags: []}],
+          relative_path: '.brv/a.md',
+          tags: fifty,
+        },
+      ]
+      expect(QueryCompletedSchema.safeParse({...baseValid, read_paths_with_metadata: entries}).success).to.equal(true)
+    })
+
+    it('accepts related_paths with up to 50 structured entries', () => {
+      const fifty = Array.from({length: 50}, (_, i) => ({
+        keywords: [],
+        relative_path: `notes/related-${i}`,
+        tags: [],
+      }))
+      const entries = [{...baseEntry, related_paths: fifty}]
       expect(QueryCompletedSchema.safeParse({...baseValid, read_paths_with_metadata: entries}).success).to.equal(true)
     })
   })
@@ -90,8 +124,13 @@ describe('QueryCompletedSchema', () => {
       expect(QueryCompletedSchema.safeParse({...baseValid, tier: -1}).success).to.equal(false)
     })
 
-    it('rejects task_type other than literal "query"', () => {
-      expect(QueryCompletedSchema.safeParse({...baseValid, task_type: 'curate'}).success).to.equal(false)
+    it('rejects an unknown task_type but accepts every canonical TASK_TYPE_VALUES entry', () => {
+      // M14.2 widened task_type from z.literal('query') to the canonical
+      // TASK_TYPE_VALUES tuple so query-tool-mode round-trips the wire
+      // boundary. Genuinely unknown values still reject.
+      expect(QueryCompletedSchema.safeParse({...baseValid, task_type: 'not-a-real-type'}).success).to.equal(false)
+      expect(QueryCompletedSchema.safeParse({...baseValid, task_type: 'query-tool-mode'}).success).to.equal(true)
+      expect(QueryCompletedSchema.safeParse({...baseValid, task_type: 'curate'}).success).to.equal(true)
     })
 
     it('rejects negative or non-integer counts', () => {
@@ -100,26 +139,42 @@ describe('QueryCompletedSchema', () => {
     })
 
     it('rejects read_paths_with_metadata with more than 10 entries', () => {
-      const entries = Array.from({length: 11}, (_, i) => ({absolute_path: `/file-${i}.md`}))
+      const entries = Array.from({length: 11}, (_, i) => ({...baseEntry, relative_path: `.brv/file-${i}.md`}))
       expect(QueryCompletedSchema.safeParse({...baseValid, read_paths_with_metadata: entries}).success).to.equal(false)
     })
 
-    it('rejects entries with empty absolute_path', () => {
-      const entries = [{absolute_path: ''}]
+    it('rejects entries with empty relative_path', () => {
+      const entries = [{...baseEntry, relative_path: ''}]
       expect(QueryCompletedSchema.safeParse({...baseValid, read_paths_with_metadata: entries}).success).to.equal(false)
     })
 
-    it('rejects entries with more than 50 tags / keywords / related', () => {
-      const fiftyOne = Array.from({length: 51}, (_, i) => `entry-${i}`)
-      const tagsEntry = [{absolute_path: '/a.md', tags: fiftyOne}]
-      expect(QueryCompletedSchema.safeParse({...baseValid, read_paths_with_metadata: tagsEntry}).success).to.equal(
+    it('rejects entries missing required keywords / tags arrays', () => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const {keywords: _k, ...withoutKeywords} = baseEntry
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const {tags: _t, ...withoutTags} = baseEntry
+      expect(
+        QueryCompletedSchema.safeParse({...baseValid, read_paths_with_metadata: [withoutKeywords]}).success,
+      ).to.equal(false)
+      expect(QueryCompletedSchema.safeParse({...baseValid, read_paths_with_metadata: [withoutTags]}).success).to.equal(
         false,
       )
     })
 
-    it('rejects entries with tag / keyword / related string longer than 256 chars', () => {
+    it('rejects entries with more than 50 tags / keywords', () => {
+      const fiftyOne = Array.from({length: 51}, (_, i) => `entry-${i}`)
+      const tagsEntry = [{...baseEntry, tags: fiftyOne}]
+      expect(QueryCompletedSchema.safeParse({...baseValid, read_paths_with_metadata: tagsEntry}).success).to.equal(false)
+    })
+
+    it('rejects entries with tag / keyword string longer than 256 chars', () => {
       const at257 = 'x'.repeat(257)
-      const entries = [{absolute_path: '/a.md', keywords: [at257]}]
+      const entries = [{...baseEntry, keywords: [at257]}]
+      expect(QueryCompletedSchema.safeParse({...baseValid, read_paths_with_metadata: entries}).success).to.equal(false)
+    })
+
+    it('rejects related_paths entries missing keywords / tags / relative_path', () => {
+      const entries = [{...baseEntry, related_paths: [{relative_path: 'r1'}]}]
       expect(QueryCompletedSchema.safeParse({...baseValid, read_paths_with_metadata: entries}).success).to.equal(false)
     })
 
@@ -128,7 +183,7 @@ describe('QueryCompletedSchema', () => {
     })
 
     it('rejects unknown extra fields inside an entry (strict)', () => {
-      const entries = [{absolute_path: '/a.md', mystery: 'oops'}]
+      const entries = [{...baseEntry, mystery: 'oops'}]
       expect(QueryCompletedSchema.safeParse({...baseValid, read_paths_with_metadata: entries}).success).to.equal(false)
     })
   })

@@ -15,10 +15,12 @@ describe('NoOpAnalyticsClient', () => {
       // CURATE_OPERATION_APPLIED with a minimal valid payload.
       expect(() =>
         client.track(AnalyticsEventNames.CURATE_OPERATION_APPLIED, {
-          absolute_path: '/tmp/x.md',
+          keywords: [],
           knowledge_path: 'kg/x.md',
           needs_review: false,
           operation_type: 'ADD',
+          relative_path: 'tmp/x.md',
+          tags: [],
           task_id: 't-1',
         }),
       ).to.not.throw()

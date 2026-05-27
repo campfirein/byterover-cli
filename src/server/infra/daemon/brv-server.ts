@@ -55,6 +55,7 @@ import {createBillingStateHandler} from '../billing/billing-state-endpoint.js'
 import {ClientManager} from '../client/client-manager.js'
 import {ProjectConfigStore} from '../config/file-config-store.js'
 import {readContextTreeRemoteUrl} from '../context-tree/read-context-tree-remote.js'
+import {AnalyticsHook} from '../process/analytics-hook.js'
 import {broadcastToProjectRoom} from '../process/broadcast-utils.js'
 import {CurateLogHandler} from '../process/curate-log-handler.js'
 import {setupFeatureHandlers} from '../process/feature-handlers.js'
@@ -367,6 +368,18 @@ async function main(): Promise<void> {
     // same instances this hook writes to.
     const taskHistoryHook = new TaskHistoryHook({getStore: getTaskHistoryStore})
 
+    // M15.6: AnalyticsHook is the 4th lifecycle peer alongside curate-log /
+    // query-log / task-history. It emits task_created / task_completed /
+    // task_failed (and M12 per-flavor events for curate / query) into the
+    // daemon's IAnalyticsClient. The client + isAnalyticsEnabled gate come
+    // from setupFeatureHandlers later in this function; the closure below
+    // defers the lookup so the hook can be constructed in time to land in
+    // lifecycleHooks[] but still observe the live config.
+    let isAnalyticsEnabledRef: () => boolean = () => true
+    const analyticsHook = new AnalyticsHook({
+      isEnabled: () => isAnalyticsEnabledRef(),
+    })
+
     // Provider config/keychain stores — shared between feature handlers and state endpoint.
     // Hoisted ahead of `new TransportHandlers` so the resolveActiveProvider callback below
     // can close over them and call resolveProviderConfig synchronously at task-create time.
@@ -427,7 +440,7 @@ async function main(): Promise<void> {
         const config = await new ProjectConfigStore().read(projectPath)
         return config?.reviewDisabled === true
       },
-      lifecycleHooks: [curateLogHandler, queryLogHandler, taskHistoryHook],
+      lifecycleHooks: [curateLogHandler, queryLogHandler, taskHistoryHook, analyticsHook],
       projectRegistry,
       projectRouter,
       // Stamp the active provider/model snapshot onto every created task so the
@@ -642,7 +655,7 @@ async function main(): Promise<void> {
     // Feature handlers (auth, init, status, push, pull, etc.) require async OIDC discovery.
     // Placed after daemon:getState so the debug endpoint is available immediately,
     // without waiting for OIDC discovery (~400ms).
-    await setupFeatureHandlers({
+    const featureHandlers = await setupFeatureHandlers({
       authStateStore,
       billingConfigStoreFactory,
       broadcastToProject(projectPath, event, data) {
@@ -659,6 +672,22 @@ async function main(): Promise<void> {
       transport: transportServer,
       webuiPort: webuiServer?.getPort(),
     })
+
+    // M15.6: now that setupFeatureHandlers has constructed the real
+    // IAnalyticsClient + isAnalyticsEnabled callback, late-bind them into
+    // the AnalyticsHook that was pre-registered in lifecycleHooks[]. Any
+    // task_* emits queued during the boot window between hook construction
+    // and this line silently no-op (matches `setAnalyticsClient`'s docblock
+    // contract — no tasks are active during daemon boot).
+    isAnalyticsEnabledRef = featureHandlers.isAnalyticsEnabled
+    // PR #722 review: explode loudly if a future refactor drops
+    // analyticsClient from the result shape — silently no-op'ing every
+    // emit forever is the worst failure mode for telemetry plumbing.
+    if (!featureHandlers.analyticsClient) {
+      throw new Error('setupFeatureHandlers returned without analyticsClient — AnalyticsHook cannot bind')
+    }
+
+    analyticsHook.setAnalyticsClient(featureHandlers.analyticsClient)
 
     // Load auth token AFTER feature handlers are registered.
     // AuthHandler's onAuthChanged/onAuthExpired callbacks must be wired first

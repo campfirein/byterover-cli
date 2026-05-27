@@ -63,8 +63,13 @@ describe('CurateRunCompletedSchema', () => {
       expect(CurateRunCompletedSchema.safeParse({...baseValid, outcome: 'mystery'}).success).to.equal(false)
     })
 
-    it('rejects out-of-enum task_type', () => {
-      expect(CurateRunCompletedSchema.safeParse({...baseValid, task_type: 'query'}).success).to.equal(false)
+    it('rejects an unknown task_type but accepts every canonical TASK_TYPE_VALUES entry', () => {
+      // M14.2 widened task_type from ['curate', 'curate-folder'] to the
+      // canonical TASK_TYPE_VALUES tuple so curate-tool-mode round-trips
+      // the wire boundary. Genuinely unknown values still reject.
+      expect(CurateRunCompletedSchema.safeParse({...baseValid, task_type: 'not-a-real-type'}).success).to.equal(false)
+      expect(CurateRunCompletedSchema.safeParse({...baseValid, task_type: 'curate-tool-mode'}).success).to.equal(true)
+      expect(CurateRunCompletedSchema.safeParse({...baseValid, task_type: 'query'}).success).to.equal(true)
     })
 
     it('rejects negative counts and duration_ms', () => {

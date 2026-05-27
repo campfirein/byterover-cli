@@ -44,7 +44,10 @@ type TaskState = {
   queryResult?: QueryResultMetadata
 }
 
-export const QUERY_TASK_TYPES: ReadonlySet<string> = new Set(['query'])
+// `query-tool-mode` is the v4.0 daemon dispatch name; legacy `query` is
+// kept for back-compat. Both names enable M12 state init in AnalyticsHook
+// (and matching query-log persistence here).
+export const QUERY_TASK_TYPES: ReadonlySet<string> = new Set(['query', 'query-tool-mode'])
 
 // ── QueryLogHandler ──────────────────────────────────────────────────────────
 

@@ -15,6 +15,7 @@
 
 import {expect} from 'chai'
 import {randomUUID} from 'node:crypto'
+import {relative as relativePath} from 'node:path'
 import {createSandbox, type SinonSandbox, type SinonStub} from 'sinon'
 
 import type {LlmToolResultEvent} from '../../../../src/server/core/domain/transport/schemas.js'
@@ -248,7 +249,7 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
     await createCurateTask(taskId)
 
     const opSpecs = Array.from({length: 20}, (_, i) => ({
-      filePath: `/A/op-${String(i).padStart(2, '0')}.md`,
+      filePath: `/proj/A/op-${String(i).padStart(2, '0')}.md`,
       path: `notes/A/op-${i}`,
     }))
 
@@ -260,11 +261,12 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
     // readFile call order must match arrival order (proves per-task queue).
     expect(readFileCallOrder, 'readFile call order = arrival order').to.deep.equal(opSpecs.map((s) => s.filePath))
 
-    // Emit order must match arrival order.
+    // Emit order must match arrival order. M14 review: relative_path is
+    // relativized against the curate task's projectPath ('/proj').
     const emits = getCurateOpEmits(taskId)
     expect(emits).to.have.lengthOf(20)
     for (const [i, emit] of emits.entries()) {
-      expect(emit.absolute_path, `emit #${i} arrival order`).to.equal(opSpecs[i].filePath)
+      expect(emit.relative_path, `emit #${i} arrival order`).to.equal(relativePath('/proj', opSpecs[i].filePath))
     }
   })
 
@@ -273,11 +275,11 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
     await createCurateTask('task-Y')
 
     const xSpecs = Array.from({length: 15}, (_, i) => ({
-      filePath: `/X/op-${String(i).padStart(2, '0')}.md`,
+      filePath: `/proj/X/op-${String(i).padStart(2, '0')}.md`,
       path: `notes/X/op-${i}`,
     }))
     const ySpecs = Array.from({length: 15}, (_, i) => ({
-      filePath: `/Y/op-${String(i).padStart(2, '0')}.md`,
+      filePath: `/proj/Y/op-${String(i).padStart(2, '0')}.md`,
       path: `notes/Y/op-${i}`,
     }))
 
@@ -297,8 +299,8 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
     expect(xEmits).to.have.lengthOf(15)
     expect(yEmits).to.have.lengthOf(15)
     for (let i = 0; i < 15; i++) {
-      expect(xEmits[i].absolute_path, `X emit #${i}`).to.equal(xSpecs[i].filePath)
-      expect(yEmits[i].absolute_path, `Y emit #${i}`).to.equal(ySpecs[i].filePath)
+      expect(xEmits[i].relative_path, `X emit #${i}`).to.equal(relativePath('/proj', xSpecs[i].filePath))
+      expect(yEmits[i].relative_path, `Y emit #${i}`).to.equal(relativePath('/proj', ySpecs[i].filePath))
     }
   })
 
@@ -307,7 +309,7 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
     await createCurateTask(taskId)
 
     const specs = Array.from({length: 50}, (_, i) => ({
-      filePath: `/Z/op-${String(i).padStart(2, '0')}.md`,
+      filePath: `/proj/Z/op-${String(i).padStart(2, '0')}.md`,
       path: `notes/Z/op-${i}`,
     }))
 
@@ -322,21 +324,25 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
 
     const sequence = getEmitSequenceForTask(taskId)
 
-    // Exactly 50 per-op emits + 1 terminal emit, terminal LAST.
+    // M14.3: TASK_CREATED → 50 per-op → CURATE_RUN_COMPLETED → TASK_COMPLETED.
     expect(
       sequence.filter((s) => s === AnalyticsEventNames.CURATE_OPERATION_APPLIED),
       'exactly 50 per-op emits',
     ).to.have.lengthOf(50)
     expect(
       sequence.filter((s) => s === AnalyticsEventNames.CURATE_RUN_COMPLETED),
-      'exactly 1 terminal emit',
+      'exactly 1 M12 terminal emit',
     ).to.have.lengthOf(1)
-    expect(sequence.at(-1), 'terminal is last in sequence').to.equal(AnalyticsEventNames.CURATE_RUN_COMPLETED)
+    expect(sequence.at(-1), 'M14.3 task_completed is last in sequence').to.equal(AnalyticsEventNames.TASK_COMPLETED)
+    expect(
+      sequence.at(-2),
+      'M12 curate_run_completed lands immediately before the M14.3 terminal',
+    ).to.equal(AnalyticsEventNames.CURATE_RUN_COMPLETED)
 
     // And per-op emit order matches arrival order.
     const opEmits = getCurateOpEmits(taskId)
     for (let i = 0; i < 50; i++) {
-      expect(opEmits[i].absolute_path, `op #${i} arrival order`).to.equal(specs[i].filePath)
+      expect(opEmits[i].relative_path, `op #${i} arrival order`).to.equal(relativePath('/proj', specs[i].filePath))
     }
   })
 
@@ -349,15 +355,15 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
 
     const specsByTask: Record<string, Array<{filePath: string; path: string}>> = {
       'task-P': Array.from({length: 10}, (_, i) => ({
-        filePath: `/P/op-${String(i).padStart(2, '0')}.md`,
+        filePath: `/proj/P/op-${String(i).padStart(2, '0')}.md`,
         path: `notes/P/op-${i}`,
       })),
       'task-Q': Array.from({length: 10}, (_, i) => ({
-        filePath: `/Q/op-${String(i).padStart(2, '0')}.md`,
+        filePath: `/proj/Q/op-${String(i).padStart(2, '0')}.md`,
         path: `notes/Q/op-${i}`,
       })),
       'task-R': Array.from({length: 10}, (_, i) => ({
-        filePath: `/R/op-${String(i).padStart(2, '0')}.md`,
+        filePath: `/proj/R/op-${String(i).padStart(2, '0')}.md`,
         path: `notes/R/op-${i}`,
       })),
     }
@@ -375,18 +381,24 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
 
     await Promise.all([...opPromises, ...terminalPromises])
 
-    // Every task must end with CURATE_RUN_COMPLETED preceded by 10 per-op emits in arrival order.
+    // Every task: TASK_CREATED → 10 per-op → CURATE_RUN_COMPLETED → TASK_COMPLETED.
     for (const id of taskIds) {
       const sequence = getEmitSequenceForTask(id)
-      expect(sequence, `${id} sequence length`).to.have.lengthOf(11)
+      expect(sequence, `${id} sequence length`).to.have.lengthOf(13)
+      expect(sequence[0], `${id}: first is task_created`).to.equal(AnalyticsEventNames.TASK_CREATED)
       expect(
-        sequence.slice(0, 10).every((s) => s === AnalyticsEventNames.CURATE_OPERATION_APPLIED),
-        `${id}: first 10 are per-op emits`,
+        sequence.slice(1, 11).every((s) => s === AnalyticsEventNames.CURATE_OPERATION_APPLIED),
+        `${id}: 10 per-op emits between task_created and the terminals`,
       ).to.equal(true)
-      expect(sequence[10], `${id}: last is run-completed`).to.equal(AnalyticsEventNames.CURATE_RUN_COMPLETED)
+      expect(sequence[11], `${id}: M12 run-completed precedes the M14.3 terminal`).to.equal(
+        AnalyticsEventNames.CURATE_RUN_COMPLETED,
+      )
+      expect(sequence[12], `${id}: M14.3 task_completed is last`).to.equal(AnalyticsEventNames.TASK_COMPLETED)
       const opEmits = getCurateOpEmits(id)
       for (let i = 0; i < 10; i++) {
-        expect(opEmits[i].absolute_path, `${id} op #${i} arrival order`).to.equal(specsByTask[id][i].filePath)
+        expect(opEmits[i].relative_path, `${id} op #${i} arrival order`).to.equal(
+          relativePath('/proj', specsByTask[id][i].filePath),
+        )
       }
     }
   })
