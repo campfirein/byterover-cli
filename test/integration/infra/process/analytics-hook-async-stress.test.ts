@@ -249,7 +249,7 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
     await createCurateTask(taskId)
 
     const opSpecs = Array.from({length: 20}, (_, i) => ({
-      filePath: `/A/op-${String(i).padStart(2, '0')}.md`,
+      filePath: `/proj/A/op-${String(i).padStart(2, '0')}.md`,
       path: `notes/A/op-${i}`,
     }))
 
@@ -275,11 +275,11 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
     await createCurateTask('task-Y')
 
     const xSpecs = Array.from({length: 15}, (_, i) => ({
-      filePath: `/X/op-${String(i).padStart(2, '0')}.md`,
+      filePath: `/proj/X/op-${String(i).padStart(2, '0')}.md`,
       path: `notes/X/op-${i}`,
     }))
     const ySpecs = Array.from({length: 15}, (_, i) => ({
-      filePath: `/Y/op-${String(i).padStart(2, '0')}.md`,
+      filePath: `/proj/Y/op-${String(i).padStart(2, '0')}.md`,
       path: `notes/Y/op-${i}`,
     }))
 
@@ -309,7 +309,7 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
     await createCurateTask(taskId)
 
     const specs = Array.from({length: 50}, (_, i) => ({
-      filePath: `/Z/op-${String(i).padStart(2, '0')}.md`,
+      filePath: `/proj/Z/op-${String(i).padStart(2, '0')}.md`,
       path: `notes/Z/op-${i}`,
     }))
 
@@ -355,15 +355,15 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
 
     const specsByTask: Record<string, Array<{filePath: string; path: string}>> = {
       'task-P': Array.from({length: 10}, (_, i) => ({
-        filePath: `/P/op-${String(i).padStart(2, '0')}.md`,
+        filePath: `/proj/P/op-${String(i).padStart(2, '0')}.md`,
         path: `notes/P/op-${i}`,
       })),
       'task-Q': Array.from({length: 10}, (_, i) => ({
-        filePath: `/Q/op-${String(i).padStart(2, '0')}.md`,
+        filePath: `/proj/Q/op-${String(i).padStart(2, '0')}.md`,
         path: `notes/Q/op-${i}`,
       })),
       'task-R': Array.from({length: 10}, (_, i) => ({
-        filePath: `/R/op-${String(i).padStart(2, '0')}.md`,
+        filePath: `/proj/R/op-${String(i).padStart(2, '0')}.md`,
         path: `notes/R/op-${i}`,
       })),
     }

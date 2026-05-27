@@ -680,6 +680,13 @@ async function main(): Promise<void> {
     // and this line silently no-op (matches `setAnalyticsClient`'s docblock
     // contract — no tasks are active during daemon boot).
     isAnalyticsEnabledRef = featureHandlers.isAnalyticsEnabled
+    // PR #722 review: explode loudly if a future refactor drops
+    // analyticsClient from the result shape — silently no-op'ing every
+    // emit forever is the worst failure mode for telemetry plumbing.
+    if (!featureHandlers.analyticsClient) {
+      throw new Error('setupFeatureHandlers returned without analyticsClient — AnalyticsHook cannot bind')
+    }
+
     analyticsHook.setAnalyticsClient(featureHandlers.analyticsClient)
 
     // Load auth token AFTER feature handlers are registered.

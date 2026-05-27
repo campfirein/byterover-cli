@@ -243,5 +243,75 @@ describe('AnalyticsHook M14.3 generic task_* emit simulation', () => {
       const failed = trackStub.getCalls().find((c) => c.args[0] === AnalyticsEventNames.TASK_FAILED)
       expect((failed?.args[1] as Record<string, unknown>).failure_kind).to.equal('agent_error')
     })
+
+    it('classifier uses word-boundary matching: "tooltip" / "engagement" do NOT bucket into agent_error (PR #722)', async () => {
+      const task = buildTask('search', {taskId: 'task-tooltip'})
+      await hook.onTaskCreate(task)
+      trackStub.resetHistory()
+      await hook.onTaskError(task.taskId, 'could not render tooltip in engagement panel', task)
+
+      const failed = trackStub.getCalls().find((c) => c.args[0] === AnalyticsEventNames.TASK_FAILED)
+      expect((failed?.args[1] as Record<string, unknown>).failure_kind).to.equal('unknown')
+    })
+
+    it('classifier precedence pinned: timeout wins over agent_error when both substrings present (PR #722)', async () => {
+      const task = buildTask('search', {taskId: 'task-both'})
+      await hook.onTaskCreate(task)
+      trackStub.resetHistory()
+      await hook.onTaskError(task.taskId, 'llm provider timeout after 30s', task)
+
+      const failed = trackStub.getCalls().find((c) => c.args[0] === AnalyticsEventNames.TASK_FAILED)
+      expect((failed?.args[1] as Record<string, unknown>).failure_kind).to.equal('timeout')
+    })
+  })
+
+  describe('toAnalyticsTaskType drift guard (PR #722)', () => {
+    it('emits the "unknown" sentinel for an un-enumerated daemon task type instead of silently failing the wire enum', async () => {
+      const task = buildTask('not-a-real-daemon-type', {taskId: 'task-drift'})
+      await hook.onTaskCreate(task)
+
+      const created = trackStub.getCalls().find((c) => c.args[0] === AnalyticsEventNames.TASK_CREATED)
+      expect((created?.args[1] as Record<string, unknown>).task_type).to.equal('unknown')
+    })
+  })
+
+  describe('toRelativePath outside-project guard (PR #722)', () => {
+    it('replaces escaping ../ paths with <outside-project>/basename sentinel', async () => {
+      const task = buildTask('curate', {projectPath: '/Users/dev/proj', taskId: 'task-outside'})
+      await hook.onTaskCreate(task)
+      const result: LlmToolResultEvent = {
+        callId: 'c1',
+        result: JSON.stringify({
+          applied: [{filePath: '/tmp/x.md', needsReview: false, path: 'x', status: 'success', type: 'ADD'}],
+        }),
+        sessionId: 's1',
+        taskId: 'task-outside',
+        timestamp: FIXED_NOW,
+        toolName: 'curate' as const,
+      } as unknown as LlmToolResultEvent
+      await hook.onToolResult('task-outside', result)
+
+      const op = trackStub.getCalls().find((c) => c.args[0] === AnalyticsEventNames.CURATE_OPERATION_APPLIED)
+      expect((op?.args[1] as Record<string, unknown>).relative_path).to.equal('<outside-project>/x.md')
+    })
+
+    it('replaces raw absolute path with <outside-project>/basename when projectPath is undefined', async () => {
+      const task = buildTask('curate', {projectPath: undefined, taskId: 'task-no-proj'})
+      await hook.onTaskCreate(task)
+      const result: LlmToolResultEvent = {
+        callId: 'c1',
+        result: JSON.stringify({
+          applied: [{filePath: '/home/u/secret.md', needsReview: false, path: 'x', status: 'success', type: 'ADD'}],
+        }),
+        sessionId: 's1',
+        taskId: 'task-no-proj',
+        timestamp: FIXED_NOW,
+        toolName: 'curate' as const,
+      } as unknown as LlmToolResultEvent
+      await hook.onToolResult('task-no-proj', result)
+
+      const op = trackStub.getCalls().find((c) => c.args[0] === AnalyticsEventNames.CURATE_OPERATION_APPLIED)
+      expect((op?.args[1] as Record<string, unknown>).relative_path).to.equal('<outside-project>/secret.md')
+    })
   })
 })

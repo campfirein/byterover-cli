@@ -1,6 +1,6 @@
 /* eslint-disable camelcase */
 import {readFile as readFileAsync} from 'node:fs/promises'
-import {relative as relativePath} from 'node:path'
+import {basename, isAbsolute as isAbsolutePath, relative as relativePath} from 'node:path'
 
 import type {AnalyticsEventName} from '../../../shared/analytics/event-names.js'
 import type {CurateRunCompletedProps} from '../../../shared/analytics/events/curate-run-completed.js'
@@ -23,44 +23,86 @@ import {CURATE_TASK_TYPES} from './curate-log-handler.js'
 import {QUERY_TASK_TYPES} from './query-log-handler.js'
 
 /**
+ * Backstop sentinel emitted when the daemon dispatches a task type the
+ *  analytics enum doesn't recognise. Keeps the event on the wire instead of
+ *  silently failing the Zod check at the backend. Update TASK_TYPE_VALUES
+ *  (M14.1) when a new daemon type lands; this is the drift alarm.
+ */
+const UNKNOWN_TASK_TYPE: TaskType = 'unknown' as TaskType
+
+const ANALYTICS_TASK_TYPE_SET: ReadonlySet<string> = new Set(Object.values(TaskTypes))
+
+/**
  * Translate the daemon's runtime task type string to the canonical
  * analytics wire value. The daemon still dispatches the pre-ENG-2925
  * name `'curate-html-direct'`; analytics emits the post-rename
- * `'curate-tool-mode'`. Once the rename PR lands, this becomes a
- * no-op identity and can be inlined.
+ * `'curate-tool-mode'`. Once the rename PR lands, the alias becomes
+ * dead code and can be inlined.
+ *
+ * Guards an unknown daemon type with a process log + 'unknown' sentinel
+ * fallback (PR #722 review): swallowing the value silently would let an
+ * un-enumerated dispatch slip past the wire-side Zod check and disappear
+ * at the backend; logging here keeps the drift debuggable at the daemon.
  */
 function toAnalyticsTaskType(daemonType: string): TaskType {
   if (daemonType === 'curate-html-direct') return TaskTypes.CURATE_TOOL_MODE
-  return daemonType as TaskType
+  if (ANALYTICS_TASK_TYPE_SET.has(daemonType)) return daemonType as TaskType
+  processLog(`AnalyticsHook: unknown task type '${daemonType}' — falling back to '${UNKNOWN_TASK_TYPE}'`)
+  return UNKNOWN_TASK_TYPE
 }
 
 /**
+ * Stable sentinel for paths that can't be safely emitted as project-
+ *  relative — either outside the project root or the project root itself
+ *  is unknown. The backend can group these without leaking host layout.
+ */
+const OUTSIDE_PROJECT_PATH = '<outside-project>'
+
+/**
  * Convert an absolute filesystem path to a project-relative path for the
- * analytics wire. Falls back to the input unchanged when projectPath is
- * unset (e.g., search tasks scoped to the daemon root). Keeps emits free
- * of `/Users/{name}` PII while still letting PMs reason about which file
- * inside a project an operation touched.
+ * analytics wire. Keeps emits free of `/Users/{name}` PII while still
+ * letting PMs reason about which file inside a project an operation touched.
+ *
+ * PR #722 review: `path.relative('/proj', '/Users/dev/other/x.md')` yields
+ * `'../../Users/dev/other/x.md'` — still encodes the host layout. When the
+ * relative path escapes the project root (or projectPath is unset), surface
+ * a stable sentinel + basename rather than the raw absolute path. The
+ * sentinel preserves enough signal for backend grouping without becoming
+ * PII.
  */
 function toRelativePath(filePath: string, projectPath?: string): string {
-  if (!projectPath) return filePath
+  if (!projectPath) return `${OUTSIDE_PROJECT_PATH}/${basename(filePath)}`
   const rel = relativePath(projectPath, filePath)
   // `path.relative` returns '' when paths are identical — defensively
   // surface a leaf token rather than emit a zero-length wire string that
   // would fail `z.string().min(1)`.
-  return rel === '' ? '.' : rel
+  if (rel === '') return '.'
+  // Anything that escapes the project root (`../foo`) or stays absolute
+  // (Windows drive letter switches) is treated as outside-project.
+  if (rel.startsWith('..') || isAbsolutePath(rel)) {
+    return `${OUTSIDE_PROJECT_PATH}/${basename(filePath)}`
+  }
+
+  return rel
 }
 
 /**
  * Classify a daemon-side error message into a coarse failure_kind tag.
  *
- * Substring matching is intentional and over-conservative: only well-known
- * sentinels promote out of `'unknown'`. The raw message NEVER ends up on
- * the analytics wire — only the canonical tag.
+ * Precedence (PR #722 review — pinned so the if-order can't silently rebucket
+ * the funnel later): `timeout` > `agent_error` > `unknown`. A message
+ * containing both `'timeout'` and `'agent'` classifies as `'timeout'`.
+ *
+ * Word-boundary matching keeps unrelated tokens (`'tooltip'`, `'engagement'`,
+ * `'urgent'`) from bumping into the `agent_error` bucket. The raw message
+ * NEVER ends up on the analytics wire — only the canonical tag.
  */
+const TIMEOUT_PATTERN = /\b(timeout|timed out|deadline exceeded)\b/
+const AGENT_ERROR_PATTERN = /\b(agent|llm|provider|tool)\b/
 function classifyFailureKind(errorMessage: string): FailureKind {
   const m = errorMessage.toLowerCase()
-  if (m.includes('timeout') || m.includes('timed out') || m.includes('deadline exceeded')) return 'timeout'
-  if (m.includes('agent') || m.includes('llm') || m.includes('provider') || m.includes('tool')) return 'agent_error'
+  if (TIMEOUT_PATTERN.test(m)) return 'timeout'
+  if (AGENT_ERROR_PATTERN.test(m)) return 'agent_error'
   return 'unknown'
 }
 

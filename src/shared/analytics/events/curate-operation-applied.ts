@@ -24,6 +24,10 @@ export const CurateOperationAppliedSchema = z
     knowledge_path: z.string().min(1),
     needs_review: z.boolean(),
     operation_type: z.enum(['ADD', 'UPDATE', 'DELETE', 'MERGE', 'UPSERT']),
+    // TODO(M15.x): harmonise with the sibling `query_completed.read_paths_
+    // _with_metadata[].related_paths` structured shape — current asymmetry
+    // forces consumers to special-case parsing `related` between the two
+    // events. Restructuring is its own ticket (consumer migration concern).
     related: z.array(z.string().max(256)).max(50).optional(),
     relative_path: z.string().min(1),
     tags: z.array(z.string().max(256)).max(50),

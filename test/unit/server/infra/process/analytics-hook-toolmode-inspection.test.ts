@@ -61,7 +61,16 @@ async function fakeReadFileForInspection(filePath: string): Promise<string> {
   return '---\n---\nempty\n'
 }
 
+/**
+ * PR #722 review: gated behind `DUMP_ANALYTICS=1` so `npm test` stays quiet
+ * by default. The shape assertions in each `it()` still execute; the dump
+ * is an opt-in diagnostic for inspecting payloads (`DUMP_ANALYTICS=1 npx
+ * mocha test/unit/.../analytics-hook-toolmode-inspection.test.ts`).
+ */
+const DUMP_ENABLED = process.env.DUMP_ANALYTICS === '1'
+
 const dumpEvents = (label: string, trackStub: sinon.SinonStub): void => {
+  if (!DUMP_ENABLED) return
   console.log(`\n┌─ ${label} ${'─'.repeat(Math.max(0, 70 - label.length))}`)
   for (const [i, call] of trackStub.getCalls().entries()) {
     const eventName = call.args[0] as string
@@ -93,6 +102,11 @@ describe('analytics-hook tool-mode event inspection (M14)', () => {
 
     // Counters all-zero today because onToolResult never fires for
     // tool-mode (no LLM tool calls) — that's the FU-1 follow-up.
+    //
+    // FU-1 forward-compat note (PR #722 review): once FU-1 lands and the
+    // daemon synthesises a curate op from `task.result`, these asserts
+    // will flip from `=== 0` to non-zero. That is a FEATURE, not a
+    // regression — update the expectations in the FU-1 PR.
     const runCompleted = trackStub.getCalls().find((c) => c.args[0] === 'curate_run_completed')
     const counters = runCompleted?.args[1] as Record<string, number>
     expect(counters.operations_added).to.equal(0)
