@@ -85,6 +85,7 @@ describe('TaskTypes', () => {
       it(`TaskFailedSchema accepts task_type='${taskType}'`, () => {
         const parsed = TaskFailedSchema.parse({
           duration_ms: 100,
+          failure_kind: 'unknown' as const,
           task_id: 't-1',
           task_type: taskType,
         })

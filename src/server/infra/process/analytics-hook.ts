@@ -6,6 +6,7 @@ import type {AnalyticsEventName} from '../../../shared/analytics/event-names.js'
 import type {CurateRunCompletedProps} from '../../../shared/analytics/events/curate-run-completed.js'
 import type {PropsArg} from '../../../shared/analytics/events/index.js'
 import type {QueryCompletedProps} from '../../../shared/analytics/events/query-completed.js'
+import type {FailureKind} from '../../../shared/analytics/events/task-failed.js'
 import type {TaskType} from '../../../shared/analytics/task-types.js'
 import type {LlmToolResultEvent} from '../../core/domain/transport/schemas.js'
 import type {TaskInfo} from '../../core/domain/transport/task-info.js'
@@ -47,6 +48,20 @@ function toRelativePath(filePath: string, projectPath?: string): string {
   // surface a leaf token rather than emit a zero-length wire string that
   // would fail `z.string().min(1)`.
   return rel === '' ? '.' : rel
+}
+
+/**
+ * Classify a daemon-side error message into a coarse failure_kind tag.
+ *
+ * Substring matching is intentional and over-conservative: only well-known
+ * sentinels promote out of `'unknown'`. The raw message NEVER ends up on
+ * the analytics wire — only the canonical tag.
+ */
+function classifyFailureKind(errorMessage: string): FailureKind {
+  const m = errorMessage.toLowerCase()
+  if (m.includes('timeout') || m.includes('timed out') || m.includes('deadline exceeded')) return 'timeout'
+  if (m.includes('agent') || m.includes('llm') || m.includes('provider') || m.includes('tool')) return 'agent_error'
+  return 'unknown'
 }
 
 // `CURATE_TASK_TYPES` is exported as a readonly tuple; wrap in a Set<string>
@@ -175,7 +190,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
 
   async onTaskCancelled(taskId: string, task: TaskInfo): Promise<void> {
     await this.dispatchTerminal(taskId, task, 'cancelled')
-    this.emitTaskFailed(taskId, task)
+    this.emitTaskFailed(taskId, task, 'cancelled')
   }
 
   async onTaskCompleted(taskId: string, _result: string, task: TaskInfo): Promise<void> {
@@ -236,9 +251,9 @@ export class AnalyticsHook implements ITaskLifecycleHook {
     }
   }
 
-  async onTaskError(taskId: string, _errorMessage: string, task: TaskInfo): Promise<void> {
+  async onTaskError(taskId: string, errorMessage: string, task: TaskInfo): Promise<void> {
     await this.dispatchTerminal(taskId, task, 'error')
-    this.emitTaskFailed(taskId, task)
+    this.emitTaskFailed(taskId, task, classifyFailureKind(errorMessage))
   }
 
   async onToolResult(taskId: string, payload: LlmToolResultEvent): Promise<void> {
@@ -438,10 +453,16 @@ export class AnalyticsHook implements ITaskLifecycleHook {
    * onTaskCancelled AFTER dispatchTerminal so M12 per-flavor failure
    * emits land first on the wire. Cancellation maps to task_failed
    * (not a distinct event) per the schema's docblock.
+   *
+   * M15.6: failure_kind is a coarse classifier passed by the caller —
+   * 'cancelled' from onTaskCancelled, classified-from-errorMessage from
+   * onTaskError (see classifyFailureKind). Raw error.message MUST NOT
+   * leak into the emit; only the canonical FailureKind tag does.
    */
-  private emitTaskFailed(taskId: string, task: TaskInfo): void {
+  private emitTaskFailed(taskId: string, task: TaskInfo, failureKind: FailureKind): void {
     this.emit(AnalyticsEventNames.TASK_FAILED, {
       duration_ms: this.durationMs(task),
+      failure_kind: failureKind,
       task_id: taskId,
       task_type: toAnalyticsTaskType(task.type),
     })

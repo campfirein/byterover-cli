@@ -199,7 +199,7 @@ describe('AnalyticsHook M14.3 generic task_* emit simulation', () => {
       ])
     })
 
-    it('task_failed payload carries duration_ms + task_id + canonical task_type', async () => {
+    it('task_failed payload carries duration_ms + task_id + canonical task_type + failure_kind', async () => {
       const task = buildTask('query', {taskId: 'task-query-err'})
       await hook.onTaskCreate(task)
       trackStub.resetHistory()
@@ -210,6 +210,38 @@ describe('AnalyticsHook M14.3 generic task_* emit simulation', () => {
       expect(props.task_id).to.equal('task-query-err')
       expect(props.task_type).to.equal('query')
       expect(props.duration_ms).to.equal(1234)
+      // 'kaboom' classifies to 'unknown' — no recognised sentinel substring
+      expect(props.failure_kind).to.equal('unknown')
+    })
+
+    it('failure_kind is "cancelled" on onTaskCancelled regardless of state', async () => {
+      const task = buildTask('curate', {taskId: 'task-cancel-fk'})
+      await hook.onTaskCreate(task)
+      trackStub.resetHistory()
+      await hook.onTaskCancelled(task.taskId, task)
+
+      const failed = trackStub.getCalls().find((c) => c.args[0] === AnalyticsEventNames.TASK_FAILED)
+      expect((failed?.args[1] as Record<string, unknown>).failure_kind).to.equal('cancelled')
+    })
+
+    it('failure_kind is "timeout" when the error message names a timeout', async () => {
+      const task = buildTask('search', {taskId: 'task-timeout'})
+      await hook.onTaskCreate(task)
+      trackStub.resetHistory()
+      await hook.onTaskError(task.taskId, 'request timed out after 30s', task)
+
+      const failed = trackStub.getCalls().find((c) => c.args[0] === AnalyticsEventNames.TASK_FAILED)
+      expect((failed?.args[1] as Record<string, unknown>).failure_kind).to.equal('timeout')
+    })
+
+    it('failure_kind is "agent_error" when the error message points at the agent layer', async () => {
+      const task = buildTask('search', {taskId: 'task-agent-err'})
+      await hook.onTaskCreate(task)
+      trackStub.resetHistory()
+      await hook.onTaskError(task.taskId, 'provider rejected the LLM call', task)
+
+      const failed = trackStub.getCalls().find((c) => c.args[0] === AnalyticsEventNames.TASK_FAILED)
+      expect((failed?.args[1] as Record<string, unknown>).failure_kind).to.equal('agent_error')
     })
   })
 })
