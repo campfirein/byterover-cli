@@ -2,6 +2,11 @@
 
 All notable user-facing changes to ByteRover CLI will be documented in this file.
 
+## [3.16.1]
+
+### Fixed
+- **Stay signed in across restarts.** A valid login could be misread at startup, dropping you into the provider picker and asking you to run `brv login` again on every launch. The CLI now reads your auth state correctly, so a signed-in session stays signed in.
+
 ## [3.16.0]
 
 ### Added
