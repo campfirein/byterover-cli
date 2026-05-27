@@ -1,5 +1,8 @@
+import type {AnalyticsEventName} from '../../../../shared/analytics/event-names.js'
+import type {PropsArg} from '../../../../shared/analytics/events/index.js'
 import type {UserDTO} from '../../../../shared/transport/types/dto.js'
 import type {User} from '../../../core/domain/entities/user.js'
+import type {IAnalyticsClient} from '../../../core/interfaces/analytics/i-analytics-client.js'
 import type {IAuthService} from '../../../core/interfaces/auth/i-auth-service.js'
 import type {ICallbackHandler} from '../../../core/interfaces/auth/i-callback-handler.js'
 import type {ITokenStore} from '../../../core/interfaces/auth/i-token-store.js'
@@ -11,6 +14,7 @@ import type {IProjectConfigStore} from '../../../core/interfaces/storage/i-proje
 import type {ITransportServer} from '../../../core/interfaces/transport/i-transport-server.js'
 import type {ProjectPathResolver} from './handler-types.js'
 
+import {AnalyticsEventNames} from '../../../../shared/analytics/event-names.js'
 import {
   AuthEvents,
   type AuthGetStateRequest,
@@ -45,6 +49,13 @@ function toUserDTO(user: User): UserDTO {
 }
 
 export interface AuthHandlerDeps {
+  /**
+   * Optional. When provided, the handler emits `auth_login` /
+   * `auth_logout` analytics events on identity transitions. Optional so
+   * legacy construction (and unit tests that don't care about analytics)
+   * doesn't need to thread the dep through. Wired in `feature-handlers.ts`.
+   */
+  analyticsClient?: IAnalyticsClient
   authService: IAuthService
   authStateStore: IAuthStateStore
   browserLauncher: IBrowserLauncher
@@ -62,6 +73,7 @@ export interface AuthHandlerDeps {
  * Business logic for authentication — no terminal/UI calls.
  */
 export class AuthHandler {
+  private readonly analyticsClient: IAnalyticsClient | undefined
   private readonly authService: IAuthService
   private readonly authStateStore: IAuthStateStore
   private readonly browserLauncher: IBrowserLauncher
@@ -74,6 +86,7 @@ export class AuthHandler {
   private readonly userService: IUserService
 
   constructor(deps: AuthHandlerDeps) {
+    this.analyticsClient = deps.analyticsClient
     this.authService = deps.authService
     this.authStateStore = deps.authStateStore
     this.browserLauncher = deps.browserLauncher
@@ -136,6 +149,20 @@ export class AuthHandler {
     }
   }
 
+  /**
+   * Analytics emit helper. Mirrors the try/processLog pattern from
+   * `analytics-hook.ts` so analytics failures never affect command outcomes.
+   */
+  private emitAnalytics<E extends AnalyticsEventName>(event: E, ...rest: PropsArg<E>): void {
+    const client = this.analyticsClient
+    if (!client) return
+    try {
+      client.track(event, ...rest)
+    } catch (error) {
+      processLog(`[Auth] analytics track ${event} failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
   private async processLoginCallback(
     authContext: {authUrl: string; state: string},
     redirectUri: string,
@@ -162,6 +189,12 @@ export class AuthHandler {
       // new token without waiting for the next 5-second poll cycle.
       await this.authStateStore.loadToken()
 
+      // Emit AFTER loadToken so the per-event identity resolver stamps
+      // the row with the new authenticated user_id (the Mixpanel
+      // forwarder's alias path keys off `{name: auth_login, outcome:
+      // success}`).
+      this.emitAnalytics(AnalyticsEventNames.AUTH_LOGIN, {outcome: 'success'})
+
       this.transport.broadcast(AuthEvents.LOGIN_COMPLETED, {
         success: true,
         user: toUserDTO(user),
@@ -172,6 +205,12 @@ export class AuthHandler {
         user: toUserDTO(user),
       })
     } catch (error) {
+      // Emit the failure terminal so the funnel sees both halves.
+      // Identity is still anonymous (token never committed). `failure_kind`
+      // is a coarse tag — never leak `error.message` here (would risk PII).
+      // eslint-disable-next-line camelcase
+      this.emitAnalytics(AnalyticsEventNames.AUTH_LOGIN, {failure_kind: 'oauth_flow', outcome: 'failure'})
+
       this.transport.broadcast(AuthEvents.LOGIN_COMPLETED, {
         error: getErrorMessage(error),
         success: false,
@@ -272,6 +311,9 @@ export class AuthHandler {
           await this.tokenStore.save(authToken)
           await this.authStateStore.loadToken()
 
+          // Emit AFTER loadToken (same identity-stamping rationale as the OAuth path).
+          this.emitAnalytics(AnalyticsEventNames.AUTH_LOGIN, {outcome: 'success'})
+
           this.transport.broadcast(AuthEvents.STATE_CHANGED, {
             isAuthorized: true,
             user: toUserDTO(user),
@@ -279,6 +321,12 @@ export class AuthHandler {
 
           return {success: true, userEmail: user.email}
         } catch (error) {
+          // Failure-path emit covers api-key auth failures (invalid key,
+          // network error, user fetch failure). Stays anonymous — no token was
+          // committed.
+          // eslint-disable-next-line camelcase
+          this.emitAnalytics(AnalyticsEventNames.AUTH_LOGIN, {failure_kind: 'api_key', outcome: 'failure'})
+
           return {error: getErrorMessage(error), success: false}
         }
       },
@@ -291,9 +339,31 @@ export class AuthHandler {
         await this.tokenStore.clear()
         await this.disconnectByteRoverProvider()
         await this.authStateStore.loadToken()
+
+        // Emit on the success terminal (single-emit guarantee — a
+        // success emit at the START would double-fire with the catch
+        // branch when a later step throws). By the time we reach here
+        // loadToken() has already flipped identity to anonymous, so the
+        // success row stamps `{device_id}` only. The OLD-identity events
+        // (any pending tracks under the logged-in user) ship separately:
+        // wire-analytics-auth-pre-transition.ts hooks `onBeforeAuthChange`
+        // and awaits `flush()` before loadToken commits the identity
+        // change, draining them under the logged-in identity. Downstream
+        // consumers join `auth_logout` rows back to the user via
+        // `device_id`.
+        this.emitAnalytics(AnalyticsEventNames.AUTH_LOGOUT, {outcome: 'success'})
+
         this.transport.broadcast(AuthEvents.STATE_CHANGED, {isAuthorized: false})
         return {success: true}
       } catch {
+        // Failure-path emit covers token-clear / provider-disconnect /
+        // state-reload errors. Identity at trackAsync-resolve time may be
+        // logged-in (clear failed first) or anonymous (clear succeeded but a
+        // later step failed); both are valid for diagnostic purposes.
+        // `failure_kind` is a coarse tag — never raw `error.message`.
+        // eslint-disable-next-line camelcase
+        this.emitAnalytics(AnalyticsEventNames.AUTH_LOGOUT, {failure_kind: 'logout_flow', outcome: 'failure'})
+
         return {success: false}
       }
     })

@@ -1,11 +1,14 @@
 import {expect} from 'chai'
 import {Socket as ClientSocket, io} from 'socket.io-client'
 
+import type {ClientType} from '../../../../src/server/core/domain/client/client-info.js'
+
 import {
   TransportPortInUseError,
   TransportServerAlreadyRunningError,
   TransportServerNotStartedError,
 } from '../../../../src/server/core/domain/errors/transport-error.js'
+import {getClientKindFromContext} from '../../../../src/server/infra/transport/client-kind-context.js'
 import {SocketIOTransportServer} from '../../../../src/server/infra/transport/socket-io-transport-server.js'
 
 describe('SocketIOTransportServer', () => {
@@ -442,6 +445,78 @@ describe('SocketIOTransportServer', () => {
 
       expect(server.getPort()).to.equal(9970)
       expect(server.isRunning()).to.be.true
+    })
+  })
+
+  describe('client_kind context wrap', () => {
+    it('exposes the registered ClientType inside the request handler via getClientKindFromContext', async () => {
+      const typeByClientId = new Map<string, ClientType>()
+      server.setGetClientKind((clientId) => typeByClientId.get(clientId))
+      await server.start(9980)
+
+      let observed: ClientType | undefined
+      server.onRequest('client-kind:probe', () => {
+        observed = getClientKindFromContext()
+        return {ok: true}
+      })
+
+      clientSocket = io('http://127.0.0.1:9980')
+      await new Promise<void>((resolve) => {
+        clientSocket!.on('connect', resolve)
+      })
+
+      typeByClientId.set(clientSocket.id!, 'cli')
+
+      await new Promise<void>((resolve) => {
+        clientSocket!.emit('client-kind:probe', {}, () => resolve())
+      })
+
+      expect(observed).to.equal('cli')
+    })
+
+    it('omits the wrap when the lookup returns undefined (no context set)', async () => {
+      // eslint-disable-next-line unicorn/no-useless-undefined
+      const noopLookup: (clientId: string) => ClientType | undefined = () => undefined
+      server.setGetClientKind(noopLookup)
+      await server.start(9981)
+
+      let observed: 'sentinel' | ClientType | undefined = 'sentinel'
+      server.onRequest('client-kind:probe', () => {
+        observed = getClientKindFromContext()
+        return {ok: true}
+      })
+
+      clientSocket = io('http://127.0.0.1:9981')
+      await new Promise<void>((resolve) => {
+        clientSocket!.on('connect', resolve)
+      })
+
+      await new Promise<void>((resolve) => {
+        clientSocket!.emit('client-kind:probe', {}, () => resolve())
+      })
+
+      expect(observed).to.equal(undefined)
+    })
+
+    it('skips the wrap entirely when no getClientKind callback is registered (backward compat)', async () => {
+      await server.start(9982)
+
+      let observed: 'sentinel' | ClientType | undefined = 'sentinel'
+      server.onRequest('client-kind:probe', () => {
+        observed = getClientKindFromContext()
+        return {ok: true}
+      })
+
+      clientSocket = io('http://127.0.0.1:9982')
+      await new Promise<void>((resolve) => {
+        clientSocket!.on('connect', resolve)
+      })
+
+      await new Promise<void>((resolve) => {
+        clientSocket!.emit('client-kind:probe', {}, () => resolve())
+      })
+
+      expect(observed).to.equal(undefined)
     })
   })
 })

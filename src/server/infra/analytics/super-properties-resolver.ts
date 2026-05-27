@@ -3,6 +3,7 @@ import type {ISuperPropertiesResolver, SuperProperties} from '../../core/interfa
 import type {IGlobalConfigStore} from '../../core/interfaces/storage/i-global-config-store.js'
 
 import {readCliVersion} from '../../utils/read-cli-version.js'
+import {getClientKindFromContext} from '../transport/client-kind-context.js'
 
 type StaticFields = Readonly<{
   cli_version: string
@@ -41,8 +42,10 @@ export class SuperPropertiesResolver implements ISuperPropertiesResolver {
     }
 
     const config = await this.globalConfigStore.read()
+    const clientKind = getClientKindFromContext()
     return {
       cli_version: this.staticFields.cli_version,
+      ...(clientKind ? {client_kind: clientKind} : {}),
       device_id: config?.deviceId ?? '',
       environment: this.staticFields.environment,
       node_version: this.staticFields.node_version,

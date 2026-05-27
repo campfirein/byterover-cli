@@ -6,6 +6,7 @@ import type {IGlobalConfigStore} from '../../../../../src/server/core/interfaces
 
 import {GlobalConfig} from '../../../../../src/server/core/domain/entities/global-config.js'
 import {SuperPropertiesResolver} from '../../../../../src/server/infra/analytics/super-properties-resolver.js'
+import {runWithClientKind} from '../../../../../src/server/infra/transport/client-kind-context.js'
 
 const validDeviceId = '550e8400-e29b-41d4-a716-446655440000'
 
@@ -49,6 +50,41 @@ describe('SuperPropertiesResolver', () => {
       const props = await resolver.resolve()
 
       expect(props).to.have.all.keys('device_id', 'cli_version', 'os', 'node_version', 'environment')
+    })
+  })
+
+  describe('client_kind', () => {
+    it('omits client_kind when no clientKindContext scope is active', async () => {
+      const resolver = new SuperPropertiesResolver(makeStubStore(), () => '1.2.3')
+
+      const props = await resolver.resolve()
+
+      expect(props).to.not.have.property('client_kind')
+    })
+
+    it('stamps client_kind=cli when wrapped in runWithClientKind("cli")', async () => {
+      const resolver = new SuperPropertiesResolver(makeStubStore(), () => '1.2.3')
+
+      const props = await runWithClientKind('cli', () => resolver.resolve())
+
+      expect(props.client_kind).to.equal('cli')
+    })
+
+    it('stamps client_kind=webui when wrapped in runWithClientKind("webui")', async () => {
+      const resolver = new SuperPropertiesResolver(makeStubStore(), () => '1.2.3')
+
+      const props = await runWithClientKind('webui', () => resolver.resolve())
+
+      expect(props.client_kind).to.equal('webui')
+    })
+
+    it('keeps the other super-properties stable when client_kind is added', async () => {
+      const resolver = new SuperPropertiesResolver(makeStubStore(), () => '1.2.3')
+
+      const props = await runWithClientKind('tui', () => resolver.resolve())
+
+      expect(props.cli_version).to.equal('1.2.3')
+      expect(props.device_id).to.equal(validDeviceId)
     })
   })
 

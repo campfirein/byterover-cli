@@ -2,6 +2,7 @@ import {instrument} from '@socket.io/admin-ui'
 import {createServer, Server as HttpServer, type RequestListener} from 'node:http'
 import {Server, Socket} from 'socket.io'
 
+import type {ClientType} from '../../core/domain/client/client-info.js'
 import type {TransportServerConfig} from '../../core/domain/transport/types.js'
 import type {
   ConnectionHandler,
@@ -18,6 +19,7 @@ import {
   TransportServerNotStartedError,
 } from '../../core/domain/errors/transport-error.js'
 import {transportLog} from '../../utils/process-logger.js'
+import {clientKindContext} from './client-kind-context.js'
 
 /**
  * Internal protocol constants for request/response pattern.
@@ -43,6 +45,16 @@ export class SocketIOTransportServer implements ITransportServer {
   private readonly config: Required<TransportServerConfig>
   private connectionHandlers: ConnectionHandler[] = []
   private disconnectionHandlers: ConnectionHandler[] = []
+  /**
+   * Optional lookup that resolves a Socket.IO clientId to its registered
+   * `ClientType`. When set and the lookup returns a non-undefined value,
+   * every incoming request handler invocation is wrapped in
+   * `clientKindContext.run({client_kind}, ...)` so SuperPropertiesResolver
+   * can stamp `client_kind` on the analytics envelope. Pre-filter the
+   * `agent` ClientType at the caller (return undefined) so agent-fork
+   * connections bypass the wrap entirely.
+   */
+  private getClientKind: ((clientId: string) => ClientType | undefined) | undefined
   private httpRequestHandler?: RequestListener
   private httpServer: HttpServer | undefined
   private io: Server | undefined
@@ -137,6 +149,17 @@ export class SocketIOTransportServer implements ITransportServer {
     if (socket) {
       socket.emit(event, data)
     }
+  }
+
+  /**
+   * Register a lookup that maps a socket clientId to its ClientType.
+   * Used to stamp `client_kind` on analytics super-properties so handler
+   * emits inherit the originating client kind without per-handler wiring.
+   * Setter (not constructor injection) because ClientManager is constructed
+   * AFTER the transport server in brv-server.ts boot order.
+   */
+  setGetClientKind(getter: (clientId: string) => ClientType | undefined): void {
+    this.getClientKind = getter
   }
 
   /**
@@ -269,7 +292,16 @@ export class SocketIOTransportServer implements ITransportServer {
   private registerEventHandler(socket: Socket, event: string, handler: StoredRequestHandler): void {
     socket.on(event, async (data: unknown, callback?: (response: unknown) => void) => {
       try {
-        const result = await handler(data, socket.id)
+        // Wrap the handler in clientKindContext so SuperPropertiesResolver
+        // can stamp `client_kind` on any analytics event emitted during this
+        // handler invocation. Skip the wrap when no lookup is registered or the
+        // lookup returns undefined (agent-fork bypass / unregistered sockets).
+        const clientKind = this.getClientKind?.(socket.id)
+        const invokeHandler = (): Promise<unknown> | unknown => handler(data, socket.id)
+        const result = await (clientKind
+          ? // eslint-disable-next-line camelcase
+            clientKindContext.run({client_kind: clientKind}, invokeHandler)
+          : invokeHandler())
 
         // Support both callback style and event-based response
         if (callback) {

@@ -3,6 +3,7 @@ import type {SinonStubbedInstance} from 'sinon'
 import {expect} from 'chai'
 import {restore, stub} from 'sinon'
 
+import type {IAnalyticsClient} from '../../../../../src/server/core/interfaces/analytics/i-analytics-client.js'
 import type {IAuthService} from '../../../../../src/server/core/interfaces/auth/i-auth-service.js'
 import type {ICallbackHandler} from '../../../../../src/server/core/interfaces/auth/i-callback-handler.js'
 import type {ITokenStore} from '../../../../../src/server/core/interfaces/auth/i-token-store.js'
@@ -18,6 +19,7 @@ import {BrvConfig} from '../../../../../src/server/core/domain/entities/brv-conf
 import {User} from '../../../../../src/server/core/domain/entities/user.js'
 import {TransportDaemonEventNames} from '../../../../../src/server/core/domain/transport/schemas.js'
 import {AuthHandler, type AuthHandlerDeps} from '../../../../../src/server/infra/transport/handlers/auth-handler.js'
+import {AnalyticsEventNames} from '../../../../../src/shared/analytics/event-names.js'
 import {AuthEvents} from '../../../../../src/shared/transport/events/auth-events.js'
 
 // ==================== Test Helpers ====================
@@ -81,6 +83,33 @@ function createTestBrvConfig(): BrvConfig {
 }
 
 // ==================== Tests ====================
+
+function makeFakeAnalyticsClient(): IAnalyticsClient & {trackSpy: ReturnType<typeof stub>} {
+  const trackSpy = stub()
+  return {
+    abort: stub(),
+    flush: stub().resolves({events: []}),
+    getRuntimeState: stub().resolves({droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}),
+    onAuthTransition: stub().resolves(),
+    track: trackSpy,
+    trackSpy,
+  } as unknown as IAnalyticsClient & {trackSpy: ReturnType<typeof stub>}
+}
+
+/**
+ * `failure_kind` discipline: the emitted tag MUST be a coarse enum-like
+ * value — non-empty, ≤64 chars, snake_case (lowercase letters +
+ * underscores). Forbids whitespace, newlines, capital letters, symbols —
+ * catches a developer accidentally passing `getErrorMessage(error)` or
+ * `error.message` as the tag.
+ */
+function assertFailureKindDiscipline(value: unknown, label: string): void {
+  expect(value, `${label}: failure_kind must be a string`).to.be.a('string')
+  const tag = value as string
+  expect(tag.length, `${label}: failure_kind must be non-empty`).to.be.greaterThan(0)
+  expect(tag.length, `${label}: failure_kind must be ≤64 chars (got ${tag.length})`).to.be.lessThanOrEqual(64)
+  expect(tag, `${label}: failure_kind must be snake_case (a-z + _), got "${tag}"`).to.match(/^[a-z][a-z_]*$/)
+}
 
 function createMockProviderConfigStore(
   options: {isConnected?: boolean} = {},
@@ -522,6 +551,121 @@ describe('AuthHandler — setupExternalAuthSync', () => {
       expect(callOrder).to.include('LOGIN_COMPLETED')
       expect(callOrder.indexOf('loadToken'), 'loadToken should be called before LOGIN_COMPLETED broadcast')
         .to.be.lessThan(callOrder.indexOf('LOGIN_COMPLETED'))
+    })
+  })
+
+  describe('analytics emits', () => {
+    it('emits auth_logout with outcome=success on the happy logout path', async () => {
+      const analyticsClient = makeFakeAnalyticsClient()
+      createHandler({analyticsClient})
+
+      const handler = transport._handlers.get(AuthEvents.LOGOUT)!
+      const result = await handler(undefined, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+      const trackCalls = analyticsClient.trackSpy
+        .getCalls()
+        .filter((c: {args: unknown[]}) => c.args[0] === AnalyticsEventNames.AUTH_LOGOUT)
+      expect(trackCalls.length, 'auth_logout fires exactly once on success').to.equal(1)
+      expect(trackCalls[0].args[1]).to.deep.equal({outcome: 'success'})
+    })
+
+    it('emits auth_logout with outcome=failure when the logout flow throws', async () => {
+      const analyticsClient = makeFakeAnalyticsClient()
+      const tokenStore = {
+        clear: stub().rejects(new Error('disk full')),
+        load: stub().resolves(),
+        save: stub().resolves(),
+      } as unknown as ITokenStore
+
+      createHandler({analyticsClient, tokenStore})
+
+      const handler = transport._handlers.get(AuthEvents.LOGOUT)!
+      const result = await handler(undefined, 'client-1')
+
+      expect(result).to.deep.equal({success: false})
+      const trackCalls = analyticsClient.trackSpy
+        .getCalls()
+        .filter((c: {args: unknown[]}) => c.args[0] === AnalyticsEventNames.AUTH_LOGOUT)
+      expect(trackCalls.length, 'auth_logout fires exactly once on failure').to.equal(1)
+      const props = trackCalls[0].args[1] as {failure_kind?: string; outcome: string}
+      expect(props.outcome).to.equal('failure')
+      assertFailureKindDiscipline(props.failure_kind, 'auth_logout failure emit')
+    })
+
+    it('does not throw when analyticsClient.track throws on logout (analytics failures are swallowed)', async () => {
+      const analyticsClient = makeFakeAnalyticsClient()
+      analyticsClient.trackSpy.throws(new Error('boom'))
+
+      createHandler({analyticsClient})
+
+      const handler = transport._handlers.get(AuthEvents.LOGOUT)!
+      const result = await handler(undefined, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+    })
+
+    it('is a no-op when no analyticsClient is injected (optional dep, backward compat)', async () => {
+      createHandler() // no analyticsClient override
+
+      const handler = transport._handlers.get(AuthEvents.LOGOUT)!
+      const result = await handler(undefined, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+    })
+
+    it('emits auth_login with outcome=success on API-key login after token save + loadToken', async () => {
+      const callOrder: string[] = []
+      const analyticsClient = makeFakeAnalyticsClient()
+      analyticsClient.trackSpy.callsFake((event: string) => {
+        callOrder.push(`track:${event}`)
+      })
+      const tokenStore = {
+        clear: stub().resolves(),
+        load: stub().resolves(),
+        save: stub().callsFake(async () => {
+          callOrder.push('tokenStore.save')
+        }),
+      } as unknown as ITokenStore
+      authStateStore.loadToken = stub().callsFake(async () => {
+        callOrder.push('authStateStore.loadToken')
+      }) as unknown as typeof authStateStore.loadToken
+
+      createHandler({analyticsClient, tokenStore})
+
+      const handler = transport._handlers.get(AuthEvents.LOGIN_WITH_API_KEY)!
+      await handler({apiKey: 'test-key'}, 'client-1')
+
+      const trackCalls = analyticsClient.trackSpy
+        .getCalls()
+        .filter((c: {args: unknown[]}) => c.args[0] === AnalyticsEventNames.AUTH_LOGIN)
+      expect(trackCalls.length, 'auth_login fires exactly once on API-key success').to.equal(1)
+      expect(trackCalls[0].args[1]).to.deep.equal({outcome: 'success'})
+      expect(callOrder.indexOf('tokenStore.save'), 'save should precede track').to.be.lessThan(
+        callOrder.indexOf(`track:${AnalyticsEventNames.AUTH_LOGIN}`),
+      )
+      expect(callOrder.indexOf('authStateStore.loadToken'), 'loadToken should precede track').to.be.lessThan(
+        callOrder.indexOf(`track:${AnalyticsEventNames.AUTH_LOGIN}`),
+      )
+    })
+
+    it('emits auth_login with outcome=failure when API-key login throws', async () => {
+      const analyticsClient = makeFakeAnalyticsClient()
+      userService.getCurrentUser = stub().rejects(new Error('invalid key')) as unknown as typeof userService.getCurrentUser
+
+      createHandler({analyticsClient})
+
+      const handler = transport._handlers.get(AuthEvents.LOGIN_WITH_API_KEY)!
+      const result = await handler({apiKey: 'bad-key'}, 'client-1')
+
+      expect(result.success).to.equal(false)
+      const trackCalls = analyticsClient.trackSpy
+        .getCalls()
+        .filter((c: {args: unknown[]}) => c.args[0] === AnalyticsEventNames.AUTH_LOGIN)
+      expect(trackCalls.length, 'auth_login fires exactly once on API-key failure').to.equal(1)
+      const props = trackCalls[0].args[1] as {failure_kind?: string; outcome: string}
+      expect(props.outcome).to.equal('failure')
+      assertFailureKindDiscipline(props.failure_kind, 'auth_login API-key failure emit')
     })
   })
 })

@@ -4,6 +4,7 @@ import type {IAnalyticsClient} from '../../../core/interfaces/analytics/i-analyt
 import type {IGlobalConfigStore} from '../../../core/interfaces/storage/i-global-config-store.js'
 import type {ITransportServer} from '../../../core/interfaces/transport/i-transport-server.js'
 
+import {AnalyticsEventNames} from '../../../../shared/analytics/event-names.js'
 import {
   GlobalConfigEvents,
   type GlobalConfigGetResponse,
@@ -12,6 +13,7 @@ import {
 } from '../../../../shared/transport/events/global-config-events.js'
 import {GLOBAL_CONFIG_VERSION} from '../../../constants.js'
 import {GlobalConfig} from '../../../core/domain/entities/global-config.js'
+import {processLog} from '../../../utils/process-logger.js'
 
 export interface GlobalConfigHandlerDeps {
   /**
@@ -145,6 +147,22 @@ export class GlobalConfigHandler {
     const current = existing ?? GlobalConfig.create(randomUUID())
     const updated = current.withAnalytics(analytics)
     await this.globalConfigStore.write(updated)
+
+    // Emit BEFORE flipping `cachedAnalytics` so AnalyticsClient.isEnabled
+    // (which reads the cache) still resolves true at track time and the row
+    // enters the queue. After this line the cache flips to false and any
+    // subsequent track() is no-op'd. analytics_enabled is intentionally NOT
+    // tracked (the user has not consented at receive time when enabling).
+    if (previous && !analytics) {
+      try {
+        this.analyticsClient?.track(AnalyticsEventNames.ANALYTICS_DISABLED)
+      } catch (error) {
+        processLog(
+          `[GlobalConfig] analytics_disabled track failed: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+    }
+
     // Cache is in-process-authoritative — we trust the value just written.
     // Cross-process changes (another daemon writing the same file, manual
     // edits) are NOT observable until the next daemon restart. The

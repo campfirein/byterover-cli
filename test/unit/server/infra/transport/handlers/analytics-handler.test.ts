@@ -157,4 +157,167 @@ describe('AnalyticsHandler', () => {
 
     expect(caught, 'handler must NOT propagate track() errors').to.equal(undefined)
   })
+
+  /**
+   * Regression coverage for every per-event `case` branch in `dispatch()`.
+   * The base tests above cover the dispatch PATTERN via one sample event;
+   * if a future refactor drops a `case` branch the event would fall
+   * through silently (no error, no track call). This parameterized test
+   * exercises every catalog event with a minimal valid payload and asserts
+   * the dispatch reaches `track()`.
+   */
+  describe('per-event dispatch coverage — every new event name reaches track()', () => {
+    const validHashHex = 'a'.repeat(64)
+    // Per-event minimal payloads that satisfy each schema. Lifecycle events
+    // (33 of 36) carry `outcome: 'success'`; 3 observation events stay
+    // outcome-less. Payloads are intentionally narrow — broader fixture
+    // coverage lives in privacy-fixture.test.ts.
+    const cases: Array<{event: AnalyticsEventName; properties?: Record<string, unknown>}> = [
+      {event: AnalyticsEventNames.ANALYTICS_DISABLED, properties: {}},
+      {event: AnalyticsEventNames.AUTH_LOGIN, properties: {outcome: 'success'}},
+      {event: AnalyticsEventNames.AUTH_LOGOUT, properties: {outcome: 'success'}},
+      {
+        event: AnalyticsEventNames.BRV_INIT,
+        properties: {had_existing_brv_dir: false, outcome: 'success', project_path_hash: validHashHex},
+      },
+      {
+        event: AnalyticsEventNames.CONNECTOR_INSTALLED,
+        properties: {agent_target: 'claude-code', connector_id: 'rules', outcome: 'success'},
+      },
+      {
+        event: AnalyticsEventNames.CONTEXT_TREE_FILE_EDITED,
+        properties: {
+          file_relative_path_hash: validHashHex,
+          outcome: 'success',
+          project_path_hash: validHashHex,
+        },
+      },
+      {event: AnalyticsEventNames.DAEMON_RESET_EXECUTED, properties: {outcome: 'success', reset_scope: 'project'}},
+      {
+        event: AnalyticsEventNames.HUB_PACKAGE_INSTALLED,
+        properties: {outcome: 'success', package_identifier: 'team/space'},
+      },
+      {
+        event: AnalyticsEventNames.HUB_REGISTRY_ADDED,
+        properties: {is_default: true, outcome: 'success', registry_kind: 'byterover'},
+      },
+      {event: AnalyticsEventNames.HUB_REGISTRY_REMOVED, properties: {outcome: 'success', registry_kind: 'byterover'}},
+      {event: AnalyticsEventNames.ONBOARDING_AUTO_SETUP_STARTED, properties: {mode: 'auto', outcome: 'success'}},
+      {event: AnalyticsEventNames.ONBOARDING_COMPLETED, properties: {outcome: 'success'}},
+      {
+        event: AnalyticsEventNames.REVIEW_APPROVED,
+        properties: {operation_kind: 'add', outcome: 'success', project_path_hash: validHashHex},
+      },
+      {
+        event: AnalyticsEventNames.REVIEW_REJECTED,
+        properties: {operation_kind: 'add', outcome: 'success', project_path_hash: validHashHex},
+      },
+      {
+        event: AnalyticsEventNames.REVIEW_TOGGLED,
+        properties: {outcome: 'success', project_path_hash: validHashHex},
+      },
+      {
+        event: AnalyticsEventNames.SETTING_CHANGED,
+        properties: {outcome: 'success', setting_key: 'agentPool.maxSize', value_kind: 'integer'},
+      },
+      {
+        event: AnalyticsEventNames.SETTING_RESET,
+        properties: {outcome: 'success', setting_key: 'agentPool.maxSize', value_kind: 'integer'},
+      },
+      {
+        event: AnalyticsEventNames.SOURCE_ADDED,
+        properties: {outcome: 'success', project_path_hash: validHashHex},
+      },
+      {event: AnalyticsEventNames.SOURCE_REMOVED, properties: {outcome: 'success', project_path_hash: validHashHex}},
+      {
+        event: AnalyticsEventNames.SPACE_SWITCHED,
+        properties: {from_space_id: 'a', outcome: 'success'},
+      },
+      {event: AnalyticsEventNames.VC_BRANCHED, properties: {outcome: 'success', project_path_hash: validHashHex}},
+      {event: AnalyticsEventNames.VC_CHECKED_OUT, properties: {outcome: 'success', project_path_hash: validHashHex}},
+      {
+        event: AnalyticsEventNames.VC_CLONED,
+        properties: {outcome: 'success', remote_kind: 'byterover'},
+      },
+      {
+        event: AnalyticsEventNames.VC_COMMIT,
+        properties: {had_message: true, outcome: 'success', project_path_hash: validHashHex},
+      },
+      {
+        event: AnalyticsEventNames.VC_DISCARDED,
+        properties: {discard_scope: 'file', outcome: 'success', project_path_hash: validHashHex},
+      },
+      {
+        event: AnalyticsEventNames.VC_FETCHED,
+        properties: {outcome: 'success', project_path_hash: validHashHex, remote_kind: 'byterover'},
+      },
+      {
+        event: AnalyticsEventNames.VC_INIT,
+        properties: {had_existing_git_dir: false, outcome: 'success', project_path_hash: validHashHex},
+      },
+      {
+        event: AnalyticsEventNames.VC_MERGED,
+        properties: {outcome: 'success', project_path_hash: validHashHex},
+      },
+      {
+        event: AnalyticsEventNames.VC_PULLED,
+        properties: {
+          branch_name_hash: validHashHex,
+          outcome: 'success',
+          project_path_hash: validHashHex,
+          remote_kind: 'byterover',
+        },
+      },
+      {
+        event: AnalyticsEventNames.VC_PUSHED,
+        properties: {
+          branch_name_hash: validHashHex,
+          outcome: 'success',
+          project_path_hash: validHashHex,
+          remote_kind: 'byterover',
+        },
+      },
+      {
+        event: AnalyticsEventNames.VC_REMOTE_CHANGED,
+        properties: {
+          change_kind: 'added',
+          outcome: 'success',
+          project_path_hash: validHashHex,
+          remote_kind: 'byterover',
+        },
+      },
+      {
+        event: AnalyticsEventNames.VC_RESET_EXECUTED,
+        properties: {outcome: 'success', project_path_hash: validHashHex, reset_mode: 'soft'},
+      },
+      {
+        event: AnalyticsEventNames.WEBUI_SESSION_ENDED,
+        properties: {session_duration_ms: 5000, started_at_unix_ms: 1_700_000_000_000},
+      },
+      {event: AnalyticsEventNames.WEBUI_SESSION_STARTED, properties: {started_at_unix_ms: 1_700_000_000_000}},
+      {
+        event: AnalyticsEventNames.WORKTREE_ADDED,
+        properties: {outcome: 'success', project_path_hash: validHashHex},
+      },
+      {event: AnalyticsEventNames.WORKTREE_REMOVED, properties: {outcome: 'success', project_path_hash: validHashHex}},
+    ]
+
+    for (const {event, properties} of cases) {
+      it(`dispatches ${event} to analyticsClient.track`, async () => {
+        const transport = createMockTransportServer()
+        const analyticsClient = makeMockAnalyticsClient()
+        new AnalyticsHandler({analyticsClient, transport}).setup()
+
+        const handler = transport._handlers.get(AnalyticsEvents.TRACK) as AnalyticsTrackHandler
+        await handler({event, properties}, 'client-1')
+
+        const calls = analyticsClient.trackCalls.filter((c) => c.event === event)
+        expect(calls.length, `dispatch case missing or dropped for ${event}`).to.equal(1)
+      })
+    }
+
+    it('coverage matches schema count (36 new events covered)', () => {
+      expect(cases.length, 'must enumerate all 36 new event names').to.equal(36)
+    })
+  })
 })
