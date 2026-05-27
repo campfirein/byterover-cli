@@ -4,8 +4,11 @@ import {
   AGENT_MAX_CONCURRENT_TASKS,
   AGENT_POOL_MAX_SIZE,
   TASK_HISTORY_DEFAULT_MAX_ENTRIES,
+  TRANSPORT_HOST,
 } from '../../constants.js'
 import {SETTINGS_KEYS} from '../../core/domain/entities/settings.js'
+
+const TRANSPORT_HOST_ENV = 'BRV_TRANSPORT_HOST'
 
 /**
  * Daemon-side resolved view of every settings key the bootstrap path
@@ -19,6 +22,12 @@ export type ResolvedSettings = {
   readonly agentPoolMaxSize: number
   /** Feeds `FileTaskHistoryStore({maxEntries})` via the per-project cache. */
   readonly taskHistoryMaxEntries: number
+  /**
+   * Host interface both the Socket.IO transport server and the WebUI HTTP
+   * server bind to at daemon startup. Resolved with precedence:
+   *   BRV_TRANSPORT_HOST env > network.host setting > TRANSPORT_HOST default.
+   */
+  readonly transportHost: string
 }
 
 export type BootstrapSettingsOptions = {
@@ -44,14 +53,26 @@ export async function bootstrapSettings(options: BootstrapSettingsOptions): Prom
     log(`[settings] ignoring invalid entry '${entry.key}': ${entry.reason}. Falling back to default.`)
   }
 
+  const envHost = process.env[TRANSPORT_HOST_ENV]?.trim()
+  const transportHost =
+    envHost !== undefined && envHost.length > 0
+      ? envHost
+      : readString(snapshot, SETTINGS_KEYS.NETWORK_HOST, TRANSPORT_HOST)
+
   return {
     agentMaxConcurrentTasks: readNumber(snapshot, SETTINGS_KEYS.AGENT_POOL_MAX_CONCURRENT_TASKS, AGENT_MAX_CONCURRENT_TASKS),
     agentPoolMaxSize: readNumber(snapshot, SETTINGS_KEYS.AGENT_POOL_MAX_SIZE, AGENT_POOL_MAX_SIZE),
     taskHistoryMaxEntries: readNumber(snapshot, SETTINGS_KEYS.TASK_HISTORY_MAX_ENTRIES, TASK_HISTORY_DEFAULT_MAX_ENTRIES),
+    transportHost,
   }
 }
 
 function readNumber(snapshot: SettingsStartupSnapshot, key: string, fallback: number): number {
   const value = snapshot.values[key]
   return typeof value === 'number' ? value : fallback
+}
+
+function readString(snapshot: SettingsStartupSnapshot, key: string, fallback: string): string {
+  const value = snapshot.values[key]
+  return typeof value === 'string' && value.length > 0 ? value : fallback
 }

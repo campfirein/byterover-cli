@@ -6,6 +6,7 @@ import remarkFrontmatter from 'remark-frontmatter'
 import remarkGfm from 'remark-gfm'
 
 import {hasConflictMarkers} from '../../../../shared/utils/conflict-markers'
+import {copyTextToClipboard} from '../../../lib/clipboard'
 import {oneDark, SyntaxHighlighter} from '../../../lib/syntax-highlighter'
 
 // ── CodeBlock ──────────────────────────────────────────────────────────────
@@ -20,7 +21,7 @@ const CodeBlock: FC<CodeBlockProps> = memo(({language, value}) => {
 
   const handleCopy = () => {
     setIsCopied(true)
-    navigator.clipboard.writeText(value)
+    copyTextToClipboard(value).catch(() => {})
     setTimeout(() => setIsCopied(false), 1000)
   }
 

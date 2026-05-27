@@ -6,6 +6,7 @@ import {toast} from 'sonner'
 
 import type {StoredTask} from '../types/stored-task'
 
+import {copyTextToClipboard} from '../../../lib/clipboard'
 import {formatDuration, formatRelative} from '../utils/format-time'
 import {displayTaskType, isActiveStatus, isTerminalStatus} from '../utils/task-status'
 import {StatusPill} from './status-pill'
@@ -74,10 +75,10 @@ export function DetailHeader({cancelling, now, onCancel, task}: DetailHeaderProp
 
 function CopyableTaskId({taskId}: {taskId: string}) {
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(taskId)
+    const ok = await copyTextToClipboard(taskId)
+    if (ok) {
       toast.success('Task ID copied', {duration: 2000})
-    } catch {
+    } else {
       toast.error('Failed to copy task ID', {duration: 3000})
     }
   }

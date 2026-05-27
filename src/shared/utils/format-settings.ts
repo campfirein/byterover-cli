@@ -12,6 +12,11 @@ export function buildSettingsRows(items: readonly SettingsItemDTO[]): SettingsRo
       continue
     }
 
+    if (item.type === 'string' && typeof item.current === 'string' && typeof item.default === 'string') {
+      rows.push(toStringRow(item, item.current, item.default))
+      continue
+    }
+
     if (isIntegerItem(item)) rows.push(toIntegerRow(item))
   }
 
@@ -22,6 +27,7 @@ export function parseRowInput(row: SettingsRow, raw: string): RowParseResult {
   const trimmed = raw.trim()
   if (trimmed === '') return {kind: 'error', message: 'Value is required'}
 
+  if (row.type === 'string') return {displayValue: trimmed, kind: 'ok', value: trimmed}
   if (row.unit === 'ms') return parseAsDuration(row, raw)
   return parseAsCount(row, raw)
 }
@@ -124,12 +130,35 @@ function toBooleanRow(item: SettingsItemDTO, current: boolean, defaultValue: boo
   }
 }
 
+function toStringRow(item: SettingsItemDTO, current: string, defaultValue: string): SettingsRow {
+  return {
+    category: toRowCategory(item.category),
+    current,
+    default: defaultValue,
+    description: item.description,
+    displayCurrent: current,
+    displayDefault: defaultValue,
+    displayRange: '',
+    key: item.key,
+    label: item.key,
+    modified: current !== defaultValue,
+    restartRequired: item.restartRequired,
+    type: 'string',
+  }
+}
+
 function renderBoolean(value: boolean): string {
   return value ? '[ on ]' : '[ off ]'
 }
 
 function toRowCategory(category: SettingsItemDTO['category']): SettingsRowCategory {
-  if (category === 'concurrency' || category === 'llm' || category === 'task-history' || category === 'updates') {
+  if (
+    category === 'concurrency' ||
+    category === 'llm' ||
+    category === 'network' ||
+    category === 'task-history' ||
+    category === 'updates'
+  ) {
     return category
   }
 

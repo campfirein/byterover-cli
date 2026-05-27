@@ -79,4 +79,23 @@ describe('WebUiServer', () => {
     server = new WebUiServer(express())
     await server.stop() // should not throw
   })
+
+  describe('host parameter (ENG-2968)', () => {
+    it('defaults to 127.0.0.1 when no host is passed', async () => {
+      server = new WebUiServer(express())
+      await server.start(0)
+      expect(server.getHost()).to.equal('127.0.0.1')
+    })
+
+    it('binds to the passed host', async () => {
+      server = new WebUiServer(express())
+      await server.start(0, '0.0.0.0')
+      expect(server.getHost()).to.equal('0.0.0.0')
+    })
+
+    it('returns undefined host when not running', () => {
+      server = new WebUiServer(express())
+      expect(server.getHost()).to.be.undefined
+    })
+  })
 })

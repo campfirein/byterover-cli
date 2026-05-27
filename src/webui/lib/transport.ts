@@ -45,8 +45,15 @@ function registerClient(socket: Socket, projectPath: string) {
 export async function connectToTransport(projectPath: string): Promise<ConnectResult> {
   const config = await fetchUiConfig()
 
-  // Connect to the daemon's transport server on its dynamic port
-  const socket = io(`http://127.0.0.1:${config.daemonPort}`, {
+  // Connect to the daemon's transport server on its dynamic port.
+  // Use the same hostname the WebUI page was loaded from so the browser
+  // works regardless of whether the daemon binds to 127.0.0.1 (default)
+  // or 0.0.0.0 (Docker / LAN access via `network.host` setting or
+  // `BRV_TRANSPORT_HOST` env). Inside a browser `location.hostname`
+  // (on `globalThis`) is guaranteed available.
+  const browserLocation = (globalThis as {location?: {hostname: string}}).location
+  const daemonHost = browserLocation === undefined ? '127.0.0.1' : browserLocation.hostname
+  const socket = io(`http://${daemonHost}:${config.daemonPort}`, {
     reconnection: true,
     reconnectionAttempts: 30,
     reconnectionDelay: 50,

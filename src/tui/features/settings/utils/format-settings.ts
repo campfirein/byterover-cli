@@ -4,6 +4,7 @@ import {formatDuration} from '../../../../shared/utils/format-duration.js'
 const CATEGORY_HEADERS: Readonly<Record<SettingsRowCategory, string>> = {
   concurrency: 'CONCURRENCY',
   llm: 'LLM',
+  network: 'NETWORK',
   other: 'OTHER',
   'task-history': 'TASK HISTORY',
   updates: 'UPDATES',

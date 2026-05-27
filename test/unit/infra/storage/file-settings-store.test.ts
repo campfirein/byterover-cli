@@ -51,6 +51,7 @@ describe('FileSettingsStore', () => {
         'agentPool.maxSize',
         'llm.iterationBudgetMs',
         'llm.requestTimeoutMs',
+        'network.host',
         'taskHistory.maxEntries',
         'update.checkForUpdates',
       ])
@@ -465,6 +466,27 @@ describe('FileSettingsStore', () => {
 
       expect(afterSecondRead.mtimeMs, 'mtime must not change on a re-read of a v2 file').to.equal(afterMigration.mtimeMs)
       expect(contentAfterRead).to.equal(contentBeforeRead)
+    })
+
+    it('round-trips a string value (network.host)', async () => {
+      await store.set('network.host', '0.0.0.0')
+      const item = await store.get('network.host')
+      expect(item.current).to.equal('0.0.0.0')
+      const file = asSettingsFile(JSON.parse(await readFile(join(tempDir, SETTINGS_FILENAME), 'utf8')))
+      expect(file.values['network.host']).to.equal('0.0.0.0')
+    })
+
+    it('preserves a string value alongside integer and boolean overrides', async () => {
+      await store.set('agentPool.maxSize', 25)
+      await store.set('update.checkForUpdates', false)
+      await store.set('network.host', '0.0.0.0')
+      const items = await store.list()
+      const maxSize = items.find((i) => i.key === 'agentPool.maxSize')
+      const updates = items.find((i) => i.key === 'update.checkForUpdates')
+      const host = items.find((i) => i.key === 'network.host')
+      expect(maxSize?.current).to.equal(25)
+      expect(updates?.current).to.equal(false)
+      expect(host?.current).to.equal('0.0.0.0')
     })
 
     it('preserves pre-existing invalid entries through migration (does not collateral-damage)', async () => {

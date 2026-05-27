@@ -3,6 +3,7 @@ import {toast} from 'sonner'
 import type {TaskCreateRequest} from '../../../../shared/transport/events/task-events'
 import type {ComposerType} from '../components/task-composer-types'
 
+import {generateUuid} from '../../../lib/uuid'
 import {useCreateTask} from '../api/create-task'
 
 /**
@@ -31,7 +32,7 @@ export function useComposerSubmit(args: {
       return
     }
 
-    const taskId = crypto.randomUUID()
+    const taskId = generateUuid()
     const payload: TaskCreateRequest = {
       ...(args.projectPath ? {clientCwd: args.projectPath, projectPath: args.projectPath} : {}),
       content: args.content.trim(),

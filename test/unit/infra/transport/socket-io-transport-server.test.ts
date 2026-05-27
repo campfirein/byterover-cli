@@ -444,4 +444,20 @@ describe('SocketIOTransportServer', () => {
       expect(server.isRunning()).to.be.true
     })
   })
+
+  describe('host parameter (ENG-2968)', () => {
+    it('defaults to 127.0.0.1 when no host is passed', async () => {
+      await server.start(9975)
+      expect(server.getHost()).to.equal('127.0.0.1')
+    })
+
+    it('binds to the passed host', async () => {
+      await server.start(9976, '0.0.0.0')
+      expect(server.getHost()).to.equal('0.0.0.0')
+    })
+
+    it('returns undefined host when not running', () => {
+      expect(server.getHost()).to.be.undefined
+    })
+  })
 })

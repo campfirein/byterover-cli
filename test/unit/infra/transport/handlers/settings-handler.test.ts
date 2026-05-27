@@ -88,6 +88,7 @@ describe('SettingsHandler', () => {
         'agentPool.maxSize',
         'llm.iterationBudgetMs',
         'llm.requestTimeoutMs',
+        'network.host',
         'taskHistory.maxEntries',
         'update.checkForUpdates',
       ])

@@ -43,6 +43,7 @@ export class SocketIOTransportServer implements ITransportServer {
   private readonly config: Required<TransportServerConfig>
   private connectionHandlers: ConnectionHandler[] = []
   private disconnectionHandlers: ConnectionHandler[] = []
+  private host: string | undefined
   private httpRequestHandler?: RequestListener
   private httpServer: HttpServer | undefined
   private io: Server | undefined
@@ -94,6 +95,10 @@ export class SocketIOTransportServer implements ITransportServer {
    */
   getConnectedSocketCount(): number {
     return this.sockets.size
+  }
+
+  getHost(): string | undefined {
+    return this.host
   }
 
   getPort(): number | undefined {
@@ -151,7 +156,7 @@ export class SocketIOTransportServer implements ITransportServer {
     this.httpRequestHandler = handler
   }
 
-  async start(port: number): Promise<void> {
+  async start(port: number, host: string = TRANSPORT_HOST): Promise<void> {
     if (this.running) {
       throw new TransportServerAlreadyRunningError(this.port ?? port)
     }
@@ -234,8 +239,9 @@ export class SocketIOTransportServer implements ITransportServer {
         }
       })
 
-      this.httpServer.listen(port, TRANSPORT_HOST, () => {
+      this.httpServer.listen(port, host, () => {
         this.port = port
+        this.host = host
         this.running = true
         resolve()
       })
@@ -259,6 +265,7 @@ export class SocketIOTransportServer implements ITransportServer {
         httpServer.close(() => {
           this.running = false
           this.port = undefined
+          this.host = undefined
           this.sockets.clear()
           resolve()
         })

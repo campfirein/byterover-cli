@@ -4,6 +4,7 @@ import {
   AGENT_MAX_CONCURRENT_TASKS,
   AGENT_POOL_MAX_SIZE,
   TASK_HISTORY_DEFAULT_MAX_ENTRIES,
+  TRANSPORT_HOST,
   UPDATE_CHECK_FOR_UPDATES_DEFAULT,
 } from '../../../constants.js'
 
@@ -12,7 +13,7 @@ import {
  * and TUI render output (uppercased). Web docs / WebUI consume this
  * field to render the same groupings independently of key naming.
  */
-export type SettingCategory = 'concurrency' | 'llm' | 'task-history' | 'updates'
+export type SettingCategory = 'concurrency' | 'llm' | 'network' | 'task-history' | 'updates'
 
 /**
  * Value-kind for dispatch between the duration formatter / parser
@@ -48,6 +49,11 @@ export type BooleanSettingDescriptor = BaseSettingDescriptor & {
   readonly type: 'boolean'
 }
 
+export type StringSettingDescriptor = BaseSettingDescriptor & {
+  readonly default: string
+  readonly type: 'string'
+}
+
 /**
  * Descriptor for a single user-configurable setting. Discriminated on
  * `type` so consumers narrow with a single check before reading
@@ -56,7 +62,7 @@ export type BooleanSettingDescriptor = BaseSettingDescriptor & {
  * Defaults reference the existing constants module so a constant change
  * automatically updates the setting's default.
  */
-export type SettingDescriptor = BooleanSettingDescriptor | IntegerSettingDescriptor
+export type SettingDescriptor = BooleanSettingDescriptor | IntegerSettingDescriptor | StringSettingDescriptor
 
 /**
  * View of one setting: the key, the user's current override (or the default
@@ -64,11 +70,14 @@ export type SettingDescriptor = BooleanSettingDescriptor | IntegerSettingDescrip
  * shapes; consumers narrow on the corresponding descriptor's `type`.
  */
 export type SettingItem = {
-  readonly current: boolean | number
-  readonly default: boolean | number
+  readonly current: SettingValue
+  readonly default: SettingValue
   readonly key: string
   readonly restartRequired: boolean
 }
+
+/** Union of every persisted value shape across the descriptor variants. */
+export type SettingValue = boolean | number | string
 
 /**
  * Single source of truth for setting key names. Importers must reference
@@ -81,6 +90,7 @@ export const SETTINGS_KEYS = {
   AGENT_POOL_MAX_SIZE: 'agentPool.maxSize',
   LLM_ITERATION_BUDGET_MS: 'llm.iterationBudgetMs',
   LLM_REQUEST_TIMEOUT_MS: 'llm.requestTimeoutMs',
+  NETWORK_HOST: 'network.host',
   TASK_HISTORY_MAX_ENTRIES: 'taskHistory.maxEntries',
   UPDATE_CHECK_FOR_UPDATES: 'update.checkForUpdates',
 } as const
@@ -145,6 +155,14 @@ export const SETTINGS_REGISTRY: readonly SettingDescriptor[] = [
     key: SETTINGS_KEYS.UPDATE_CHECK_FOR_UPDATES,
     restartRequired: false,
     type: 'boolean',
+  },
+  {
+    category: 'network',
+    default: TRANSPORT_HOST,
+    description: 'Host interface the daemon binds to. Use 0.0.0.0 for Docker / LAN access.',
+    key: SETTINGS_KEYS.NETWORK_HOST,
+    restartRequired: true,
+    type: 'string',
   },
 ]
 

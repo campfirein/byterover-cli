@@ -34,5 +34,24 @@ describe('Port Utils', () => {
       const available = await isPortAvailable(port)
       expect(available).to.be.false
     })
+
+    describe('host parameter (ENG-2968)', () => {
+      it('reports available when probing a non-loopback host on a free port', async () => {
+        const available = await isPortAvailable(59_997, '0.0.0.0')
+        expect(available).to.be.true
+      })
+
+      it('reports unavailable when the requested port is occupied on 0.0.0.0', async () => {
+        const port = 59_996
+
+        server = createServer()
+        await new Promise<void>((resolve) => {
+          server.listen(port, '0.0.0.0', () => resolve())
+        })
+
+        const available = await isPortAvailable(port, '0.0.0.0')
+        expect(available).to.be.false
+      })
+    })
   })
 })

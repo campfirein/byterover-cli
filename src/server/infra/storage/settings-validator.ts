@@ -2,6 +2,8 @@ import type {
   BooleanSettingDescriptor,
   IntegerSettingDescriptor,
   SettingDescriptor,
+  SettingValue,
+  StringSettingDescriptor,
 } from '../../core/domain/entities/settings.js'
 
 import {findSettingDescriptor, SETTINGS_KEYS} from '../../core/domain/entities/settings.js'
@@ -30,7 +32,7 @@ export class InvalidSettingValueError extends Error {
 
 export type PartitionedSettings = {
   readonly invalid: ReadonlyArray<{readonly key: string; readonly reason: string; readonly value: unknown}>
-  readonly valid: Readonly<Record<string, boolean | number>>
+  readonly valid: Readonly<Record<string, SettingValue>>
 }
 
 export type CouplingViolation = {
@@ -56,7 +58,7 @@ export class SettingsValidator {
    * log a warning about.
    */
   public partition(record: Record<string, unknown>): PartitionedSettings {
-    const valid: Record<string, boolean | number> = {}
+    const valid: Record<string, SettingValue> = {}
     const invalid: Array<{key: string; reason: string; value: unknown}> = []
 
     for (const [key, value] of Object.entries(record)) {
@@ -96,10 +98,10 @@ export class SettingsValidator {
 
   /**
    * Validates a single key/value pair. Throws on unknown key or invalid value.
-   * Returns the coerced value on success (integer for integer descriptors,
-   * boolean for boolean descriptors).
+   * Returns the coerced value on success (integer / boolean / string per
+   * the descriptor type).
    */
-  public validate(key: string, value: unknown): boolean | number {
+  public validate(key: string, value: unknown): SettingValue {
     const descriptor = this.validateKey(key)
     return this.validateAgainst(descriptor, value)
   }
@@ -136,8 +138,9 @@ export class SettingsValidator {
     return descriptor
   }
 
-  private validateAgainst(descriptor: SettingDescriptor, value: unknown): boolean | number {
+  private validateAgainst(descriptor: SettingDescriptor, value: unknown): SettingValue {
     if (descriptor.type === 'boolean') return validateBoolean(descriptor, value)
+    if (descriptor.type === 'string') return validateString(descriptor, value)
     return validateInteger(descriptor, value)
   }
 }
@@ -174,7 +177,23 @@ function validateBoolean(descriptor: BooleanSettingDescriptor, value: unknown): 
   return value
 }
 
-function numericSubset(values: Readonly<Record<string, boolean | number>>): Record<string, number> {
+function validateString(descriptor: StringSettingDescriptor, value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new InvalidSettingValueError(
+      descriptor.key,
+      value,
+      `expected string, got ${describeType(value)}`,
+    )
+  }
+
+  if (value.length === 0) {
+    throw new InvalidSettingValueError(descriptor.key, value, 'value must not be empty')
+  }
+
+  return value
+}
+
+function numericSubset(values: Readonly<Record<string, SettingValue>>): Record<string, number> {
   const result: Record<string, number> = {}
   for (const [key, value] of Object.entries(values)) {
     if (typeof value === 'number') result[key] = value

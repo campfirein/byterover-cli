@@ -295,4 +295,89 @@ describe('SettingsValidator', () => {
       expect(result.invalid[0].value).to.equal('yes')
     })
   })
+
+  describe('validate (string descriptor — ENG-2968 network.host)', () => {
+    it('accepts loopback IPv4', () => {
+      expect(validator.validate('network.host', '127.0.0.1')).to.equal('127.0.0.1')
+    })
+
+    it('accepts bind-all IPv4', () => {
+      expect(validator.validate('network.host', '0.0.0.0')).to.equal('0.0.0.0')
+    })
+
+    it('accepts a LAN IPv4 address', () => {
+      expect(validator.validate('network.host', '192.168.1.10')).to.equal('192.168.1.10')
+    })
+
+    it('accepts a DNS hostname', () => {
+      expect(validator.validate('network.host', 'my-host.local')).to.equal('my-host.local')
+    })
+
+    it('rejects an empty string', () => {
+      try {
+        validator.validate('network.host', '')
+        expect.fail('expected throw')
+      } catch (error) {
+        expect(error).to.be.instanceOf(InvalidSettingValueError)
+        if (error instanceof InvalidSettingValueError) {
+          expect(error.key).to.equal('network.host')
+          expect(error.message.toLowerCase()).to.include('empty')
+        }
+      }
+    })
+
+    it('rejects a numeric value', () => {
+      try {
+        validator.validate('network.host', 127)
+        expect.fail('expected throw')
+      } catch (error) {
+        expect(error).to.be.instanceOf(InvalidSettingValueError)
+        if (error instanceof InvalidSettingValueError) {
+          expect(error.message.toLowerCase()).to.include('string')
+        }
+      }
+    })
+
+    it('rejects null', () => {
+      expect(() => validator.validate('network.host', null)).to.throw(InvalidSettingValueError)
+    })
+
+    it('rejects undefined', () => {
+      const missing: {absent?: unknown} = {}
+      expect(() => validator.validate('network.host', missing.absent)).to.throw(
+        InvalidSettingValueError,
+      )
+    })
+  })
+
+  describe('partition (string descriptor)', () => {
+    it('keeps a valid network.host beside integer and boolean entries', () => {
+      const result = validator.partition({
+        'agentPool.maxSize': 25,
+        'network.host': '0.0.0.0',
+        'update.checkForUpdates': true,
+      })
+      expect(result.valid).to.deep.equal({
+        'agentPool.maxSize': 25,
+        'network.host': '0.0.0.0',
+        'update.checkForUpdates': true,
+      })
+      expect(result.invalid).to.deep.equal([])
+    })
+
+    it('puts an empty network.host into invalid', () => {
+      const result = validator.partition({'network.host': ''})
+      expect(result.valid).to.deep.equal({})
+      expect(result.invalid).to.have.lengthOf(1)
+      expect(result.invalid[0].key).to.equal('network.host')
+    })
+
+    it('puts a numeric network.host value into invalid', () => {
+      const result = validator.partition({'network.host': 0})
+      expect(result.valid).to.deep.equal({})
+      expect(result.invalid).to.have.lengthOf(1)
+      expect(result.invalid[0].key).to.equal('network.host')
+      expect(result.invalid[0].value).to.equal(0)
+    })
+  })
 })

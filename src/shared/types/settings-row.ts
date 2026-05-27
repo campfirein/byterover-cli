@@ -1,4 +1,4 @@
-export type SettingsRowCategory = 'concurrency' | 'llm' | 'other' | 'task-history' | 'updates'
+export type SettingsRowCategory = 'concurrency' | 'llm' | 'network' | 'other' | 'task-history' | 'updates'
 export type SettingsRowUnit = 'count' | 'ms'
 
 /**
@@ -12,8 +12,8 @@ export type SettingsRowUnit = 'count' | 'ms'
  */
 export interface SettingsRow {
   readonly category: SettingsRowCategory
-  readonly current: boolean | number
-  readonly default: boolean | number
+  readonly current: boolean | number | string
+  readonly default: boolean | number | string
   readonly description: string
   readonly displayCurrent: string
   readonly displayDefault: string
@@ -24,18 +24,19 @@ export interface SettingsRow {
   readonly min?: number
   readonly modified: boolean
   readonly restartRequired: boolean
-  readonly type: 'boolean' | 'integer'
+  readonly type: 'boolean' | 'integer' | 'string'
   readonly unit?: SettingsRowUnit
 }
 
 export type RowParseResult =
-  | {readonly displayValue: string; readonly kind: 'ok'; readonly value: number}
+  | {readonly displayValue: string; readonly kind: 'ok'; readonly value: number | string}
   | {readonly kind: 'error'; readonly message: string}
 
 export const CATEGORY_ORDER: readonly SettingsRowCategory[] = [
   'concurrency',
   'llm',
   'task-history',
+  'network',
   'updates',
   'other',
 ]

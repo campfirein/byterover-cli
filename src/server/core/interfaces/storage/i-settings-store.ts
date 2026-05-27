@@ -1,4 +1,4 @@
-import type {SettingItem} from '../../domain/entities/settings.js'
+import type {SettingItem, SettingValue} from '../../domain/entities/settings.js'
 
 /**
  * Diagnostic view of the on-disk settings file consumed by the daemon
@@ -12,7 +12,7 @@ export type SettingsStartupSnapshot = {
    * Daemon startup logs this once; all values fall back to defaults.
    */
   readonly parseError?: string
-  readonly values: Readonly<Record<string, boolean | number>>
+  readonly values: Readonly<Record<string, SettingValue>>
 }
 
 /**

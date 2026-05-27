@@ -3,7 +3,7 @@ import {existsSync} from 'node:fs'
 import {mkdir, readFile, rename, unlink, writeFile} from 'node:fs/promises'
 import {join} from 'node:path'
 
-import type {SettingItem} from '../../core/domain/entities/settings.js'
+import type {SettingItem, SettingValue} from '../../core/domain/entities/settings.js'
 import type {ISettingsStore, SettingsStartupSnapshot} from '../../core/interfaces/storage/i-settings-store.js'
 
 import {SETTINGS_FILE, SETTINGS_SCHEMA_VERSION} from '../../constants.js'
@@ -132,7 +132,7 @@ export class FileSettingsStore implements ISettingsStore {
     return join(this.baseDir, SETTINGS_FILE)
   }
 
-  private async readOverrides(): Promise<Record<string, boolean | number>> {
+  private async readOverrides(): Promise<Record<string, SettingValue>> {
     const raw = await this.readRawValues()
     const {valid} = this.validator.partition(raw)
     return {...valid}

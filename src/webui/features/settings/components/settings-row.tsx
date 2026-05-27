@@ -23,10 +23,10 @@ type Props = {
 export function SettingsRow({row}: Props) {
   if (row.type === 'boolean') return <BooleanSettingsRow row={row} />
 
-  return <IntegerSettingsRow row={row} />
+  return <TextSettingsRow row={row} />
 }
 
-function IntegerSettingsRow({row}: Props) {
+function TextSettingsRow({row}: Props) {
   const setMutation = useSetSetting()
   const resetMutation = useResetSetting()
   const markDirty = useRestartBannerStore((s) => s.markDirty)
@@ -45,7 +45,10 @@ function IntegerSettingsRow({row}: Props) {
   const label = labelFor(row.key)
   const isBusy = setMutation.isPending || resetMutation.isPending
   const isMs = row.unit === 'ms'
-  const toastValue = (value: number) => (isMs ? `${formatCount(value)} milliseconds` : formatCount(value))
+  const toastValue = (value: number | string) => {
+    if (typeof value !== 'number') return value
+    return isMs ? `${formatCount(value)} milliseconds` : formatCount(value)
+  }
 
   const commit = async () => {
     const parsed = parseRowInput(row, buffer)

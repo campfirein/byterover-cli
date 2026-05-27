@@ -222,6 +222,48 @@ describe('brv settings (index)', () => {
     expect(llmIdx).to.be.lessThan(historyIdx)
   })
 
+  it('renders the NETWORK section with a string-typed row (ENG-2968)', async () => {
+    const requestStub = mockClient.requestWithAck as sinon.SinonStub
+    requestStub.resolves({
+      items: [
+        {
+          category: 'concurrency',
+          current: 10,
+          default: 10,
+          description: 'c',
+          key: 'agentPool.maxSize',
+          max: 100,
+          min: 1,
+          restartRequired: true,
+          type: 'integer',
+        },
+        {
+          category: 'network',
+          current: '0.0.0.0',
+          default: '127.0.0.1',
+          description: 'Host interface the daemon binds to.',
+          key: 'network.host',
+          restartRequired: true,
+          type: 'string',
+        },
+      ],
+    })
+
+    await createCommand().run()
+    const output = loggedMessages.join('\n')
+
+    expect(output).to.include('NETWORK')
+    const hostRow = loggedMessages.find((m) => m.includes('network.host'))
+    expect(hostRow, 'row for network.host').to.exist
+    expect(hostRow).to.include('0.0.0.0')
+    expect(hostRow).to.include('127.0.0.1')
+
+    // NETWORK section must appear AFTER LLM and BEFORE TASK HISTORY (per CATEGORY_ORDER).
+    const concurrencyIdx = loggedMessages.findIndex((m) => m.includes('CONCURRENCY'))
+    const networkIdx = loggedMessages.findIndex((m) => m.includes('NETWORK'))
+    expect(concurrencyIdx).to.be.lessThan(networkIdx)
+  })
+
   it('adds the coupling hint inline on llm.requestTimeoutMs only', async () => {
     const requestStub = mockClient.requestWithAck as sinon.SinonStub
     requestStub.resolves({

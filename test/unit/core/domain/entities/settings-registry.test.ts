@@ -23,6 +23,7 @@ describe('settings registry — M7 T2 shape', () => {
       expect(descriptor.category, `key ${descriptor.key} missing category`).to.be.oneOf([
         'concurrency',
         'llm',
+        'network',
         'task-history',
         'updates',
       ])
@@ -76,6 +77,43 @@ describe('settings registry — M7 T2 shape', () => {
         `key ${descriptor.key} description is ${descriptor.description.length} chars (> 80): "${descriptor.description}"`,
       ).to.be.at.most(80)
     }
+  })
+
+  describe('network.host (ENG-2968 string descriptor)', () => {
+    it('exposes NETWORK_HOST on SETTINGS_KEYS', () => {
+      expect(SETTINGS_KEYS.NETWORK_HOST).to.equal('network.host')
+    })
+
+    it('registers a descriptor for network.host', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.NETWORK_HOST)
+      expect(descriptor, 'descriptor must exist in SETTINGS_REGISTRY').to.exist
+    })
+
+    it('declares the descriptor as type=string with default=127.0.0.1', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.NETWORK_HOST)
+      expect(descriptor?.type).to.equal('string')
+      expect(descriptor?.default).to.equal('127.0.0.1')
+    })
+
+    it('marks the descriptor as requiring a daemon restart', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.NETWORK_HOST)
+      expect(descriptor?.restartRequired).to.equal(true)
+    })
+
+    it('groups the descriptor under category=network', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.NETWORK_HOST)
+      expect(descriptor?.category).to.equal('network')
+    })
+
+    it('narrows to StringSettingDescriptor when descriptor.type === string', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.NETWORK_HOST)
+      if (descriptor?.type === 'string') {
+        const defaultValue: string = descriptor.default
+        expect(defaultValue).to.equal('127.0.0.1')
+      } else {
+        expect.fail('expected string descriptor for network.host')
+      }
+    })
   })
 
   describe('update.checkForUpdates (T1 boolean descriptor)', () => {

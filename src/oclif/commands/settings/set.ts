@@ -119,7 +119,7 @@ export default class SettingsSet extends Command {
 
   protected async writeSetting(
     key: string,
-    value: boolean | number,
+    value: boolean | number | string,
     options?: DaemonClientOptions,
   ): Promise<SettingsSetResponse> {
     return withDaemonRetry<SettingsSetResponse>(
@@ -131,7 +131,7 @@ export default class SettingsSet extends Command {
 }
 
 type ParseResult =
-  | {readonly display: string; readonly kind: 'ok'; readonly value: boolean | number}
+  | {readonly display: string; readonly kind: 'ok'; readonly value: boolean | number | string}
   | {readonly kind: 'error'; readonly message: string}
 
 const BOOLEAN_TOKENS = new Map<string, boolean>([
@@ -149,8 +149,18 @@ const BOOLEAN_TOKENS_HINT = 'true, false, on, off, 1, 0, yes, no'
 
 function parseValue(descriptor: SettingsItemDTO, raw: string): ParseResult {
   if (descriptor.type === 'boolean') return parseAsBoolean(descriptor, raw)
+  if (descriptor.type === 'string') return parseAsString(descriptor, raw)
   if (descriptor.unit === 'ms') return parseAsDuration(descriptor, raw)
   return parseAsCount(descriptor, raw)
+}
+
+function parseAsString(descriptor: SettingsItemDTO, raw: string): ParseResult {
+  const trimmed = raw.trim()
+  if (trimmed.length === 0) {
+    return {kind: 'error', message: `${descriptor.key} expects a non-empty string.`}
+  }
+
+  return {display: trimmed, kind: 'ok', value: trimmed}
 }
 
 function parseAsBoolean(descriptor: SettingsItemDTO, raw: string): ParseResult {

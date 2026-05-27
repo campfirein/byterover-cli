@@ -40,6 +40,7 @@ import {
   BRV_DIR,
   HEARTBEAT_FILE,
   TASK_HEARTBEAT_INTERVAL_MS,
+  TRANSPORT_HOST,
   WEBUI_DEFAULT_PORT,
 } from '../../constants.js'
 import {
@@ -203,6 +204,18 @@ async function main(): Promise<void> {
     // 4a. Construct transport server. start() is deferred to step 11 so all handlers register before sockets connect.
     transportServer = new SocketIOTransportServer()
 
+    // Bootstrap settings BEFORE binding any server: `network.host` (with
+    // optional `BRV_TRANSPORT_HOST` env override) determines the interface
+    // both the WebUI HTTP server and the Socket.IO transport bind to.
+    // task-history cache configuration still happens at step 7 with the
+    // rest of the resolved settings.
+    const settingsStore = new FileSettingsStore()
+    const resolvedSettings = await bootstrapSettings({log, store: settingsStore})
+    const {transportHost} = resolvedSettings
+    if (transportHost !== TRANSPORT_HOST) {
+      log(`Daemon will bind on ${transportHost} (TRANSPORT_HOST default is ${TRANSPORT_HOST})`)
+    }
+
     // 4b. Start Web UI server on stable port (separate from transport)
     const daemonDir = dirname(fileURLToPath(import.meta.url))
     const projectRoot = join(daemonDir, '..', '..', '..', '..')
@@ -223,9 +236,9 @@ async function main(): Promise<void> {
 
     webuiServer = new WebUiServer(app)
     try {
-      await webuiServer.start(webuiPort)
+      await webuiServer.start(webuiPort, transportHost)
       writeWebuiState(webuiPort)
-      log(`Web UI server started on port ${webuiPort}`)
+      log(`Web UI server started on ${transportHost}:${webuiPort}`)
     } catch (webuiError) {
       log(
         `Web UI port ${webuiPort} is already in use. Web UI will not be available. Set BRV_WEBUI_PORT=<port> to use a different port.`,
@@ -254,11 +267,9 @@ async function main(): Promise<void> {
     daemonResilience.install()
 
     // 7. Create services (auth, project state, agent pool, handlers)
-    // Settings bootstrap: read settings.json once, apply user overrides to
-    // AgentPool and task-history cache. Missing or invalid entries fall
-    // back to defaults; parseErrors and rejected entries are logged here.
-    const settingsStore = new FileSettingsStore()
-    const resolvedSettings = await bootstrapSettings({log, store: settingsStore})
+    // Settings were already loaded above (before WebUI/transport bind) so
+    // `network.host` could drive the bind interface; here we just apply the
+    // remaining startup-snapshot fields to their downstream consumers.
     configureTaskHistoryStoreCache({maxEntries: resolvedSettings.taskHistoryMaxEntries})
 
     const projectRegistry = new ProjectRegistry({log})
@@ -643,9 +654,13 @@ async function main(): Promise<void> {
       const newApp = express()
       newApp.use(newWebuiApp)
 
-      // Start on new port
+      // Start on new port — reuse the host captured at daemon boot so the
+      // WebUI HTTP server stays in lockstep with the Socket.IO bind. A mid-
+      // runtime settings change should not silently re-bind on a different
+      // interface (would break the browser's cross-origin contract until
+      // the next daemon restart).
       webuiServer = new WebUiServer(newApp)
-      await webuiServer.start(newPort)
+      await webuiServer.start(newPort, transportHost)
       writeWebuiState(newPort)
       writeWebuiPreferredPort(newPort)
       log(`Web UI server restarted on port ${newPort} (persisted)`)
@@ -731,8 +746,8 @@ async function main(): Promise<void> {
     })
 
     // 11. All handlers registered — open the socket port now.
-    await transportServer.start(port)
-    log(`Transport server started on port ${port}`)
+    await transportServer.start(port, transportHost)
+    log(`Transport server started on ${transportHost}:${port}`)
 
     log(`Daemon fully started (PID: ${process.pid}, port: ${port})`)
   } catch (error: unknown) {
