@@ -50,7 +50,12 @@ function telemetryFields(record: CurateUsageRecord | undefined): {
   }
 }
 
-export const CURATE_TASK_TYPES = ['curate', 'curate-folder'] as const
+// `curate-html-direct` is the pre-ENG-2925 name still dispatched by the
+// daemon; `curate-tool-mode` is the post-rename name. Both are listed
+// so M12 state init in AnalyticsHook kicks in for tool-mode curates.
+// The analytics wire canonicalizes both to `curate-tool-mode` via
+// `toAnalyticsTaskType` in `analytics-hook.ts`.
+export const CURATE_TASK_TYPES = ['curate', 'curate-folder', 'curate-html-direct', 'curate-tool-mode'] as const
 
 // ── Summary computation ───────────────────────────────────────────────────────
 

@@ -114,6 +114,22 @@ describe('AnalyticsHook', () => {
     hook.setAnalyticsClient(bundle.client)
   })
 
+  // M14.3 added unconditional task_created / task_completed / task_failed
+  // emits on every lifecycle callback. Pre-M14.3 tests asserted only the
+  // M12 per-flavor curate_*/query_completed emits; filter the stub calls
+  // so existing assertions stay focused on M12 behavior. New M14.3
+  // coverage lives in `analytics-hook-m14.test.ts`.
+  const filterM12 = (stub: sinon.SinonStub): sinon.SinonSpyCall[] =>
+    stub.getCalls().filter((c) => {
+      const eventName = c.args[0]
+      return (
+        eventName !== AnalyticsEventNames.TASK_CREATED &&
+        eventName !== AnalyticsEventNames.TASK_COMPLETED &&
+        eventName !== AnalyticsEventNames.TASK_FAILED
+      )
+    })
+  const m12Calls = (): sinon.SinonSpyCall[] => filterM12(trackStub)
+
   describe('curate task flow', () => {
     it('emits curate_operation_applied per successful op + bumps matching counter; no event for failed op', async () => {
       const task = buildCurateTask()
@@ -126,9 +142,9 @@ describe('AnalyticsHook', () => {
       ])
       await hook.onToolResult(task.taskId, payload)
 
-      expect(trackStub.callCount).to.equal(2)
-      expect(trackStub.firstCall.args[0]).to.equal(AnalyticsEventNames.CURATE_OPERATION_APPLIED)
-      const firstProps = trackStub.firstCall.args[1] as Record<string, unknown>
+      expect(m12Calls()).to.have.lengthOf(2)
+      expect(m12Calls()[0].args[0]).to.equal(AnalyticsEventNames.CURATE_OPERATION_APPLIED)
+      const firstProps = m12Calls()[0].args[1] as Record<string, unknown>
       expect(firstProps.absolute_path).to.equal('/a.md')
       expect(firstProps.knowledge_path).to.equal('notes/a')
       expect(firstProps.operation_type).to.equal('ADD')
@@ -137,7 +153,7 @@ describe('AnalyticsHook', () => {
       expect(firstProps).to.not.have.property('keywords')
       expect(firstProps).to.not.have.property('related')
 
-      const secondProps = trackStub.secondCall.args[1] as Record<string, unknown>
+      const secondProps = m12Calls()[1].args[1] as Record<string, unknown>
       expect(secondProps.needs_review).to.equal(true)
       expect(secondProps.operation_type).to.equal('UPDATE')
     })
@@ -157,9 +173,9 @@ describe('AnalyticsHook', () => {
 
       await hook.onTaskCompleted(task.taskId, '', task)
 
-      expect(trackStub.calledOnce).to.equal(true)
-      expect(trackStub.firstCall.args[0]).to.equal(AnalyticsEventNames.CURATE_RUN_COMPLETED)
-      const props = trackStub.firstCall.args[1] as Record<string, unknown>
+      expect(m12Calls()).to.have.lengthOf(1)
+      expect(m12Calls()[0].args[0]).to.equal(AnalyticsEventNames.CURATE_RUN_COMPLETED)
+      const props = m12Calls()[0].args[1] as Record<string, unknown>
       expect(props.task_id).to.equal(task.taskId)
       expect(props.task_type).to.equal('curate')
       expect(props.outcome).to.equal('completed')
@@ -186,7 +202,7 @@ describe('AnalyticsHook', () => {
 
       await hook.onTaskCompleted(task.taskId, '', task)
 
-      const props = trackStub.firstCall.args[1] as Record<string, unknown>
+      const props = m12Calls()[0].args[1] as Record<string, unknown>
       expect(props.outcome).to.equal('partial')
       expect(props.operations_failed).to.equal(1)
     })
@@ -198,7 +214,7 @@ describe('AnalyticsHook', () => {
 
       await hook.onTaskError(task.taskId, 'boom', task)
 
-      const props = trackStub.firstCall.args[1] as Record<string, unknown>
+      const props = m12Calls()[0].args[1] as Record<string, unknown>
       expect(props.outcome).to.equal('error')
     })
 
@@ -209,7 +225,7 @@ describe('AnalyticsHook', () => {
 
       await hook.onTaskCancelled(task.taskId, task)
 
-      const props = trackStub.firstCall.args[1] as Record<string, unknown>
+      const props = m12Calls()[0].args[1] as Record<string, unknown>
       expect(props.outcome).to.equal('cancelled')
     })
 
@@ -227,7 +243,7 @@ describe('AnalyticsHook', () => {
 
       await hook.onTaskCompleted(task.taskId, '', task)
 
-      const props = trackStub.firstCall.args[1] as Record<string, unknown>
+      const props = m12Calls()[0].args[1] as Record<string, unknown>
       expect(props.operations_added).to.equal(1)
       expect(props.operations_updated).to.equal(1)
     })
@@ -246,7 +262,7 @@ describe('AnalyticsHook', () => {
 
       await hook.onTaskCompleted(task.taskId, '', task)
 
-      const props = trackStub.firstCall.args[1] as Record<string, unknown>
+      const props = m12Calls()[0].args[1] as Record<string, unknown>
       expect(props.pending_review_count).to.equal(2)
     })
 
@@ -255,7 +271,7 @@ describe('AnalyticsHook', () => {
       await hook.onTaskCreate(task)
       await hook.onTaskCompleted(task.taskId, '', task)
 
-      const props = trackStub.firstCall.args[1] as Record<string, unknown>
+      const props = m12Calls()[0].args[1] as Record<string, unknown>
       expect(props.task_type).to.equal('curate-folder')
     })
 
@@ -267,7 +283,9 @@ describe('AnalyticsHook', () => {
         buildToolResult([{needsReview: false, path: 'a', status: 'success', type: 'ADD'}]),
       )
 
-      expect(trackStub.called).to.equal(false)
+      // No curate_operation_applied for an op missing filePath. (TASK_CREATED
+      // still fires from onTaskCreate — filtered out via m12Calls().)
+      expect(m12Calls()).to.have.lengthOf(0)
     })
   })
 
@@ -298,9 +316,9 @@ describe('AnalyticsHook', () => {
       } as QueryResultMetadata)
       await hook.onTaskCompleted(task.taskId, '', task)
 
-      expect(trackStub.calledOnce).to.equal(true)
-      expect(trackStub.firstCall.args[0]).to.equal(AnalyticsEventNames.QUERY_COMPLETED)
-      const props = trackStub.firstCall.args[1] as Record<string, unknown>
+      expect(m12Calls()).to.have.lengthOf(1)
+      expect(m12Calls()[0].args[0]).to.equal(AnalyticsEventNames.QUERY_COMPLETED)
+      const props = m12Calls()[0].args[1] as Record<string, unknown>
       expect(props.task_id).to.equal(task.taskId)
       expect(props.task_type).to.equal('query')
       expect(props.outcome).to.equal('completed')
@@ -336,7 +354,7 @@ describe('AnalyticsHook', () => {
       await hook.onTaskCreate(task)
       await hook.onTaskCompleted(task.taskId, '', task)
 
-      const props = trackStub.firstCall.args[1] as Record<string, unknown>
+      const props = m12Calls()[0].args[1] as Record<string, unknown>
       const paths = props.read_paths_with_metadata as Array<Record<string, unknown>>
       expect(paths).to.have.lengthOf(10)
       expect(props.read_doc_count).to.equal(15) // distinct count NOT capped
@@ -357,7 +375,7 @@ describe('AnalyticsHook', () => {
         } as QueryResultMetadata)
         await localHook.onTaskCompleted(task.taskId, '', task)
 
-        const props = localBundle.trackStub.firstCall.args[1] as Record<string, unknown>
+        const props = filterM12(localBundle.trackStub)[0].args[1] as Record<string, unknown>
         expect(props.cache_hit).to.equal(true)
       })
     }
@@ -377,7 +395,7 @@ describe('AnalyticsHook', () => {
         } as QueryResultMetadata)
         await localHook.onTaskCompleted(task.taskId, '', task)
 
-        const props = localBundle.trackStub.firstCall.args[1] as Record<string, unknown>
+        const props = filterM12(localBundle.trackStub)[0].args[1] as Record<string, unknown>
         expect(props.cache_hit).to.equal(false)
       })
     }
@@ -387,7 +405,7 @@ describe('AnalyticsHook', () => {
       await hook.onTaskCreate(task)
       await hook.onTaskCompleted(task.taskId, '', task)
 
-      const props = trackStub.firstCall.args[1] as Record<string, unknown>
+      const props = m12Calls()[0].args[1] as Record<string, unknown>
       expect(props.tier).to.equal(undefined)
       expect(props.cache_hit).to.equal(false)
       expect(props.matched_doc_count).to.equal(0)
@@ -398,7 +416,7 @@ describe('AnalyticsHook', () => {
       await hook.onTaskCreate(task)
       await hook.onTaskCompleted(task.taskId, '', task)
 
-      const props = trackStub.firstCall.args[1] as Record<string, unknown>
+      const props = m12Calls()[0].args[1] as Record<string, unknown>
       expect(props).to.not.have.property('read_paths_with_metadata')
       // Sanity: counts are zero, not omitted.
       expect(props.read_doc_count).to.equal(0)
@@ -411,7 +429,7 @@ describe('AnalyticsHook', () => {
 
       await hook.onTaskError(task.taskId, 'boom', task)
 
-      const props = trackStub.firstCall.args[1] as Record<string, unknown>
+      const props = m12Calls()[0].args[1] as Record<string, unknown>
       expect(props.outcome).to.equal('error')
     })
 
@@ -421,7 +439,7 @@ describe('AnalyticsHook', () => {
 
       await hook.onTaskCancelled(task.taskId, task)
 
-      const props = trackStub.firstCall.args[1] as Record<string, unknown>
+      const props = m12Calls()[0].args[1] as Record<string, unknown>
       expect(props.outcome).to.equal('cancelled')
     })
   })
@@ -435,18 +453,19 @@ describe('AnalyticsHook', () => {
       hook.cleanup(curate.taskId)
       hook.cleanup(query.taskId)
 
-      // After cleanup, terminal hooks should be no-ops
+      // After cleanup, M12 per-flavor emits must NOT fire (no state to read).
+      // M14.3 generic TASK_COMPLETED still fires unconditionally — filtered.
       trackStub.resetHistory()
       await hook.onTaskCompleted(curate.taskId, '', curate)
       await hook.onTaskCompleted(query.taskId, '', query)
-      expect(trackStub.called).to.equal(false)
+      expect(m12Calls()).to.have.lengthOf(0)
     })
 
-    it('ignores unknown task types (no state created)', async () => {
+    it('ignores unknown task types (no M12 state created; only generic task_* emits fire)', async () => {
       const task = buildCurateTask({taskId: 'task-unknown', type: 'unknown' as TaskInfo['type']})
       await hook.onTaskCreate(task)
       await hook.onTaskCompleted(task.taskId, '', task)
-      expect(trackStub.called).to.equal(false)
+      expect(m12Calls()).to.have.lengthOf(0)
     })
 
     it('swallows analyticsClient.track throws (does not propagate)', async () => {
@@ -497,7 +516,7 @@ describe('AnalyticsHook', () => {
           buildToolResult([{filePath, needsReview: false, path: 'a', status: 'success', type: 'ADD'}]),
         )
 
-        const props = trackStub.firstCall.args[1] as Record<string, unknown>
+        const props = m12Calls()[0].args[1] as Record<string, unknown>
         expect(props.tags).to.deep.equal(['t1', 't2'])
         expect(props.keywords).to.deep.equal(['x', 'y'])
         expect(props.related).to.deep.equal(['z'])
@@ -512,7 +531,7 @@ describe('AnalyticsHook', () => {
           buildToolResult([{filePath, needsReview: false, path: 'gone', status: 'success', type: 'DELETE'}]),
         )
 
-        const props = trackStub.firstCall.args[1] as Record<string, unknown>
+        const props = m12Calls()[0].args[1] as Record<string, unknown>
         expect(props).to.not.have.property('tags')
         expect(props).to.not.have.property('keywords')
         expect(props).to.not.have.property('related')
@@ -527,7 +546,7 @@ describe('AnalyticsHook', () => {
           buildToolResult([{filePath, needsReview: false, path: 'm', status: 'success', type: 'UPDATE'}]),
         )
 
-        const props = trackStub.firstCall.args[1] as Record<string, unknown>
+        const props = m12Calls()[0].args[1] as Record<string, unknown>
         expect(props).to.not.have.property('tags')
       })
 
@@ -542,7 +561,7 @@ describe('AnalyticsHook', () => {
           buildToolResult([{filePath, needsReview: false, path: 'b', status: 'success', type: 'UPDATE'}]),
         )
 
-        const props = trackStub.firstCall.args[1] as Record<string, unknown>
+        const props = m12Calls()[0].args[1] as Record<string, unknown>
         expect(props).to.not.have.property('tags')
       })
 
@@ -559,7 +578,7 @@ describe('AnalyticsHook', () => {
           buildToolResult([{filePath, needsReview: false, path: 'h', status: 'success', type: 'UPDATE'}]),
         )
 
-        const props = trackStub.firstCall.args[1] as Record<string, unknown>
+        const props = m12Calls()[0].args[1] as Record<string, unknown>
         const tags = props.tags as string[]
         expect(tags).to.have.lengthOf(50)
         expect(tags[0]).to.have.lengthOf(256)
@@ -580,7 +599,7 @@ describe('AnalyticsHook', () => {
           buildToolResult([{filePath, needsReview: false, path: 'g', status: 'success', type: 'UPDATE'}]),
         )
 
-        const props = disabledBundle.trackStub.firstCall.args[1] as Record<string, unknown>
+        const props = filterM12(disabledBundle.trackStub)[0].args[1] as Record<string, unknown>
         expect(props).to.not.have.property('tags')
       })
     })
@@ -602,7 +621,7 @@ describe('AnalyticsHook', () => {
         await hook.onTaskCreate(task)
         await hook.onTaskCompleted(task.taskId, '', task)
 
-        const props = trackStub.firstCall.args[1] as Record<string, unknown>
+        const props = m12Calls()[0].args[1] as Record<string, unknown>
         const paths = props.read_paths_with_metadata as Array<Record<string, unknown>>
         const byPath = Object.fromEntries(paths.map((p) => [p.absolute_path, p]))
         expect(byPath[a].tags).to.deep.equal(['ta'])
@@ -626,7 +645,7 @@ describe('AnalyticsHook', () => {
         await hook.onTaskCreate(task)
         await hook.onTaskCompleted(task.taskId, '', task)
 
-        const props = trackStub.firstCall.args[1] as Record<string, unknown>
+        const props = m12Calls()[0].args[1] as Record<string, unknown>
         const paths = props.read_paths_with_metadata as Array<Record<string, unknown>>
         const byPath = Object.fromEntries(paths.map((p) => [p.absolute_path, p]))
         expect(byPath[real].tags).to.deep.equal(['ok'])
@@ -651,7 +670,7 @@ describe('AnalyticsHook', () => {
         await disabledHook.onTaskCreate(task)
         await disabledHook.onTaskCompleted(task.taskId, '', task)
 
-        const props = disabledBundle.trackStub.firstCall.args[1] as Record<string, unknown>
+        const props = filterM12(disabledBundle.trackStub)[0].args[1] as Record<string, unknown>
         const paths = props.read_paths_with_metadata as Array<Record<string, unknown>>
         expect(paths[0]).to.not.have.property('tags')
       })
@@ -690,9 +709,9 @@ describe('AnalyticsHook', () => {
 
       await Promise.all([p1, p2])
 
-      expect(bundle.trackStub.callCount).to.equal(2)
-      const first = bundle.trackStub.firstCall.args[1] as Record<string, unknown>
-      const second = bundle.trackStub.secondCall.args[1] as Record<string, unknown>
+      expect(filterM12(bundle.trackStub)).to.have.lengthOf(2)
+      const first = filterM12(bundle.trackStub)[0].args[1] as Record<string, unknown>
+      const second = filterM12(bundle.trackStub)[1].args[1] as Record<string, unknown>
       expect(first.absolute_path, 'first emit must be op1').to.equal('/op1.md')
       expect(second.absolute_path, 'second emit must be op2').to.equal('/op2.md')
     })
@@ -717,15 +736,16 @@ describe('AnalyticsHook', () => {
       const opPromise = orderHook.onToolResult(task.taskId, payload)
       const completePromise = orderHook.onTaskCompleted(task.taskId, '', task)
 
-      // Neither emit can have fired yet — read is still pending.
-      expect(bundle.trackStub.called, 'no emit before read settles').to.equal(false)
+      // Neither M12 emit can have fired yet — read is still pending. (TASK_CREATED
+      // from M14.3 already fired during onTaskCreate but doesn't gate on the read.)
+      expect(filterM12(bundle.trackStub), 'no M12 emit before read settles').to.have.lengthOf(0)
 
       d.resolve(buildFrontmatterDoc('tag-x'))
       await Promise.all([opPromise, completePromise])
 
-      expect(bundle.trackStub.callCount).to.equal(2)
-      expect(bundle.trackStub.firstCall.args[0]).to.equal(AnalyticsEventNames.CURATE_OPERATION_APPLIED)
-      expect(bundle.trackStub.secondCall.args[0]).to.equal(AnalyticsEventNames.CURATE_RUN_COMPLETED)
+      expect(filterM12(bundle.trackStub)).to.have.lengthOf(2)
+      expect(filterM12(bundle.trackStub)[0].args[0]).to.equal(AnalyticsEventNames.CURATE_OPERATION_APPLIED)
+      expect(filterM12(bundle.trackStub)[1].args[0]).to.equal(AnalyticsEventNames.CURATE_RUN_COMPLETED)
     })
 
     it('readFile rejection is swallowed: emit fires with frontmatter fields omitted; daemon does not crash', async () => {
@@ -743,8 +763,8 @@ describe('AnalyticsHook', () => {
 
       await errorHook.onToolResult(task.taskId, payload)
 
-      expect(bundle.trackStub.calledOnce).to.equal(true)
-      const props = bundle.trackStub.firstCall.args[1] as Record<string, unknown>
+      expect(filterM12(bundle.trackStub)).to.have.lengthOf(1)
+      const props = filterM12(bundle.trackStub)[0].args[1] as Record<string, unknown>
       expect(props.absolute_path).to.equal('/missing.md')
       expect(props).to.not.have.property('keywords')
       expect(props).to.not.have.property('tags')
@@ -769,7 +789,10 @@ describe('AnalyticsHook', () => {
       // directly, but the assertion below catches the leak: a new task with the same
       // id observes a fresh in-memory state.
       await cleanupHook.onTaskCreate(task)
-      expect(bundle.trackStub.callCount, 'no replay after cleanup').to.equal(2)
+      // M12 emits: 1 curate_operation_applied + 1 curate_run_completed = 2.
+      // Re-creating the task after cleanup must NOT replay either; it only
+      // adds another TASK_CREATED (filtered out below).
+      expect(filterM12(bundle.trackStub), 'no replay after cleanup').to.have.lengthOf(2)
     })
   })
 })

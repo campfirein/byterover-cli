@@ -322,16 +322,20 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
 
     const sequence = getEmitSequenceForTask(taskId)
 
-    // Exactly 50 per-op emits + 1 terminal emit, terminal LAST.
+    // M14.3: TASK_CREATED → 50 per-op → CURATE_RUN_COMPLETED → TASK_COMPLETED.
     expect(
       sequence.filter((s) => s === AnalyticsEventNames.CURATE_OPERATION_APPLIED),
       'exactly 50 per-op emits',
     ).to.have.lengthOf(50)
     expect(
       sequence.filter((s) => s === AnalyticsEventNames.CURATE_RUN_COMPLETED),
-      'exactly 1 terminal emit',
+      'exactly 1 M12 terminal emit',
     ).to.have.lengthOf(1)
-    expect(sequence.at(-1), 'terminal is last in sequence').to.equal(AnalyticsEventNames.CURATE_RUN_COMPLETED)
+    expect(sequence.at(-1), 'M14.3 task_completed is last in sequence').to.equal(AnalyticsEventNames.TASK_COMPLETED)
+    expect(
+      sequence.at(-2),
+      'M12 curate_run_completed lands immediately before the M14.3 terminal',
+    ).to.equal(AnalyticsEventNames.CURATE_RUN_COMPLETED)
 
     // And per-op emit order matches arrival order.
     const opEmits = getCurateOpEmits(taskId)
@@ -375,15 +379,19 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
 
     await Promise.all([...opPromises, ...terminalPromises])
 
-    // Every task must end with CURATE_RUN_COMPLETED preceded by 10 per-op emits in arrival order.
+    // Every task: TASK_CREATED → 10 per-op → CURATE_RUN_COMPLETED → TASK_COMPLETED.
     for (const id of taskIds) {
       const sequence = getEmitSequenceForTask(id)
-      expect(sequence, `${id} sequence length`).to.have.lengthOf(11)
+      expect(sequence, `${id} sequence length`).to.have.lengthOf(13)
+      expect(sequence[0], `${id}: first is task_created`).to.equal(AnalyticsEventNames.TASK_CREATED)
       expect(
-        sequence.slice(0, 10).every((s) => s === AnalyticsEventNames.CURATE_OPERATION_APPLIED),
-        `${id}: first 10 are per-op emits`,
+        sequence.slice(1, 11).every((s) => s === AnalyticsEventNames.CURATE_OPERATION_APPLIED),
+        `${id}: 10 per-op emits between task_created and the terminals`,
       ).to.equal(true)
-      expect(sequence[10], `${id}: last is run-completed`).to.equal(AnalyticsEventNames.CURATE_RUN_COMPLETED)
+      expect(sequence[11], `${id}: M12 run-completed precedes the M14.3 terminal`).to.equal(
+        AnalyticsEventNames.CURATE_RUN_COMPLETED,
+      )
+      expect(sequence[12], `${id}: M14.3 task_completed is last`).to.equal(AnalyticsEventNames.TASK_COMPLETED)
       const opEmits = getCurateOpEmits(id)
       for (let i = 0; i < 10; i++) {
         expect(opEmits[i].absolute_path, `${id} op #${i} arrival order`).to.equal(specsByTask[id][i].filePath)

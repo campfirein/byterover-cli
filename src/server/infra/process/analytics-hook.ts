@@ -5,6 +5,7 @@ import type {AnalyticsEventName} from '../../../shared/analytics/event-names.js'
 import type {CurateRunCompletedProps} from '../../../shared/analytics/events/curate-run-completed.js'
 import type {PropsArg} from '../../../shared/analytics/events/index.js'
 import type {QueryCompletedProps} from '../../../shared/analytics/events/query-completed.js'
+import type {TaskType} from '../../../shared/analytics/task-types.js'
 import type {LlmToolResultEvent} from '../../core/domain/transport/schemas.js'
 import type {TaskInfo} from '../../core/domain/transport/task-info.js'
 import type {IAnalyticsClient} from '../../core/interfaces/analytics/i-analytics-client.js'
@@ -12,11 +13,24 @@ import type {ITaskLifecycleHook} from '../../core/interfaces/process/i-task-life
 import type {QueryResultMetadata} from './query-log-handler.js'
 
 import {AnalyticsEventNames} from '../../../shared/analytics/event-names.js'
+import {TaskTypes} from '../../../shared/analytics/task-types.js'
 import {parseFrontmatter} from '../../core/domain/knowledge/markdown-writer.js'
 import {extractCurateOperations} from '../../utils/curate-result-parser.js'
 import {processLog} from '../../utils/process-logger.js'
 import {CURATE_TASK_TYPES} from './curate-log-handler.js'
 import {QUERY_TASK_TYPES} from './query-log-handler.js'
+
+/**
+ * Translate the daemon's runtime task type string to the canonical
+ * analytics wire value. The daemon still dispatches the pre-ENG-2925
+ * name `'curate-html-direct'`; analytics emits the post-rename
+ * `'curate-tool-mode'`. Once the rename PR lands, this becomes a
+ * no-op identity and can be inlined.
+ */
+function toAnalyticsTaskType(daemonType: string): TaskType {
+  if (daemonType === 'curate-html-direct') return TaskTypes.CURATE_TOOL_MODE
+  return daemonType as TaskType
+}
 
 // `CURATE_TASK_TYPES` is exported as a readonly tuple; wrap in a Set<string>
 // for cast-free `.has()` lookups against TaskInfo.type (string).
@@ -142,32 +156,52 @@ export class AnalyticsHook implements ITaskLifecycleHook {
 
   async onTaskCancelled(taskId: string, task: TaskInfo): Promise<void> {
     await this.dispatchTerminal(taskId, task, 'cancelled')
+    this.emitTaskFailed(taskId, task)
   }
 
   async onTaskCompleted(taskId: string, _result: string, task: TaskInfo): Promise<void> {
     const state = this.tasks.get(taskId)
-    if (!state) return
+    if (state) {
+      // Drain any in-flight per-op processing so CURATE_OPERATION_APPLIED emits
+      // land BEFORE the run-completion emit on the wire. The chain never
+      // rejects (see `onToolResult`), so this await is safe.
+      await this.pendingByTask.get(taskId)
 
-    // Drain any in-flight per-op processing so CURATE_OPERATION_APPLIED emits
-    // land BEFORE the run-completion emit on the wire. The chain never
-    // rejects (see `onToolResult`), so this await is safe.
-    await this.pendingByTask.get(taskId)
-
-    if (state.flavor === 'curate') {
-      const outcome = state.counters.failed > 0 ? 'partial' : 'completed'
-      this.emit(
-        AnalyticsEventNames.CURATE_RUN_COMPLETED,
-        this.buildCurateRunPayload({outcome, state, task, taskId}),
-      )
-    } else {
-      this.emit(
-        AnalyticsEventNames.QUERY_COMPLETED,
-        await this.buildQueryCompletedPayload({outcome: 'completed', state, task, taskId}),
-      )
+      if (state.flavor === 'curate') {
+        const outcome = state.counters.failed > 0 ? 'partial' : 'completed'
+        this.emit(
+          AnalyticsEventNames.CURATE_RUN_COMPLETED,
+          this.buildCurateRunPayload({outcome, state, task, taskId}),
+        )
+      } else {
+        this.emit(
+          AnalyticsEventNames.QUERY_COMPLETED,
+          await this.buildQueryCompletedPayload({outcome: 'completed', state, task, taskId}),
+        )
+      }
     }
+
+
+    // M14.3 generic funnel emit. Fires for EVERY task type AFTER any
+    // per-flavor M12 emit (terminal-event-last convention).
+    this.emit(AnalyticsEventNames.TASK_COMPLETED, {
+      duration_ms: this.durationMs(task),
+      task_id: taskId,
+      task_type: toAnalyticsTaskType(task.type),
+    })
   }
 
   async onTaskCreate(task: TaskInfo): Promise<void> {
+    // M14.3 generic funnel-entry emit. Fires for EVERY task type BEFORE
+    // the M12 per-flavor state init so the entry event lands even if
+    // state setup throws downstream.
+    this.emit(AnalyticsEventNames.TASK_CREATED, {
+      has_files: (task.files?.length ?? 0) > 0,
+      has_folder: typeof task.folderPath === 'string' && task.folderPath.length > 0,
+      task_id: task.taskId,
+      task_type: toAnalyticsTaskType(task.type),
+    })
+
     if (isCurateLiteral(task.type)) {
       this.tasks.set(task.taskId, {
         counters: {added: 0, deleted: 0, failed: 0, merged: 0, pendingReview: 0, updated: 0},
@@ -184,6 +218,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
 
   async onTaskError(taskId: string, _errorMessage: string, task: TaskInfo): Promise<void> {
     await this.dispatchTerminal(taskId, task, 'error')
+    this.emitTaskFailed(taskId, task)
   }
 
   async onToolResult(taskId: string, payload: LlmToolResultEvent): Promise<void> {
@@ -246,7 +281,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
       outcome,
       pending_review_count: state.counters.pendingReview,
       task_id: taskId,
-      task_type: state.taskType,
+      task_type: toAnalyticsTaskType(state.taskType),
     }
   }
 
@@ -331,7 +366,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
       read_tool_call_count: readToolCallCount,
       search_call_count: searchCallCount,
       task_id: taskId,
-      task_type: 'query',
+      task_type: toAnalyticsTaskType(task.type),
       ...(tier === undefined ? {} : {tier}),
     }
   }
@@ -369,6 +404,20 @@ export class AnalyticsHook implements ITaskLifecycleHook {
     } catch (error) {
       processLog(`AnalyticsHook: ${event} track failed: ${error instanceof Error ? error.message : String(error)}`)
     }
+  }
+
+  /**
+   * M14.3 generic terminal-failure emit. Fired by both onTaskError and
+   * onTaskCancelled AFTER dispatchTerminal so M12 per-flavor failure
+   * emits land first on the wire. Cancellation maps to task_failed
+   * (not a distinct event) per the schema's docblock.
+   */
+  private emitTaskFailed(taskId: string, task: TaskInfo): void {
+    this.emit(AnalyticsEventNames.TASK_FAILED, {
+      duration_ms: this.durationMs(task),
+      task_id: taskId,
+      task_type: toAnalyticsTaskType(task.type),
+    })
   }
 
   private async processToolResult(taskId: string, payload: LlmToolResultEvent): Promise<void> {
