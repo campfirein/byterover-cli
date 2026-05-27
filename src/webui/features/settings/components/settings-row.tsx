@@ -15,6 +15,7 @@ import {useSetSetting} from '../api/set-setting'
 import {labelFor} from '../lib/labels'
 import {useRestartBannerStore} from '../stores/restart-banner-store'
 import {BooleanSettingsRow} from './boolean-settings-row'
+import {EnumSettingsRow} from './enum-settings-row'
 
 type Props = {
   row: SettingsRowData
@@ -22,6 +23,7 @@ type Props = {
 
 export function SettingsRow({row}: Props) {
   if (row.type === 'boolean') return <BooleanSettingsRow row={row} />
+  if (row.type === 'enum') return <EnumSettingsRow row={row} />
 
   return <IntegerSettingsRow row={row} />
 }

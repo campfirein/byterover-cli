@@ -16,38 +16,9 @@
 
 import type {BrvConfigLanguage} from '../entities/brv-config.js'
 
-/**
- * ISO-639-1 code → English language name. Inline (~24 entries) rather than
- * pulling the `iso-639-1` package — runtime dependency surface stays
- * minimal. Codes not in this map degrade gracefully via the raw-code
- * fallback in `buildLanguageClause`.
- */
-export const LANGUAGE_NAMES: Record<string, string> = {
-  ar: 'Arabic',
-  de: 'German',
-  el: 'Greek',
-  en: 'English',
-  es: 'Spanish',
-  fi: 'Finnish',
-  fr: 'French',
-  he: 'Hebrew',
-  hi: 'Hindi',
-  id: 'Indonesian',
-  it: 'Italian',
-  ja: 'Japanese',
-  ko: 'Korean',
-  nl: 'Dutch',
-  no: 'Norwegian',
-  pl: 'Polish',
-  pt: 'Portuguese',
-  ru: 'Russian',
-  sv: 'Swedish',
-  th: 'Thai',
-  tr: 'Turkish',
-  uk: 'Ukrainian',
-  vi: 'Vietnamese',
-  zh: 'Chinese',
-}
+export {LANGUAGE_NAMES} from '../../../../shared/language/language-names.js'
+
+import {LANGUAGE_NAMES as LANGUAGE_NAMES_LOCAL} from '../../../../shared/language/language-names.js'
 
 const AUTO_CLAUSE =
   "Match the user's input language for human-readable content: body text of `<bv-*>` elements, list items, and the `title` / `summary` attributes on `<bv-topic>`. Keep tag names, attribute names, enum values, and the `path` attribute in English for tooling consistency. Code snippets and identifiers stay verbatim."
@@ -83,6 +54,6 @@ export function buildLanguageClause(language?: BrvConfigLanguage): string {
     return AUTO_CLAUSE
   }
 
-  const name = LANGUAGE_NAMES[language.code] ?? `"${language.code}"`
+  const name = LANGUAGE_NAMES_LOCAL[language.code] ?? `"${language.code}"`
   return buildFixedClause(name)
 }

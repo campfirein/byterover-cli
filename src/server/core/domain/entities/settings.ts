@@ -1,3 +1,4 @@
+import {LANGUAGE_NAMES} from '../../../../shared/language/language-names.js'
 import {
   AGENT_LLM_ITERATION_BUDGET_MS,
   AGENT_LLM_REQUEST_TIMEOUT_MS,
@@ -6,7 +7,6 @@ import {
   TASK_HISTORY_DEFAULT_MAX_ENTRIES,
   UPDATE_CHECK_FOR_UPDATES_DEFAULT,
 } from '../../../constants.js'
-import {LANGUAGE_NAMES} from '../render/language-clause.js'
 
 /**
  * High-level concern the setting controls. Drives group headers in CLI

@@ -12,6 +12,11 @@ export function buildSettingsRows(items: readonly SettingsItemDTO[]): SettingsRo
       continue
     }
 
+    if (isEnumItem(item)) {
+      rows.push(toEnumRow(item))
+      continue
+    }
+
     if (isIntegerItem(item)) rows.push(toIntegerRow(item))
   }
 
@@ -22,8 +27,19 @@ export function parseRowInput(row: SettingsRow, raw: string): RowParseResult {
   const trimmed = raw.trim()
   if (trimmed === '') return {kind: 'error', message: 'Value is required'}
 
+  if (row.type === 'enum') return parseAsEnum(row, raw)
   if (row.unit === 'ms') return parseAsDuration(row, raw)
   return parseAsCount(row, raw)
+}
+
+function parseAsEnum(row: SettingsRow, raw: string): RowParseResult {
+  const trimmed = raw.trim()
+  const options = row.options ?? []
+  if (!options.includes(trimmed)) {
+    return {kind: 'error', message: `Expected one of [${options.join(', ')}], got '${raw}'`}
+  }
+
+  return {displayValue: trimmed, kind: 'ok', value: trimmed}
 }
 
 function parseAsDuration(row: SettingsRow, raw: string): RowParseResult {
@@ -124,12 +140,52 @@ function toBooleanRow(item: SettingsItemDTO, current: boolean, defaultValue: boo
   }
 }
 
+type EnumSettingsItemDTO = Omit<SettingsItemDTO, 'current' | 'default' | 'options' | 'type'> & {
+  readonly current: string
+  readonly default: string
+  readonly options: readonly string[]
+  readonly type: 'enum'
+}
+
+function isEnumItem(item: SettingsItemDTO): item is EnumSettingsItemDTO {
+  return (
+    item.type === 'enum' &&
+    typeof item.current === 'string' &&
+    typeof item.default === 'string' &&
+    Array.isArray(item.options)
+  )
+}
+
+function toEnumRow(item: EnumSettingsItemDTO): SettingsRow {
+  return {
+    category: toRowCategory(item.category),
+    current: item.current,
+    default: item.default,
+    description: item.description,
+    displayCurrent: `[ ${item.current} ]`,
+    displayDefault: item.default,
+    displayRange: '',
+    key: item.key,
+    label: item.key,
+    modified: item.current !== item.default,
+    options: item.options,
+    restartRequired: item.restartRequired,
+    type: 'enum',
+  }
+}
+
 function renderBoolean(value: boolean): string {
   return value ? '[ on ]' : '[ off ]'
 }
 
 function toRowCategory(category: SettingsItemDTO['category']): SettingsRowCategory {
-  if (category === 'concurrency' || category === 'llm' || category === 'task-history' || category === 'updates') {
+  if (
+    category === 'concurrency' ||
+    category === 'language' ||
+    category === 'llm' ||
+    category === 'task-history' ||
+    category === 'updates'
+  ) {
     return category
   }
 
