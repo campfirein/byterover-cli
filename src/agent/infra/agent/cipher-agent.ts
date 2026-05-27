@@ -211,6 +211,32 @@ export class CipherAgent extends BaseAgent implements ICipherAgent {
     return Boolean(streamController)
   }
 
+  /**
+   * Cancel a specific in-flight task across all live sessions.
+   * Fans the cancel out to every session managed by this agent; returns true
+   * as soon as at least one session reports it held the controller.
+   * Idempotent — a second call for the same taskId returns false because the
+   * controller has already been aborted and removed from its session.
+   *
+   * @param taskId - Task identifier (matches the taskId passed to run/streamRun)
+   * @returns true when any session cancelled the task, false when no session held it
+   */
+  public async cancelTask(taskId: string): Promise<boolean> {
+    this.ensureStarted()
+
+    const sessionManager = this.getSessionManagerInternal()
+    let cancelled = false
+    for (const sessionId of sessionManager.listSessions()) {
+      const session = sessionManager.getSession(sessionId)
+      if (!session) continue
+      if (session.cancel(taskId)) {
+        cancelled = true
+      }
+    }
+
+    return cancelled
+  }
+
   // === Public Methods (alphabetical order) ===
 
   protected override async cleanupServices(): Promise<void> {

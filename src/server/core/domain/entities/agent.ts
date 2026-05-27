@@ -70,6 +70,10 @@ export const AGENT_CONNECTOR_CONFIG: Record<Agent, AgentConnectorConfig> = {
     default: 'skill',
     supported: ['rules', 'mcp', 'skill'],
   },
+  Hermes: {
+    default: 'skill',
+    supported: ['mcp', 'skill'],
+  },
   Junie: {
     default: 'skill',
     supported: ['rules', 'mcp', 'skill'],

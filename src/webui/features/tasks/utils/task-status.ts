@@ -4,12 +4,12 @@ export type TaskStatusGroup = 'completed' | 'in_progress' | 'pending'
 
 /**
  * Display the task type without internal mode suffixes. All curate variants
- * (`curate`, `curate-folder`, `curate-html-direct`) flatten to `curate`; the
- * query MCP variant (`query-tool-mode`) flattens to `query`. The detail view
- * shows mode-specific rendering when it matters.
+ * (`curate`, `curate-folder`, `curate-tool-mode`) flatten to `curate`; the
+ * query MCP/CLI variant (`query-tool-mode`) flattens to `query`. The detail
+ * view shows mode-specific rendering when it matters.
  */
 export function displayTaskType(type: string): string {
-  if (type === 'curate-folder' || type === 'curate-html-direct') return 'curate'
+  if (type === 'curate-folder' || type === 'curate-tool-mode') return 'curate'
   if (type === 'query-tool-mode') return 'query'
   return type
 }
@@ -17,13 +17,13 @@ export function displayTaskType(type: string): string {
 /**
  * Expand a list of UI-facing task-type filters into the underlying server
  * task-type values. `curate` matches all curate variants; `query` matches
- * both LLM-driven and MCP tool-mode queries.
+ * both LLM-driven and tool-mode queries.
  */
 export function expandTaskTypeFilter(typeFilter: readonly string[]): string[] {
   const expanded = new Set<string>()
   for (const value of typeFilter) {
     if (value === 'curate') {
-      expanded.add('curate').add('curate-folder').add('curate-html-direct')
+      expanded.add('curate').add('curate-folder').add('curate-tool-mode')
     } else if (value === 'query') {
       expanded.add('query').add('query-tool-mode')
     } else {

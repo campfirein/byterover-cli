@@ -20,6 +20,15 @@ const sliceBrvSection = (content: string): string | undefined => {
 }
 
 /**
+ * Boundary markers for the always-loaded BYTEROVER block that the SkillConnector
+ * writes into autonomous agents' system-prompt context files.
+ *
+ * The marker strings intentionally match rule files so legacy detection keeps
+ * treating all ByteRover-managed instruction blocks consistently.
+ */
+export const BYTEROVER_BLOCK_MARKERS = BRV_RULE_MARKERS
+
+/**
  * Checks if the BRV markers section contains MCP tool references (brv-query/brv-curate).
  * Only checks within the markers section to avoid false positives from user content.
  */

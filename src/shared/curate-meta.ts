@@ -6,7 +6,7 @@ import {z} from 'zod'
  * The legacy `case 'curate'` path used byterover's internal LLM to emit
  * `type`/`impact`/`needsReview` via tool-call output, which surfaced
  * curate operations for HITL review. Tool mode removed that LLM, leaving
- * `case 'curate-html-direct'` and the CLI session protocol with no source
+ * `case 'curate-tool-mode'` and the CLI session protocol with no source
  * of operation judgment — so `brv review pending` stayed empty for any
  * user-initiated curate.
  *

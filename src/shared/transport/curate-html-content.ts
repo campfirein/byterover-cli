@@ -3,7 +3,7 @@ import type {CurateMeta} from '../curate-meta.js'
 import {CurateMetaSchema} from '../curate-meta.js'
 
 /**
- * Encode/decode helpers for curate-html-direct task content payloads.
+ * Encode/decode helpers for curate-tool-mode task content payloads.
  *
  * Sibling to `query-tool-mode-content.ts`. The transport layer's
  * `TaskCreateRequest` has a single `content: string` field; curate
@@ -15,23 +15,31 @@ import {CurateMetaSchema} from '../curate-meta.js'
  */
 
 /**
- * Encode curate-html-direct options as a JSON content payload.
+ * Encode curate-tool-mode options as a JSON content payload.
+ *
+ * `userIntent` is the originating prompt that drove the curate (the CLI
+ * passes the user's `brv curate "<text>"` argument). Surfacing it on the
+ * wire lets the WebUI Tasks panel render a meaningful row title instead
+ * of the raw HTML blob. Optional — MCP callers that author HTML without
+ * a tracked intent omit it and the row falls back to the topic path.
  */
 export function encodeCurateHtmlContent(options: {
   confirmOverwrite?: boolean
   html: string
   meta?: CurateMeta
+  userIntent?: string
 }): string {
   return JSON.stringify({
     confirmOverwrite: options.confirmOverwrite,
     html: options.html,
     meta: options.meta,
+    userIntent: options.userIntent,
   })
 }
 
 /**
- * Parse a JSON-encoded curate-html-direct content payload back into
- * options. Throws on malformed payload — curate-html-direct is brand-new
+ * Parse a JSON-encoded curate-tool-mode content payload back into
+ * options. Throws on malformed payload — curate-tool-mode is brand-new
  * and has no legacy callers, so a parse failure almost certainly means
  * the MCP build and daemon are on incompatible versions. Letting that
  * surface as a `task:error` (outer `success: false`) is much easier for
@@ -49,21 +57,27 @@ export function decodeCurateHtmlContent(content: string): {
   confirmOverwrite?: boolean
   html: string
   meta?: CurateMeta
+  userIntent?: string
 } {
   let parsed: unknown
   try {
     parsed = JSON.parse(content)
   } catch {
     throw new Error(
-      'curate-html-direct payload is not valid JSON — likely an MCP/daemon version mismatch. Rebuild byterover-cli to align the encoder and decoder.',
+      'curate-tool-mode payload is not valid JSON — likely an MCP/daemon version mismatch. Rebuild byterover-cli to align the encoder and decoder.',
     )
   }
 
   if (typeof parsed !== 'object' || parsed === null || typeof (parsed as {html?: unknown}).html !== 'string') {
-    throw new Error('curate-html-direct payload is missing a string `html` field.')
+    throw new Error('curate-tool-mode payload is missing a string `html` field.')
   }
 
-  const {confirmOverwrite, html, meta} = parsed as {confirmOverwrite?: unknown; html: string; meta?: unknown}
+  const {confirmOverwrite, html, meta, userIntent} = parsed as {
+    confirmOverwrite?: unknown
+    html: string
+    meta?: unknown
+    userIntent?: unknown
+  }
 
   const metaResult = meta === undefined ? undefined : CurateMetaSchema.safeParse(meta)
   const validMeta = metaResult?.success ? metaResult.data : undefined
@@ -85,5 +99,6 @@ export function decodeCurateHtmlContent(content: string): {
     confirmOverwrite: typeof confirmOverwrite === 'boolean' ? confirmOverwrite : undefined,
     html,
     meta: validMeta,
+    userIntent: typeof userIntent === 'string' && userIntent.length > 0 ? userIntent : undefined,
   }
 }

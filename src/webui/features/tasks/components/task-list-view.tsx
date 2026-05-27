@@ -5,6 +5,7 @@ import {useSearchParams} from 'react-router-dom'
 import {toast} from 'sonner'
 
 import {useTransportStore} from '../../../stores/transport-store'
+import {useCancelTask} from '../api/cancel-task'
 import {useClearCompleted} from '../api/clear-completed'
 import {useDeleteBulkTasks} from '../api/delete-bulk-tasks'
 import {useDeleteTask} from '../api/delete-task'
@@ -110,8 +111,10 @@ export function TaskListView() {
   const deleteMutation = useDeleteTask()
   const deleteBulkMutation = useDeleteBulkTasks()
   const clearCompletedMutation = useClearCompleted()
+  const cancelMutation = useCancelTask()
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [cancellingIds, setCancellingIds] = useState<Set<string>>(new Set())
 
   const taskMap = useMemo(() => new Map(tasks.map((task) => [task.taskId, task])), [tasks])
 
@@ -167,6 +170,33 @@ export function TaskListView() {
       {
         onError: (err) => toast.error(err.message),
         onSuccess: () => removeTask(taskId),
+      },
+    )
+  }
+
+  const handleCancel = (taskId: string) => {
+    setCancellingIds((prev) => {
+      const next = new Set(prev)
+      next.add(taskId)
+      return next
+    })
+    const clear = () => {
+      setCancellingIds((prev) => {
+        if (!prev.has(taskId)) return prev
+        const next = new Set(prev)
+        next.delete(taskId)
+        return next
+      })
+    }
+
+    cancelMutation.mutate(
+      {taskId},
+      {
+        onError(err) {
+          toast.error(err.message)
+          clear()
+        },
+        onSuccess: clear,
       },
     )
   }
@@ -264,8 +294,10 @@ export function TaskListView() {
       ) : (
         <TaskTable
           allSelected={allFilteredSelected}
+          cancellingIds={cancellingIds}
           filtered={filtered}
           now={now}
+          onCancel={handleCancel}
           onClearSearch={() => setSearchQuery('')}
           onDelete={handleDelete}
           onRowClick={openTask}
@@ -304,7 +336,13 @@ export function TaskListView() {
           className="data-[side=right]:w-full data-[side=right]:max-w-3xl p-0 shadow-[inset_1px_0_0_rgba(96,165,250,0.18)]"
           side="right"
         >
-          {selectedTaskId && <TaskDetailView taskId={selectedTaskId} />}
+          {selectedTaskId && (
+            <TaskDetailView
+              cancelling={cancellingIds.has(selectedTaskId)}
+              onCancel={handleCancel}
+              taskId={selectedTaskId}
+            />
+          )}
         </SheetContent>
       </Sheet>
     </div>

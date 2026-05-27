@@ -54,6 +54,7 @@ function makeStubTransport(sandbox: SinonSandbox): {
 
 function makeStubAgentPool(sandbox: SinonSandbox): IAgentPool {
   return {
+    cancelQueuedTask: sandbox.stub().returns(false),
     getEntries: sandbox.stub().returns([]),
     getSize: sandbox.stub().returns(0),
     handleAgentDisconnected: sandbox.stub(),
@@ -221,7 +222,7 @@ describe('AnalyticsHook lifecycle wiring (M15.6 — through TaskRouter)', () => 
 
   it('every tool-mode task type fires both task_created and the right terminal', async () => {
     const cases = [
-      {expectedTaskType: 'curate-tool-mode', taskId: 'tm-curate', type: 'curate-html-direct'},
+      {expectedTaskType: 'curate-tool-mode', taskId: 'tm-curate', type: 'curate-tool-mode'},
       {expectedTaskType: 'query-tool-mode', taskId: 'tm-query', type: 'query-tool-mode'},
       {expectedTaskType: 'dream-scan', taskId: 'tm-dream-scan', type: 'dream-scan'},
       {expectedTaskType: 'dream-finalize', taskId: 'tm-dream-finalize', type: 'dream-finalize'},

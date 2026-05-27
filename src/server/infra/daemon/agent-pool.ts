@@ -108,6 +108,15 @@ export class AgentPool implements IAgentPool {
     this.transportServer = options.transportServer
   }
 
+  /**
+   * Remove a queued task by id from any project's FIFO. Returns true when the
+   * task was found and removed; false when the task is not in any queue.
+   * Tasks that are mid-execution on an agent are not visible here.
+   */
+  cancelQueuedTask(taskId: string): boolean {
+    return this.taskQueue.cancel(taskId)
+  }
+
   getEntries(): readonly AgentEntryInfo[] {
     return [...this.agents.values()].map((entry) => ({
       activeTasks: entry.agent.activeTasks,

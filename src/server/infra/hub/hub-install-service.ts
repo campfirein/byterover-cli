@@ -140,7 +140,7 @@ export class HubInstallService implements IHubInstallService {
       })),
     )
 
-    const result = await skillConnector.writeSkillFiles(agent, entry.id, downloadedFiles, {scope})
+    const result = await skillConnector.writeSkillFiles({agent, files: downloadedFiles, scope, skillName: entry.id})
 
     if (result.alreadyInstalled) {
       return {

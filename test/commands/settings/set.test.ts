@@ -24,7 +24,7 @@ class TestableSettingsSet extends SettingsSet {
     })
   }
 
-  protected override async writeSetting(key: string, value: unknown) {
+  protected override async writeSetting(key: string, value: boolean | number) {
     return super.writeSetting(key, value, {
       maxRetries: 1,
       retryDelayMs: 0,
@@ -41,6 +41,19 @@ type DescriptorOverrides = Partial<{
   min: number
   unit: 'count' | 'ms'
 }>
+
+function makeBooleanGetResponse(key: string, current: boolean): unknown {
+  return {
+    category: 'updates',
+    current,
+    default: true,
+    description: 'desc',
+    key,
+    ok: true,
+    restartRequired: false,
+    type: 'boolean',
+  }
+}
 
 function makeGetResponse(key: string, current: number, overrides: DescriptorOverrides = {}): unknown {
   const defaults: Record<string, DescriptorOverrides> = {
@@ -285,5 +298,108 @@ describe('brv settings set', () => {
 
   it('emits a one-line help mentioning the restart-required behavior', () => {
     expect(SettingsSet.description ?? '').to.match(/restart/i)
+  })
+
+  describe('boolean keys (T4)', () => {
+    const ACCEPTED_TRUE = ['true', 'TRUE', 'True', 'on', 'ON', 'On', '1', 'yes', 'YES', 'Yes']
+    const ACCEPTED_FALSE = ['false', 'FALSE', 'False', 'off', 'OFF', 'Off', '0', 'no', 'NO', 'No']
+
+    for (const token of ACCEPTED_TRUE) {
+      it(`parses '${token}' as true and dispatches SET with boolean true`, async () => {
+        dispatchByEvent((event) => {
+          if (event === SettingsEvents.GET) return makeBooleanGetResponse('update.checkForUpdates', false)
+          if (event === SettingsEvents.SET) return {ok: true, restartRequired: false}
+          throw new Error('unexpected event')
+        })
+
+        await createCommand('update.checkForUpdates', token).run()
+
+        const requestStub = mockClient.requestWithAck as sinon.SinonStub
+        const setCall = requestStub.getCalls().find((c) => c.args[0] === SettingsEvents.SET)
+        expect(setCall?.args[1]).to.deep.equal({key: 'update.checkForUpdates', value: true})
+      })
+    }
+
+    for (const token of ACCEPTED_FALSE) {
+      it(`parses '${token}' as false and dispatches SET with boolean false`, async () => {
+        dispatchByEvent((event) => {
+          if (event === SettingsEvents.GET) return makeBooleanGetResponse('update.checkForUpdates', true)
+          if (event === SettingsEvents.SET) return {ok: true, restartRequired: false}
+          throw new Error('unexpected event')
+        })
+
+        await createCommand('update.checkForUpdates', token).run()
+
+        const requestStub = mockClient.requestWithAck as sinon.SinonStub
+        const setCall = requestStub.getCalls().find((c) => c.args[0] === SettingsEvents.SET)
+        expect(setCall?.args[1]).to.deep.equal({key: 'update.checkForUpdates', value: false})
+      })
+    }
+
+    it('rejects "5" on a boolean key with the documented expected-boolean message', async () => {
+      dispatchByEvent((event) => {
+        if (event === SettingsEvents.GET) return makeBooleanGetResponse('update.checkForUpdates', true)
+        throw new Error('SET should not be dispatched on parse error')
+      })
+
+      await createCommand('update.checkForUpdates', '5').run()
+
+      const stderr = loggedMessages.join('\n')
+      expect(stderr).to.include('expected boolean (true, false, on, off, 1, 0, yes, no)')
+      expect(process.exitCode).to.equal(1)
+    })
+
+    it('rejects "maybe" on a boolean key with the same documented message', async () => {
+      dispatchByEvent((event) => {
+        if (event === SettingsEvents.GET) return makeBooleanGetResponse('update.checkForUpdates', true)
+        throw new Error('SET should not be dispatched on parse error')
+      })
+
+      await createCommand('update.checkForUpdates', 'maybe').run()
+
+      const stderr = loggedMessages.join('\n')
+      expect(stderr).to.include('expected boolean')
+      expect(process.exitCode).to.equal(1)
+    })
+
+    it('integer key still rejects "true" with the "expects an integer count" message (parser dispatch correct)', async () => {
+      dispatchByEvent((event) => {
+        if (event === SettingsEvents.GET) return makeGetResponse('agentPool.maxSize', 10)
+        throw new Error('SET should not be dispatched on parse error')
+      })
+
+      await createCommand('agentPool.maxSize', 'true').run()
+
+      const stderr = loggedMessages.join('\n')
+      expect(stderr).to.match(/expects an integer count/)
+      expect(process.exitCode).to.equal(1)
+    })
+
+    it('omits the "Run `brv restart`" line on success when descriptor does not require restart', async () => {
+      dispatchByEvent((event) => {
+        if (event === SettingsEvents.GET) return makeBooleanGetResponse('update.checkForUpdates', true)
+        if (event === SettingsEvents.SET) return {ok: true, restartRequired: false}
+        throw new Error('unexpected event')
+      })
+
+      await createCommand('update.checkForUpdates', 'off').run()
+
+      const output = loggedMessages.join('\n')
+      expect(output).to.include('Setting saved: update.checkForUpdates = false')
+      expect(output, 'must not mention `brv restart` for restartRequired:false keys').to.not.match(/brv restart/i)
+    })
+
+    it('keeps the "Run `brv restart`" line on success for restart-required integer keys (regression)', async () => {
+      dispatchByEvent((event) => {
+        if (event === SettingsEvents.GET) return makeGetResponse('agentPool.maxSize', 10)
+        if (event === SettingsEvents.SET) return {ok: true, restartRequired: true}
+        throw new Error('unexpected event')
+      })
+
+      await createCommand('agentPool.maxSize', '25').run()
+
+      const output = loggedMessages.join('\n')
+      expect(output).to.match(/Run `brv restart` to apply/)
+    })
   })
 })

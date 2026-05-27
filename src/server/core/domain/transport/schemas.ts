@@ -427,7 +427,7 @@ export const TransportSessionEventNames = {
 export const TaskTypeSchema = z.enum([
   'curate',
   'curate-folder',
-  'curate-html-direct',
+  'curate-tool-mode',
   'dream-finalize',
   'dream-scan',
   'query',

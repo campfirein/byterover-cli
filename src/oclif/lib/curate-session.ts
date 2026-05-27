@@ -1,51 +1,59 @@
+import type {ITransportClient, TaskAck} from '@campfirein/brv-transport-client'
+
 import {randomUUID} from 'node:crypto'
 import {existsSync} from 'node:fs'
 import {mkdir, readFile, rm, writeFile} from 'node:fs/promises'
-import {basename, dirname, join, relative, sep} from 'node:path'
+import {dirname, join} from 'node:path'
 import {z} from 'zod'
 
+import type {CurateHtmlDirectResult} from '../../server/core/interfaces/executor/i-curate-executor.js'
+import type {HtmlWriteError} from '../../server/infra/render/writer/html-writer.js'
 import type {CurateMeta} from '../../shared/curate-meta.js'
 
-import {ConsoleLogger} from '../../agent/infra/logger/console-logger.js'
-import {FileKeyStorage} from '../../agent/infra/storage/file-key-storage.js'
-import {BRV_DIR, CONTEXT_TREE_DIR} from '../../server/constants.js'
+import {BRV_DIR} from '../../server/constants.js'
 import {buildCorrectionPrompt, buildGeneratePrompt} from '../../server/core/domain/render/curate-prompt-builder.js'
-import {ProjectConfigStore} from '../../server/infra/config/file-config-store.js'
-import {regenerateContextTreeIndex} from '../../server/infra/context-tree/index-generator.js'
-import {RuntimeSignalStore} from '../../server/infra/context-tree/runtime-signal-store.js'
-import {bumpSidecarOnCurateWrite} from '../../server/infra/context-tree/tool-mode-sidecar-updaters.js'
-import {backupContextTreeFile, buildCurateHtmlLogEntry} from '../../server/infra/process/curate-html-log.js'
-import {type HtmlWriteError, validateHtmlTopic, writeHtmlTopic} from '../../server/infra/render/writer/html-writer.js'
-import {FileCurateLogStore} from '../../server/infra/storage/file-curate-log-store.js'
-import {FileReviewBackupStore} from '../../server/infra/storage/file-review-backup-store.js'
-import {getProjectDataDir} from '../../server/utils/path-utils.js'
 import {CurateMetaSchema} from '../../shared/curate-meta.js'
+import {encodeCurateHtmlContent} from '../../shared/transport/curate-html-content.js'
+import {TaskEvents} from '../../shared/transport/events/index.js'
+import {waitForTaskCompletion} from './task-client.js'
 
 /**
  * Curate session protocol — CLI-side orchestrator for the multi-step
  * curate flow that byterover-tool-mode introduces.
  *
- * Background. Today's `brv curate` runs an LLM agent inside byterover.
- * Tool mode removes that agent: the calling agent (Claude Code) owns
- * the LLM, byterover validates + writes. Because a subprocess can't
- * call back into its parent, the protocol is multi-step: kickoff
- * returns `needs-llm-step` with a prompt; the calling agent produces
- * the response and re-invokes `brv curate` with `--session`/`--response`.
- * Byterover holds session state between invocations.
+ * Background. `brv curate` runs no LLM inside byterover. The calling
+ * agent (Claude Code) owns the LLM, byterover validates + writes.
+ * Because a subprocess can't call back into its parent, the protocol
+ * is multi-step: kickoff returns `needs-llm-step` with a prompt; the
+ * calling agent produces the response and re-invokes `brv curate` with
+ * `--session`/`--response`. Byterover holds session state between
+ * invocations.
  *
- * State machine (TKT 02). The orchestrator drives:
+ * Dispatch. Continuation routes the validated `<bv-topic>` HTML through
+ * the daemon's `curate-tool-mode` task type — the same type the MCP
+ * `brv-curate` tool already uses. This converges CLI and MCP on one
+ * write path, so every CLI curate produces a `TaskHistoryEntry` and
+ * surfaces in the WebUI Tasks panel, `brv task list`, and cancel
+ * surfaces (TaskRouter's TaskHistoryHook fires automatically).
+ *
+ * Session state. Kickoff and the retry-cap loop stay file-based on the
+ * CLI side (`<projectRoot>/.brv/sessions/curate-<id>/state.json`) — only
+ * the write itself runs server-side. M3 cleanup may move session state
+ * into daemon task-session sandbox vars later.
+ *
+ * State machine. The orchestrator drives:
  *
  *   kickoff(text)
  *     → state = pending-generate, attempts = 0
  *     → emit needs-llm-step, step = generate-html
  *
  *   continue(response) on pending-generate
- *     → validate + write
+ *     → dispatch curate-tool-mode (daemon validates + writes)
  *       on success → emit done, clear session
  *       on failure → state = pending-correct, emit needs-llm-step / correct-html
  *
  *   continue(response) on pending-correct
- *     → validate + write
+ *     → dispatch curate-tool-mode
  *       on success → emit done, clear session
  *       on failure → attempts++; if attempts >= MAX_ATTEMPTS → emit failed,
  *                    else stay in pending-correct, emit correct-html
@@ -54,20 +62,12 @@ import {CurateMetaSchema} from '../../shared/curate-meta.js'
  * the fourth invalid response the orchestrator terminates the session
  * with `status: failed`.
  *
- * Storage. CLI-local state on disk under `<projectRoot>/.brv/sessions/
- * curate-<id>/state.json`. M3 cleanup may move into daemon task-session
- * sandbox vars once tool mode dispatches through the daemon.
- *
  * Deliberately deferred:
- *   - Search-first UPDATE detection — kickoff today emits a generic
+ *   - Search-first UPDATE detection — kickoff emits a generic
  *     generate-html prompt; UPDATE vs CREATE is the calling agent's
- *     responsibility for now. Wiring `SearchKnowledgeService` requires
- *     daemon-RPC integration, deferred to a follow-up.
+ *     responsibility for now.
  *   - 1h session TTL — abandoned sessions accumulate on disk; M3 prunes
  *     when state moves into the daemon's task-session lifecycle.
- *   - Real prompts — `buildGeneratePrompt` and `buildCorrectionPrompt`
- *     are stubs; TKT 03 ships the production prompt builders with the
- *     condensed bv-* schema and ELEMENT_REGISTRY-derived guidance.
  */
 
 export const CURATE_SESSIONS_DIR = 'sessions'
@@ -178,6 +178,8 @@ type KickoffOptions = {
 }
 
 type ContinueOptions = {
+  /** Connected daemon transport client — used to dispatch the curate-tool-mode task. */
+  client: ITransportClient
   /**
    * Opt-in to clobber an existing topic at the resolved path. Default
    * `false`: the writer's overwrite guard surfaces `path-exists` as a
@@ -186,6 +188,13 @@ type ContinueOptions = {
    * surfaced via the `--overwrite` flag on `brv curate --session …`).
    */
   confirmOverwrite?: boolean
+  /**
+   * CLI output format. Threaded into the daemon dispatch's
+   * `waitForTaskCompletion` so the stale-check fallback uses the same
+   * channel as the CLI (no JSON envelope leaking onto stdout in text
+   * mode). Defaults to 'json' — matches the agent-facing default.
+   */
+  format?: 'json' | 'text'
   projectRoot: string
   response: string
   sessionId: string
@@ -278,12 +287,19 @@ export function parseCurateResponse(raw: string): {html: string; meta?: CurateMe
 }
 
 /**
- * Continue an existing session. Validates the response, writes the
- * topic file on success, advances the retry loop on failure, terminates
- * with `failed` once the retry cap is exhausted.
+ * Continue an existing session. Validates the response envelope,
+ * dispatches the `<bv-topic>` HTML through the daemon's
+ * `curate-tool-mode` task type for validation + write, advances the
+ * retry loop on validation failure, terminates with `failed` once the
+ * retry cap is exhausted.
+ *
+ * All write-side concerns (HTML validation, file write, log entry,
+ * review backup, sidecar bump, index regeneration) live in the daemon's
+ * `curate-tool-mode` handler — see `agent-process.ts`. This function
+ * is the session-protocol envelope only.
  */
 export async function continueSession(options: ContinueOptions): Promise<CurateSessionEnvelope> {
-  const {confirmOverwrite = false, projectRoot, response, sessionId} = options
+  const {client, confirmOverwrite = false, format = 'json', projectRoot, response, sessionId} = options
 
   // Reject non-uuid session ids before any path join — see SESSION_ID_RE
   // for the threat model. Same `kind` as "session not found" because
@@ -307,7 +323,7 @@ export async function continueSession(options: ContinueOptions): Promise<CurateS
     }
   }
 
-  // Parse the JSON envelope before touching the writer. A malformed
+  // Parse the JSON envelope before dispatching to the daemon. A malformed
   // envelope is a protocol-level failure (agent didn't follow the
   // contract) — distinct from HTML validation failure (agent followed
   // the contract but the HTML inside is wrong). The session stays
@@ -330,115 +346,33 @@ export async function continueSession(options: ContinueOptions): Promise<CurateS
 
   const {html, meta} = parsed
 
-  // Run the writer end-to-end: parse, validate against the registry,
-  // and atomically write to `.brv/context-tree/<topic.path>.html`. On
-  // validation failure no file lands on disk.
-  const contextTreeRoot = join(projectRoot, BRV_DIR, CONTEXT_TREE_DIR)
-
-  // Pre-resolve topicPath + existedBefore for the log entry. parse5 is
-  // cheap (validateHtmlTopic re-runs internally inside writeHtmlTopic
-  // so we don't risk drift). On parse failure topicPath is undefined
-  // and the log entry uses the sentinel path.
-  const preValidation = validateHtmlTopic(html)
-  const topicPath = preValidation.ok ? preValidation.topicPath : undefined
-  const absoluteTopicPath = topicPath === undefined ? undefined : join(contextTreeRoot, `${topicPath}.html`)
-  const existedBefore = absoluteTopicPath !== undefined && existsSync(absoluteTopicPath)
-
-  // Snapshot the project's reviewDisabled state once for this continuation.
-  // Reading it twice (here + in persistCurateLog) could race a mid-task
-  // `brv review --enable/--disable` toggle and produce inconsistent semantics
-  // between the backup decision and the log-entry decision.
-  const reviewDisabled = await resolveProjectReviewDisabled(projectRoot)
-
-  // Seed the review-backup BEFORE the destructive write. Without this, an
-  // UPDATE-shaped continuation (confirmOverwrite=true over an existing topic)
-  // creates a `reviewStatus: pending` log entry but leaves nothing for
-  // `brv review reject` to restore from — review-handler.ts:152 then treats
-  // the missing backup as ADD and `unlink`s the file, destroying the user's
-  // prior knowledge. backupContextTreeFile honors reviewDisabled and ENOENT
-  // gracefully, so it's safe to call on every continuation regardless of
-  // whether the file existed.
-  if (absoluteTopicPath !== undefined && existedBefore) {
-    await backupContextTreeFile({
-      absoluteFilePath: absoluteTopicPath,
-      contextTreeRoot,
-      reviewBackupStore: new FileReviewBackupStore(join(projectRoot, BRV_DIR)),
-      reviewDisabled,
-    })
-  }
-
-  const startedAt = Date.now()
-  const writeResult = await writeHtmlTopic({confirmOverwrite, contextTreeRoot, rawHtml: html})
-  const completedAt = Date.now()
-
-  // Mirror the curate into the runtime-signal sidecar so prune (and any
-  // future signal-driven ranking) has real data. Best-effort: a failure
-  // here must never block the write that already succeeded — but emit a
-  // warn so an operator hitting a corrupt key store / permission denied
-  // on the project data dir has a breadcrumb (a bare catch{} hides it).
-  if (writeResult.ok) {
-    const sidecarLogger = new ConsoleLogger()
-    try {
-      const keyStorage = new FileKeyStorage({storageDir: getProjectDataDir(projectRoot)})
-      await keyStorage.initialize()
-      const runtimeSignalStore = new RuntimeSignalStore(keyStorage, sidecarLogger)
-      await bumpSidecarOnCurateWrite({
-        existedBefore,
-        logger: sidecarLogger,
-        // Forward-slash normalize so the sidecar key matches the daemon's
-        // curate-html-direct path (`agent-process.ts`) on Windows.
-        relPath: relative(contextTreeRoot, writeResult.filePath).replaceAll(sep, '/'),
-        store: runtimeSignalStore,
-      })
-    } catch (error) {
-      sidecarLogger.warn(
-        `tool-mode-curate: sidecar bump init failed for ${projectRoot}: ${error instanceof Error ? error.message : String(error)}`,
-      )
-    }
-  }
-
-  await persistCurateLog({
-    completedAt,
+  // Dispatch the validation + write through the daemon. TaskRouter's
+  // TaskHistoryHook persists the lifecycle automatically, so this curate
+  // appears in the WebUI Tasks panel and is cancellable from any surface.
+  // userIntent rides along so the row title shows the user's original
+  // prompt instead of the raw HTML blob.
+  const writeResult = await dispatchCurateHtmlDirect({
+    client,
     confirmOverwrite,
-    existedBefore,
-    // Absolute path — review-handler treats `op.filePath` as absolute and
-    // calls `relative(contextTreeDir, ...)` to derive its display key.
-    filePath: writeResult.ok ? writeResult.filePath : undefined,
-    intent: state.userIntent,
+    format,
+    html,
     meta,
-    projectRoot,
-    reviewDisabled,
-    startedAt,
-    taskId: sessionId,
-    topicPath,
-    writeResult,
+    projectPath: projectRoot,
+    userIntent: state.userIntent,
   })
 
-  // Regenerate the context-tree index so the new topic appears in
-  // index.html. Best-effort — the topic write already succeeded.
-  //
-  // Inline (not deferred like the daemon's postWorkRegistry path): a
-  // `brv curate` CLI invocation is a single in-process operation, so
-  // there is no concurrency to serialize against — the daemon's
-  // per-project postWork mutex has no analogue or need here.
-  if (writeResult.ok) {
-    await regenerateContextTreeIndex({
-      contextTreeRoot,
-      log: (msg) => new ConsoleLogger().warn(`tool-mode-curate: ${msg}`),
-      projectName: basename(projectRoot),
-    })
-  }
-
+  // Advance retry counter on every continuation — matches pre-dispatch
+  // behavior so the cap fires after the same number of invalid responses.
   state.attempts += 1
   state.lastResponse = response
 
-  if (writeResult.ok) {
+  if (writeResult.status === 'ok') {
     await clearSessionState(projectRoot, sessionId)
     return {
-      filePath: relative(contextTreeRoot, writeResult.filePath),
+      filePath: writeResult.filePath,
       ok: true,
       status: 'done',
-      ...(writeResult.warnings.length > 0 ? {warnings: writeResult.warnings} : {}),
+      ...(writeResult.warnings && writeResult.warnings.length > 0 ? {warnings: writeResult.warnings} : {}),
     }
   }
 
@@ -474,6 +408,77 @@ export async function continueSession(options: ContinueOptions): Promise<CurateS
     status: 'needs-llm-step',
     step: 'correct-html',
   }
+}
+
+/**
+ * Dispatch a `curate-tool-mode` task to the daemon and await its
+ * structured result. Same shape MCP's `brv-curate` tool uses — the
+ * daemon handler owns HTML validation, write, log persistence, review
+ * backup, sidecar bump, and index regeneration. Throws on transport
+ * errors (the CLI command surfaces those via `withDaemonRetry`).
+ */
+async function dispatchCurateHtmlDirect(args: {
+  client: ITransportClient
+  confirmOverwrite: boolean
+  format: 'json' | 'text'
+  html: string
+  meta?: CurateMeta
+  /**
+   * Threaded explicitly onto the wire payload so the daemon doesn't have
+   * to fall back to client-association lookup. Mirrors MCP's brv-curate
+   * dispatch and removes the worktree-edge-case ambient dependency where
+   * the CLI's `resolveProjectRoot()` and the daemon's `resolveProject()`
+   * (workspace-link-aware) can disagree.
+   */
+  projectPath: string
+  userIntent: string
+}): Promise<CurateHtmlDirectResult> {
+  const {client, confirmOverwrite, format, html, meta, projectPath, userIntent} = args
+  const taskId = randomUUID()
+  const taskPayload = {
+    clientCwd: process.cwd(),
+    content: encodeCurateHtmlContent({confirmOverwrite, html, meta, userIntent}),
+    projectPath,
+    taskId,
+    type: 'curate-tool-mode' as const,
+  }
+
+  let parsed: CurateHtmlDirectResult | undefined
+  let errorMessage: string | undefined
+
+  const completion = waitForTaskCompletion(
+    {
+      client,
+      command: 'curate',
+      format,
+      onCompleted({result}) {
+        if (!result) {
+          errorMessage = 'Daemon returned an empty curate result.'
+          return
+        }
+
+        try {
+          parsed = JSON.parse(result) as CurateHtmlDirectResult
+        } catch {
+          errorMessage = 'Daemon returned a malformed curate result.'
+        }
+      },
+      onError({error}) {
+        errorMessage = error.message
+      },
+      taskId,
+    },
+    () => {
+      // No-op log sink — curate emits one envelope, not progress lines.
+    },
+  )
+
+  await client.requestWithAck<TaskAck>(TaskEvents.CREATE, taskPayload)
+  await completion
+
+  if (errorMessage) throw new Error(errorMessage)
+  if (!parsed) throw new Error('Daemon curate-tool-mode returned no payload.')
+  return parsed
 }
 
 function unknownSessionEnvelope(sessionId: string, reason: 'invalid-format' | 'not-found'): CurateSessionEnvelope {
@@ -518,82 +523,6 @@ function mapWriterError(err: HtmlWriteError): CurateSessionError {
       // missing-bv-topic, missing-path-attribute, multiple-bv-topic, unsafe-path
       return {kind: err.kind, message: err.message}
     }
-  }
-}
-
-/**
- * Build + persist a CurateLogEntry for an in-process CLI continuation.
- *
- * The CLI session runs in-process (no daemon round-trip for the write),
- * so the log entry is written directly here. `FileCurateLogStore` uses
- * atomic tmp+rename writes — safe to interleave with daemon writes from
- * the same project.
- *
- * Logging is best-effort: errors are swallowed (just like daemon-side
- * `curate-log-handler`) so a transient FS error doesn't fail an
- * otherwise-successful curate. The user can still recover via re-run.
- */
-async function persistCurateLog(input: {
-  completedAt: number
-  confirmOverwrite: boolean
-  existedBefore: boolean
-  filePath?: string
-  intent: string
-  meta?: CurateMeta
-  projectRoot: string
-  /**
-   * Snapshot of the project's `reviewDisabled` flag at the start of the
-   * continuation. Threaded in (rather than re-read here) so the backup
-   * decision and the log-entry decision observe the same value even if
-   * the user toggles `brv review --enable/--disable` mid-task.
-   */
-  reviewDisabled: boolean
-  startedAt: number
-  taskId: string
-  topicPath?: string
-  writeResult: Awaited<ReturnType<typeof writeHtmlTopic>>
-}): Promise<void> {
-  try {
-    const store = new FileCurateLogStore({baseDir: getProjectDataDir(input.projectRoot)})
-    const id = await store.getNextId()
-    const entry = buildCurateHtmlLogEntry({
-      completedAt: input.completedAt,
-      confirmOverwrite: input.confirmOverwrite,
-      existedBefore: input.existedBefore,
-      filePath: input.filePath,
-      id,
-      intent: input.intent,
-      meta: input.meta,
-      reviewDisabled: input.reviewDisabled,
-      startedAt: input.startedAt,
-      taskId: input.taskId,
-      topicPath: input.topicPath,
-      writeResult: input.writeResult,
-    })
-    await store.save(entry)
-  } catch (error) {
-    // Best-effort: log persistence must never fail the curate. Surface a
-    // single-line stderr signal so a user diagnosing "my curate ran but
-    // `brv review pending` is empty" has something to grep — paralleling
-    // the daemon-side agentLog at `agent-process.ts > curate-html-direct`.
-    process.stderr.write(
-      `brv curate: failed to persist review log entry: ${error instanceof Error ? error.message : String(error)}\n`,
-    )
-  }
-}
-
-/**
- * Read the project's `reviewDisabled` flag for the CLI's in-process
- * session continuation. Equivalent of the daemon's `resolveReviewDisabled`
- * in `brv-server.ts`. Returns `false` when the config file is absent
- * (fail-open: review enabled by default).
- */
-async function resolveProjectReviewDisabled(projectRoot: string): Promise<boolean> {
-  try {
-    const config = await new ProjectConfigStore().read(projectRoot)
-    return config?.reviewDisabled === true
-  } catch {
-    return false
   }
 }
 

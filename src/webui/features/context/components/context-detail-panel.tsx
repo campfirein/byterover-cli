@@ -9,13 +9,18 @@ import {useMemo} from 'react'
 
 import type {ContextNode} from '../types'
 
+import {hasConflictMarkers} from '../../../../shared/utils/conflict-markers'
 import {noop} from '../../../lib/noop'
 import {useGetContextFileMetadata} from '../api/get-context-file-metadata'
 import {useGetContextHistory} from '../api/get-context-history'
 import {useContextTree} from '../hooks/use-context-tree'
+import {useTopicViewerNavigation} from '../hooks/use-topic-viewer-navigation'
+import {hasRootIndex} from '../utils/has-root-index'
 import {isFilePath} from '../utils/tree-utils'
+import {ConflictContentView} from './conflict-content-view'
 import {ContextBreadcrumb} from './context-breadcrumb'
 import {MarkdownView} from './markdown-view'
+import {RootIndexDetail} from './root-index-detail'
 
 const isHtmlPath = (path: string | undefined): boolean => Boolean(path && path.toLowerCase().endsWith('.html'))
 
@@ -49,6 +54,7 @@ export function ContextDetailPanel({onToggleHistory}: ContextDetailPanelProps) {
     selectedPath,
     setEditContent,
   } = useContextTree()
+  const {onBreadcrumbClick, onEntryClick, onRelatedClick} = useTopicViewerNavigation()
 
   const {data: historyData, isPending: isHistoryPending} = useGetContextHistory({
     enabled: Boolean(selectedPath) && isFilePath(selectedPath),
@@ -57,7 +63,6 @@ export function ContextDetailPanel({onToggleHistory}: ContextDetailPanelProps) {
 
   const lastCommit = historyData?.pages[0]?.commits[0]
 
-  // For folder view: show children of selected folder, or root nodes
   const folderChildren = useMemo(() => {
     if (!selectedNode || selectedNode.type !== 'tree') {
       return selectedNode ? [] : nodes
@@ -118,8 +123,8 @@ export function ContextDetailPanel({onToggleHistory}: ContextDetailPanelProps) {
     handleSelect(parentNode)
   }
 
-  // File detail view
   if (selectedNode?.type === 'blob') {
+    const isHtml = isHtmlPath(selectedNode.path)
     return (
       <div className="flex h-full flex-1 flex-col">
         <div className="px-5 pt-5">
@@ -130,8 +135,15 @@ export function ContextDetailPanel({onToggleHistory}: ContextDetailPanelProps) {
           content={fileData?.content ?? ''}
           contentView={
             !isEditMode && fileData?.content ? (
-              isHtmlPath(selectedNode.path) ? (
-                <TopicViewer html={fileData.content} />
+              hasConflictMarkers(fileData.content) ? (
+                <ConflictContentView content={fileData.content} />
+              ) : isHtml ? (
+                <TopicViewer
+                  breadcrumb={{onBreadcrumbClick}}
+                  html={fileData.content}
+                  index={{onEntryClick}}
+                  related={{onRelatedClick}}
+                />
               ) : (
                 <MarkdownView content={fileData.content} />
               )
@@ -150,7 +162,7 @@ export function ContextDetailPanel({onToggleHistory}: ContextDetailPanelProps) {
           }
           fileName={fileData?.title ?? selectedNode.name}
           hasChanges={hasChanges}
-          headerClassName="pt-4 pb-0"
+          headerClassName={isHtml ? 'py-4' : 'pt-4 pb-0'}
           isEditMode={isEditMode}
           isHistoryVisible={false}
           isLoading={isFetchingFile}
@@ -182,7 +194,10 @@ export function ContextDetailPanel({onToggleHistory}: ContextDetailPanelProps) {
     )
   }
 
-  // Folder detail view (or root)
+  if (hasRootIndex(nodes, selectedPath)) {
+    return <RootIndexDetail onToggleHistory={onToggleHistory} />
+  }
+
   return (
     <div className="flex-1 h-full flex-col flex p-5 gap-4">
       <ContextBreadcrumb />

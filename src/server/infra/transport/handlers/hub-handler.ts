@@ -25,6 +25,7 @@ import {
 } from '../../../../shared/transport/events/hub-events.js'
 import {type Agent, isAgent} from '../../../core/domain/entities/agent.js'
 import {processLog} from '../../../utils/process-logger.js'
+import {SKILL_CONNECTOR_CONFIGS} from '../../connectors/skill/skill-connector-config.js'
 import {CompositeHubRegistryService} from '../../hub/composite-hub-registry-service.js'
 import {HubRegistryService} from '../../hub/hub-registry-service.js'
 
@@ -96,6 +97,19 @@ export class HubHandler {
   }
 
   /**
+   * Default install scope for an agent when the request omits one.
+   * Global-only skill agents (no project skill path, e.g. Hermes/OpenClaw)
+   * default to 'global' so hub install does not throw "does not support
+   * project scope". Explicit `data.scope` always wins over this.
+   */
+  private defaultScopeForAgent(agent?: Agent): 'global' | 'project' {
+    if (!agent) return 'project'
+    const skillConfigs: Record<string, {projectPath: null | string}> = SKILL_CONNECTOR_CONFIGS
+    const config = skillConfigs[agent]
+    return config && !config.projectPath ? 'global' : 'project'
+  }
+
+  /**
    * Analytics emit helper. Mirrors the try/processLog pattern from other
    * handlers so analytics failures never affect command outcomes.
    */
@@ -128,7 +142,7 @@ export class HubHandler {
     }
 
     const projectPath = this.resolveEffectivePath(clientId)
-    const scope = data.scope ?? 'project'
+    const scope = data.scope ?? this.defaultScopeForAgent(agent)
 
     const matches = await this.hubRegistryService.getEntriesById(data.entryId).then((entries) => {
       // If a specific registry is requested, filter to that registry
@@ -147,7 +161,7 @@ export class HubHandler {
 
       case 1: {
         // Single match: proceed with install. performInstall emits success/failure.
-        return this.performInstall(matches[0], projectPath, agent, scope)
+        return this.performInstall({agent, entry: matches[0], projectPath, scope})
       }
 
       default: {
@@ -307,12 +321,13 @@ export class HubHandler {
     }
   }
 
-  private async performInstall(
-    entry: HubEntryDTO,
-    projectPath: string,
-    agent?: Agent,
-    scope?: 'global' | 'project',
-  ): Promise<HubInstallResponse> {
+  private async performInstall(params: {
+    agent?: Agent
+    entry: HubEntryDTO
+    projectPath: string
+    scope?: 'global' | 'project'
+  }): Promise<HubInstallResponse> {
+    const {agent, entry, projectPath, scope} = params
     try {
       let auth: HubInstallAuthParams | undefined
       if (entry.registry && entry.registry !== OFFICIAL_REGISTRY_NAME) {

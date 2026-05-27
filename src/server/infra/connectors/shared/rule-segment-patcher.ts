@@ -1,10 +1,10 @@
-import {readdir, readFile, writeFile} from 'node:fs/promises'
-import os from 'node:os'
-import path from 'node:path'
+import {mkdir, readdir, readFile, writeFile} from 'node:fs/promises'
+import path, {dirname} from 'node:path'
 
 import {RULES_CONNECTOR_CONFIGS} from '../rules/rules-connector-config.js'
 import {MAIN_SKILL_FILE_NAME, SKILL_CONNECTOR_CONFIGS} from '../skill/skill-connector-config.js'
-import {BRV_RULE_MARKERS} from './constants.js'
+import {resolveSkillGlobalBasePath} from '../skill/skill-path-resolver.js'
+import {BRV_RULE_MARKERS, BYTEROVER_BLOCK_MARKERS} from './constants.js'
 
 const WORKFLOWS_FILE_NAME = 'WORKFLOWS.md'
 
@@ -195,6 +195,108 @@ export async function patchSkillFile(fullPath: string): Promise<boolean> {
   return true
 }
 
+export async function upsertByteroverBlock(fullPath: string, blockContent: string): Promise<boolean> {
+  let existing = ''
+  try {
+    existing = await readFile(fullPath, 'utf8')
+  } catch {
+    // Missing autonomous-agent instruction files are created because the
+    // resolved target is agent-owned state, not a user's flexible workspace.
+  }
+
+  const currentBlock = findByteroverBlock(existing)
+  // Replace in place with the bare block so the original boundary
+  // (the newline after the END marker) is preserved — re-running install
+  // must be idempotent, not accumulate blank lines after the block.
+  const nextContent = currentBlock
+    ? existing.slice(0, currentBlock.start) + stripTrailingNewlines(blockContent) + existing.slice(currentBlock.end)
+    : appendManagedBlock(existing, normalizeManagedBlock(blockContent))
+
+  if (nextContent === existing) return false
+
+  await mkdir(dirname(fullPath), {recursive: true})
+  await writeFile(fullPath, nextContent, 'utf8')
+  return true
+}
+
+export async function removeByteroverBlock(fullPath: string): Promise<boolean> {
+  let existing: string
+  try {
+    existing = await readFile(fullPath, 'utf8')
+  } catch {
+    return false
+  }
+
+  const currentBlock = findByteroverBlock(existing)
+  if (!currentBlock) return false
+
+  const nextContent = joinAfterBlockRemoval(existing.slice(0, currentBlock.start), existing.slice(currentBlock.end))
+  await writeFile(fullPath, nextContent, 'utf8')
+  return true
+}
+
+/**
+ * True when the file carries a managed ByteRover block. When `expectedBlock` is
+ * supplied the on-disk block must also match it byte-for-byte (newline-trimmed),
+ * so a block with valid markers but stale content is reported as absent and the
+ * same-type re-install short-circuit can fall through to repair it.
+ */
+export async function hasByteroverBlock(fullPath: string, expectedBlock?: string): Promise<boolean> {
+  let existing: string
+  try {
+    existing = await readFile(fullPath, 'utf8')
+  } catch {
+    return false
+  }
+
+  const currentBlock = findByteroverBlock(existing)
+  if (!currentBlock) return false
+  if (expectedBlock === undefined) return true
+
+  const onDisk = existing.slice(currentBlock.start, currentBlock.end)
+  return stripTrailingNewlines(onDisk) === stripTrailingNewlines(expectedBlock)
+}
+
+function normalizeManagedBlock(blockContent: string): string {
+  return blockContent.endsWith('\n') ? blockContent : `${blockContent}\n`
+}
+
+function stripTrailingNewlines(blockContent: string): string {
+  return blockContent.replace(/\n+$/u, '')
+}
+
+function findByteroverBlock(content: string): undefined | {end: number; start: number} {
+  const {END, START} = BYTEROVER_BLOCK_MARKERS
+  const start = content.indexOf(START)
+  if (start === -1) return undefined
+
+  const endStart = content.indexOf(END, start + START.length)
+  if (endStart === -1) return undefined
+
+  return {
+    end: endStart + END.length,
+    start,
+  }
+}
+
+function appendManagedBlock(existing: string, blockContent: string): string {
+  if (!existing.trim()) return blockContent
+  const separator = existing.endsWith('\n') ? '\n' : '\n\n'
+  return `${existing}${separator}${blockContent}`
+}
+
+function joinAfterBlockRemoval(before: string, after: string): string {
+  const trimmedBefore = before.replace(/[ \t\n]+$/u, '')
+  const trimmedAfter = after.replace(/^[ \t\n]+/u, '')
+  if (trimmedBefore && trimmedAfter) {
+    return `${trimmedBefore}\n\n${trimmedAfter}`
+  }
+
+  if (trimmedBefore) return `${trimmedBefore}\n`
+  if (trimmedAfter) return trimmedAfter
+  return ''
+}
+
 /**
  * Ensures `brv curate view` is present in all connector files found on disk.
  * Each patcher function checks its own sentinel string before writing — safe to call on every command.
@@ -210,7 +312,7 @@ export async function ensureCurateViewPatched(projectRoot: string): Promise<void
   const skillDirScans = await Promise.all(
     Object.values(SKILL_CONNECTOR_CONFIGS).flatMap((config) => [
       config.projectPath ? scanSkillsDir(path.join(projectRoot, config.projectPath)) : null,
-      scanSkillsDir(path.join(os.homedir(), config.globalPath)),
+      scanSkillsDir(resolveSkillGlobalBasePath(config)),
     ]),
   )
 

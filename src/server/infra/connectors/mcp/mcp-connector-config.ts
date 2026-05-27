@@ -1,12 +1,15 @@
+import path from 'node:path'
+
 import type {Agent} from '../../../core/domain/entities/agent.js'
 import type {McpServerConfig} from '../../../core/interfaces/storage/i-mcp-config-writer.js'
 
+import {resolveHermesHome} from '../shared/agent-path-resolver.js'
 import {getClaudeDesktopConfigPath} from './claude-desktop-config-path.js'
 
 /**
  * Supported MCP config file formats.
  */
-export type McpConfigFormat = 'json' | 'toml'
+export type McpConfigFormat = 'json' | 'toml' | 'yaml'
 
 /**
  * Supported MCP config scope.
@@ -69,9 +72,21 @@ export type TomlMcpConnectorConfig = McpConnectorConfigBase & {
 }
 
 /**
+ * YAML format configuration - uses key path navigation.
+ */
+export type YamlMcpConnectorConfig = McpConnectorConfigBase & {
+  format: 'yaml'
+  /**
+   * YAML key path to the MCP server entry, including server name.
+   * e.g., ['mcp_servers', 'brv'] navigates to { mcp_servers: { brv: ... } }
+   */
+  serverKeyPath: readonly string[]
+}
+
+/**
  * Configuration for agent-specific MCP settings.
  */
-export type McpConnectorConfig = JsonMcpConnectorConfig | TomlMcpConnectorConfig
+export type McpConnectorConfig = JsonMcpConnectorConfig | TomlMcpConnectorConfig | YamlMcpConnectorConfig
 
 /* eslint-disable perfectionist/sort-objects */
 /** Default MCP server configuration */
@@ -185,6 +200,14 @@ export const MCP_CONNECTOR_CONFIGS = {
     scope: 'project',
     serverConfig: DEFAULT_SERVER_CONFIG,
     serverKeyPath: ['servers', 'brv'],
+  },
+  Hermes: {
+    configPathResolver: () => path.join(resolveHermesHome(), 'config.yaml'),
+    format: 'yaml',
+    mode: 'auto',
+    scope: 'global',
+    serverConfig: DEFAULT_SERVER_CONFIG,
+    serverKeyPath: ['mcp_servers', 'brv'],
   },
   Junie: {
     configPath: '.junie/mcp/mcp.json',

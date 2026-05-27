@@ -1,7 +1,7 @@
 import {Args, Command, Flags} from '@oclif/core'
 
 import {continueSession, kickoffSession, resolveProjectRoot} from '../../lib/curate-session.js'
-import {type DaemonClientOptions} from '../../lib/daemon-client.js'
+import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
 import {argvRequestsJsonFormat, CURATE_REMOVED_FLAGS, findRemovedFlagMessage} from '../../lib/removed-flags.js'
 
@@ -196,13 +196,34 @@ Bad examples:
       return
     }
 
-    const envelope = await continueSession({
-      confirmOverwrite: flags.overwrite ?? false,
-      projectRoot: resolveProjectRoot(),
-      response: flags.response,
-      sessionId,
-    })
-    this.emitToolModeEnvelope(envelope, format)
+    // Continuation routes the write through the daemon (curate-tool-mode
+    // task) so the curate appears in the WebUI Tasks panel and cancel
+    // surfaces. Kickoff stays in-process — no daemon round-trip needed
+    // to emit the generate prompt.
+    const {response} = flags
+    const confirmOverwrite = flags.overwrite ?? false
+    try {
+      await withDaemonRetry(async (client) => {
+        const envelope = await continueSession({
+          client,
+          confirmOverwrite,
+          format,
+          projectRoot: resolveProjectRoot(),
+          response,
+          sessionId,
+        })
+        this.emitToolModeEnvelope(envelope, format)
+      }, this.getDaemonClientOptions())
+    } catch (error) {
+      this.emitToolModeEnvelope(
+        {
+          errors: [{kind: 'daemon-error', message: formatConnectionError(error)}],
+          ok: false,
+          status: 'failed',
+        },
+        format,
+      )
+    }
   }
 
   /**

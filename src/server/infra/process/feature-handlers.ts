@@ -78,6 +78,7 @@ import {
   HubHandler,
   InitHandler,
   LocationsHandler,
+  MigrateHandler,
   ModelHandler,
   ProviderHandler,
   PullHandler,
@@ -442,6 +443,8 @@ export async function setupFeatureHandlers({
     tokenStore,
     transport,
   }).setup()
+
+  new MigrateHandler({resolveProjectPath, transport}).setup()
 
   new ResetHandler({
     analyticsClient,

@@ -74,10 +74,12 @@ function makeStubTransportServer(sandbox: SinonSandbox) {
 }
 
 function makeStubAgentPool(sandbox: SinonSandbox): IAgentPool & {
+  cancelQueuedTask: SinonStub
   notifyTaskCompleted: SinonStub
   submitTask: SinonStub
 } {
   return {
+    cancelQueuedTask: sandbox.stub().returns(false),
     getEntries: sandbox.stub().returns([]),
     getSize: sandbox.stub().returns(0),
     handleAgentDisconnected: sandbox.stub(),
@@ -768,6 +770,14 @@ describe('TaskRouter', () => {
       )).to.be.true
     })
 
+    it('should notify agentPool on task:cancelled so the project queue drains (T1.3 queue-advance)', () => {
+      const handler = transportHelper.requestHandlers.get(TransportTaskEventNames.CANCELLED)
+
+      handler!({taskId}, 'agent-1')
+
+      expect(agentPool.notifyTaskCompleted.calledWith('/app')).to.be.true
+    })
+
     it('should remove task from active tasks after completion', () => {
       const handler = transportHelper.requestHandlers.get(TransportTaskEventNames.COMPLETED)
 
@@ -800,10 +810,10 @@ describe('TaskRouter', () => {
       ;(transportHelper.transport.sendTo as SinonStub).resetHistory()
     })
 
-    it('should forward cancel to agent when agent connected', () => {
+    it('should forward cancel to agent when agent connected', async () => {
       const handler = transportHelper.requestHandlers.get(TransportTaskEventNames.CANCEL)
 
-      const result = handler!({taskId}, 'client-1')
+      const result = await handler!({taskId}, 'client-1')
 
       expect(result).to.deep.equal({success: true})
       expect((transportHelper.transport.sendTo as SinonStub).calledWith(
@@ -813,12 +823,12 @@ describe('TaskRouter', () => {
       )).to.be.true
     })
 
-    it('should cancel task locally when no agent connected', () => {
+    it('should cancel task locally when no agent connected', async () => {
       getAgentForProject.resetBehavior()
 
       const handler = transportHelper.requestHandlers.get(TransportTaskEventNames.CANCEL)
 
-      const result = handler!({taskId}, 'client-1')
+      const result = await handler!({taskId}, 'client-1')
 
       expect(result).to.deep.equal({success: true})
 
@@ -833,12 +843,149 @@ describe('TaskRouter', () => {
       expect(router.getTasksForProject('/app')).to.have.lengthOf(0)
     })
 
-    it('should return error for unknown taskId', () => {
+    it('should return error for unknown taskId', async () => {
       const handler = transportHelper.requestHandlers.get(TransportTaskEventNames.CANCEL)
 
-      const result = handler!({taskId: 'nonexistent'}, 'client-1')
+      const result = await handler!({taskId: 'nonexistent'}, 'client-1')
 
       expect(result).to.deep.equal({error: 'Task not found', success: false})
+    })
+
+    it('returns success on a retry after the task was already cancelled (idempotent, in-memory fast path)', async () => {
+      // First cancel succeeds and moves the task into completedTasks via
+      // handleTaskCancelled. A retry (e.g. due to a dropped response in
+      // withDaemonRetry) sees the task gone from this.tasks but still
+      // present in completedTasks with status: 'cancelled' — the daemon
+      // returns success so the retry isn't reported as a misleading failure.
+      const cancelledHandler = transportHelper.requestHandlers.get(TransportTaskEventNames.CANCELLED)
+      cancelledHandler!({taskId}, 'agent-1')
+
+      const cancelHandler = transportHelper.requestHandlers.get(TransportTaskEventNames.CANCEL)
+      const result = await cancelHandler!({taskId}, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+    })
+
+    it('returns success on a retry after completedTasks has aged out — durable via persistent history store', async () => {
+      // Simulate the after-grace-period case: the task entry has been
+      // removed from in-memory completedTasks by the cleanup setTimeout,
+      // but the persistent task history store still has it with status:
+      // 'cancelled' (written by TaskHistoryHook.onTaskCancelled).
+      //
+      // The daemon must consult the store and still return success so
+      // longer-delayed retries don't get a misleading "Task not found".
+      const getStoreStub = sandbox.stub().returns({
+        getById: sandbox.stub().resolves({status: 'cancelled', taskId}),
+      })
+      const resolveClientStub = sandbox.stub().returns('/app')
+
+      const routerWithStore = new TaskRouter({
+        agentPool,
+        getAgentForProject,
+        getTaskHistoryStore: getStoreStub,
+        projectRegistry,
+        projectRouter,
+        resolveClientProjectPath: resolveClientStub,
+        transport: transportHelper.transport,
+      })
+      routerWithStore.setup()
+
+      const cancelHandler = transportHelper.requestHandlers.get(TransportTaskEventNames.CANCEL)
+      const result = await cancelHandler!({taskId: 'aged-out-task'}, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+      expect(getStoreStub.calledOnceWithExactly('/app')).to.equal(true)
+    })
+
+    it('still returns Task not found when the history store has a non-cancelled status (e.g. completed)', async () => {
+      // Negative case: only `status: cancelled` history entries map to
+      // idempotent success. A completed-then-deleted task should still
+      // surface as "Task not found" so the user sees a real signal.
+      const getStoreStub = sandbox.stub().returns({
+        getById: sandbox.stub().resolves({status: 'completed', taskId}),
+      })
+
+      new TaskRouter({
+        agentPool,
+        getAgentForProject,
+        getTaskHistoryStore: getStoreStub,
+        projectRegistry,
+        projectRouter,
+        resolveClientProjectPath: sandbox.stub().returns('/app'),
+        transport: transportHelper.transport,
+      }).setup()
+
+      const cancelHandler = transportHelper.requestHandlers.get(TransportTaskEventNames.CANCEL)
+      const result = await cancelHandler!({taskId: 'completed-task'}, 'client-1')
+
+      expect(result).to.deep.equal({error: 'Task not found', success: false})
+    })
+
+    describe('queued task cancellation (T1.3)', () => {
+      it('cancels a queued task directly via agentPool, broadcasts cancelled, never forwards to agent', async () => {
+        agentPool.cancelQueuedTask.returns(true)
+        const handler = transportHelper.requestHandlers.get(TransportTaskEventNames.CANCEL)
+
+        const result = await handler!({taskId}, 'client-1')
+
+        expect(result).to.deep.equal({success: true})
+        expect(agentPool.cancelQueuedTask.calledOnceWithExactly(taskId)).to.equal(true)
+
+        // Agent must NOT receive the forwarded cancel
+        const forwardedToAgent = (transportHelper.transport.sendTo as SinonStub).getCalls().some(
+          (c) => c.args[0] === 'agent-1' && c.args[1] === TransportTaskEventNames.CANCEL,
+        )
+        expect(forwardedToAgent).to.equal(false)
+
+        // Client receives task:cancelled directly from the daemon
+        expect((transportHelper.transport.sendTo as SinonStub).calledWith(
+          'client-1',
+          TransportTaskEventNames.CANCELLED,
+          {taskId},
+        )).to.be.true
+
+        // Task removed from in-memory map
+        expect(router.getTasksForProject('/app')).to.have.lengthOf(0)
+      })
+
+      it('does NOT call agentPool.notifyTaskCompleted for queued cancel (the task never occupied a pool slot)', async () => {
+        agentPool.cancelQueuedTask.returns(true)
+        const handler = transportHelper.requestHandlers.get(TransportTaskEventNames.CANCEL)
+
+        await handler!({taskId}, 'client-1')
+
+        expect(agentPool.notifyTaskCompleted.called).to.equal(false)
+      })
+
+      it('falls through to forward-to-agent when cancelQueuedTask returns false (task is mid-execution)', async () => {
+        agentPool.cancelQueuedTask.returns(false)
+        const handler = transportHelper.requestHandlers.get(TransportTaskEventNames.CANCEL)
+
+        const result = await handler!({taskId}, 'client-1')
+
+        expect(result).to.deep.equal({success: true})
+        expect((transportHelper.transport.sendTo as SinonStub).calledWith(
+          'agent-1',
+          TransportTaskEventNames.CANCEL,
+          {taskId},
+        )).to.be.true
+      })
+
+      it('returns success on a sequential retry after queued cancel — in-memory fast path', async () => {
+        // Regression guard: cancelTaskLocally must seed completedTasks with a
+        // 'cancelled' entry so the fast-path idempotency check at handleTaskCancel
+        // catches a sequential retry. Without that seeding, the retry would race
+        // the fire-and-forget notifyHooksCancelled to the durable history store
+        // and could return a misleading "Task not found".
+        agentPool.cancelQueuedTask.returns(true)
+        const handler = transportHelper.requestHandlers.get(TransportTaskEventNames.CANCEL)
+
+        const first = await handler!({taskId}, 'client-1')
+        const second = await handler!({taskId}, 'client-1')
+
+        expect(first).to.deep.equal({success: true})
+        expect(second).to.deep.equal({success: true})
+      })
     })
   })
 

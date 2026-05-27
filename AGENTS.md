@@ -83,6 +83,13 @@ npm run dev:ui:package               # Vite dev server resolving shared UI from 
 - MCP server in `server/infra/mcp/` exposes tools via Model Context Protocol; `tools/` subdir has dedicated implementations (`brv-query-tool`, `brv-curate-tool`)
 - Connector subsystem (`server/infra/connectors/`): `rules/`, `skill/`, `mcp/`, `hook/`, `shared/`. Shared rules files (e.g. `AGENTS.md` shared by Amp/Codex/OpenCode) embed an agent-name footer inside `<!-- BEGIN/END BYTEROVER RULES -->` markers — see `shared/constants.ts` (`BRV_RULE_MARKERS`, `BRV_RULE_TAG`, `extractInstalledAgentFromBrvSection`) — so each agent owns its own segment. Preserve the footer when editing rule-section logic
 
+### Task Cancellation
+
+- `brv curate | query | dream --cancel <taskId>` — emits `TaskEvents.CANCEL`; shared CLI helper `src/oclif/lib/cancel-task.ts` formats text or JSON envelope. SIGINT in the foreground command triggers the same cancel path (`task-client-sigint`)
+- Daemon: `server/infra/daemon/agent-cancel-listener.ts` routes the cancel into the running agent process; `agent-executor-error.ts` distinguishes user-cancel from real failures so cancelled tasks aren't recorded as errors in billing/history
+- TUI: Esc cancels streaming (covered in REPL section); Tasks tab supports cancel keybind via `tui/features/tasks/hooks/use-cancel-running-task-keybind.ts` + `select-cancel-target.ts`, mounted through `cancel-keybind-initializer.tsx` in app providers
+- WebUI: cancel button in `webui/features/tasks/components/task-list-table.tsx` + `task-detail-header.tsx`, wired via `webui/features/tasks/api/cancel-task.ts` and `utils/row-action-kind.ts`
+
 ### Web UI (`src/webui/`, `src/server/infra/webui/`)
 
 - `brv webui [-p, --port <n>]` opens the dashboard in the default browser. Port is persisted via daemon events (`webui:getPort` / `webui:setPort`); first-run default is 7700
@@ -122,8 +129,8 @@ npm run dev:ui:package               # Vite dev server resolving shared UI from 
 
 ### Settings
 
-- `brv settings` (bare = list) / `brv settings get <key>` / `set <key> <value>` / `reset <key>` — user-configurable settings persisted at `<BRV_DATA_DIR>/settings.json`; changes apply after `brv restart`
-- Categories: `concurrency`, `llm`, `task-history`. Keys: `agentPool.maxSize`, `agentPool.maxConcurrentTasksPerProject`, `llm.iterationBudgetMs`, `llm.requestTimeoutMs`, `taskHistory.maxEntries`. Descriptors in `server/core/domain/entities/settings.ts` reference `src/constants.ts` so a constant change updates the setting's default automatically. Agent process consumes them via `agent/infra/settings/agent-settings-snapshot.ts` forwarded by `server/infra/daemon/agent-process.ts`
+- `brv settings` (bare = list) / `brv settings get <key>` / `set <key> <value>` / `reset <key>` — user-configurable settings persisted at `<BRV_DATA_DIR>/settings.json`. Most settings need `brv restart` to take effect; boolean settings like `update.checkForUpdates` apply live (`restartRequired: false` on the descriptor)
+- Categories: `concurrency`, `llm`, `task-history`, `updates`. Keys: `agentPool.maxSize`, `agentPool.maxConcurrentTasksPerProject`, `llm.iterationBudgetMs`, `llm.requestTimeoutMs`, `taskHistory.maxEntries`, `update.checkForUpdates`. Descriptors in `server/core/domain/entities/settings.ts` are discriminated on `type: 'integer' | 'boolean'` and reference `src/constants.ts` so a constant change updates the setting's default automatically. `update.checkForUpdates` gates the `update-notifier` init hook and the `block-autoupdate-when-off` init hook (which rejects `brv update` when the user has opted out). Agent process consumes settings via `agent/infra/settings/agent-settings-snapshot.ts` forwarded by `server/infra/daemon/agent-process.ts`
 - Server: `server/infra/storage/file-settings-store.ts` + `settings-validator.ts`; `server/infra/daemon/settings-bootstrap.ts` reads settings at boot and feeds AgentPool (maxSize, maxConcurrentTasks) + task-history cache. Transport: `shared/transport/events/settings-events.ts` + `server/infra/transport/handlers/settings-handler.ts`
 - UI: TUI `tui/features/settings/`, WebUI `webui/features/settings/` (rendered under `pages/configuration/` sub-routes). Task heartbeat (`server/infra/process/task-heartbeat-manager.ts`) and task-history cache (`server/infra/process/task-history-store-cache.ts`) are tuned via these keys; oclif task-client uses heartbeats — explicit task timeouts are deprecated
 

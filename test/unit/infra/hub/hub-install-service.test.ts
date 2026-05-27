@@ -124,11 +124,11 @@ describe('HubInstallService', () => {
       expect(skillConnectorFactory.calledWith(projectPath)).to.be.true
       expect(mockSkillConnector.writeSkillFiles.calledOnce).to.be.true
 
-      const [agent, skillName, files] = mockSkillConnector.writeSkillFiles.firstCall.args as [
-        string,
-        string,
-        Array<{content: string; name: string}>,
-      ]
+      const {agent, files, skillName} = mockSkillConnector.writeSkillFiles.firstCall.args[0] as {
+        agent: string
+        files: Array<{content: string; name: string}>
+        skillName: string
+      }
       expect(agent).to.equal('Claude Code')
       expect(skillName).to.equal('test-skill')
       expect(files).to.have.lengthOf(1)
@@ -173,7 +173,9 @@ describe('HubInstallService', () => {
       const entry = createSkillEntry()
       await service.install({agent: 'Claude Code', entry, projectPath})
 
-      const files = mockSkillConnector.writeSkillFiles.firstCall.args[2] as Array<{content: string; name: string}>
+      const {files} = mockSkillConnector.writeSkillFiles.firstCall.args[0] as {
+        files: Array<{content: string; name: string}>
+      }
       expect(files).to.have.lengthOf(1)
       expect(files[0].name).to.equal('SKILL.md')
     })
@@ -184,8 +186,8 @@ describe('HubInstallService', () => {
       const entry = createSkillEntry()
       await service.install({agent: 'Claude Code', entry, projectPath, scope: 'global'})
 
-      const options = mockSkillConnector.writeSkillFiles.firstCall.args[3] as {scope?: string}
-      expect(options.scope).to.equal('global')
+      const {scope} = mockSkillConnector.writeSkillFiles.firstCall.args[0] as {scope?: string}
+      expect(scope).to.equal('global')
     })
 
     it('should pass undefined scope when not specified', async () => {
@@ -194,8 +196,8 @@ describe('HubInstallService', () => {
       const entry = createSkillEntry()
       await service.install({agent: 'Claude Code', entry, projectPath})
 
-      const options = mockSkillConnector.writeSkillFiles.firstCall.args[3] as {scope?: string}
-      expect(options.scope).to.be.undefined
+      const {scope} = mockSkillConnector.writeSkillFiles.firstCall.args[0] as {scope?: string}
+      expect(scope).to.be.undefined
     })
   })
 

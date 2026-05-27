@@ -698,11 +698,48 @@ export function resolveRegistryProvider(
   model: string,
   explicitProvider?: string,
 ): LLMProvider {
-  // 1. Explicit provider mapping takes priority
+  // 1. Explicit provider mapping takes priority.
+  //
+  // Every list below must stay in sync with the `providerType` declared on
+  // the matching provider module in src/agent/infra/llm/providers/. A missing
+  // entry on the OpenAI side routes the provider through Gemini formatter /
+  // tokenizer / registry, fires a "Model not supported" warning, and corrupts
+  // context-length lookups (root cause of ENG-2897). Sync is verified by a
+  // regression test that cross-checks each list against PROVIDER_MODULES at
+  // test time — both for the openai list AND for the claude / gemini lists,
+  // so a future drift on any side fails loudly rather than relying on the
+  // terminal fallback below.
   if (explicitProvider) {
     if (explicitProvider === 'anthropic') return 'claude'
-    if (explicitProvider === 'google' || explicitProvider === 'google-vertex') return 'gemini'
-    if (['groq', 'mistral', 'openai', 'openai-compatible', 'openrouter', 'xai'].includes(explicitProvider)) {
+    if (
+      explicitProvider === 'byterover' ||
+      explicitProvider === 'google' ||
+      explicitProvider === 'google-vertex'
+    ) {
+      return 'gemini'
+    }
+
+    if (
+      [
+        'cerebras',
+        'cohere',
+        'deepinfra',
+        'deepseek',
+        'glm',
+        'glm-coding-plan',
+        'groq',
+        'minimax',
+        'mistral',
+        'moonshot',
+        'openai',
+        'openai-compatible',
+        'openrouter',
+        'perplexity',
+        'togetherai',
+        'vercel',
+        'xai',
+      ].includes(explicitProvider)
+    ) {
       return 'openai'
     }
   }
