@@ -1,10 +1,7 @@
 import {expect} from 'chai'
 
-import {
-  findSettingDescriptor,
-  SETTINGS_KEYS,
-  SETTINGS_REGISTRY,
-} from '../../../../../src/server/core/domain/entities/settings.js'
+import {findSettingDescriptor, SETTINGS_REGISTRY} from '../../../../../src/server/core/domain/entities/settings.js'
+import {SETTINGS_KEYS} from '../../../../../src/shared/types/settings-keys.js'
 
 function integerMaxOf(key: string): number {
   const descriptor = findSettingDescriptor(key)

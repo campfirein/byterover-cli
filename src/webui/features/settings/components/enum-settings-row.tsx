@@ -11,6 +11,7 @@ import {toast} from 'sonner'
 import type {SettingsRow as SettingsRowData} from '../../../../shared/types/settings-row'
 
 import {LANGUAGE_NAMES} from '../../../../shared/language/language-names'
+import {SETTINGS_KEYS} from '../../../../shared/types/settings-keys'
 import {formatError} from '../../../lib/error-messages'
 import {noop} from '../../../lib/noop'
 import {useSetSetting} from '../api/set-setting'
@@ -78,7 +79,7 @@ export function EnumSettingsRow({row}: Props) {
 }
 
 function displayLabel(key: string, option: string): string {
-  if (key !== 'language.code') return option
+  if (key !== SETTINGS_KEYS.LANGUAGE_CODE) return option
   const name = LANGUAGE_NAMES[option]
   return name ? `${option} — ${name}` : option
 }

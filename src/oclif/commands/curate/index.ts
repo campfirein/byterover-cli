@@ -4,13 +4,11 @@ import type {BrvConfigLanguage} from '../../../server/core/domain/entities/brv-c
 
 import {ProjectConfigStore} from '../../../server/infra/config/file-config-store.js'
 import {SettingsEvents, type SettingsListResponse} from '../../../shared/transport/events/settings-events.js'
+import {SETTINGS_KEYS} from '../../../shared/types/settings-keys.js'
 import {continueSession, kickoffSession, resolveProjectRoot} from '../../lib/curate-session.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
 import {argvRequestsJsonFormat, CURATE_REMOVED_FLAGS, findRemovedFlagMessage} from '../../lib/removed-flags.js'
-
-const LANGUAGE_MODE_KEY = 'language.mode'
-const LANGUAGE_CODE_KEY = 'language.code'
 
 /** Parsed flags type */
 type CurateFlags = {
@@ -294,14 +292,27 @@ Bad examples:
   }
 }
 
-async function readLanguageFromSettings(): Promise<BrvConfigLanguage | undefined> {
+/**
+ * Reads the language preference from daemon settings via the same
+ * `SettingsEvents.LIST` transport every other settings consumer uses.
+ *
+ * Exported (and accepts a `DaemonClientOptions`) so tests can drive
+ * `withDaemonRetry` with a stubbed transport client. Returns `undefined`
+ * on any non-fixed mode, missing/non-string code, or daemon error —
+ * callers should treat `undefined` as "no opinion" and fall back to
+ * project config / the auto clause.
+ */
+export async function readLanguageFromSettings(
+  options?: DaemonClientOptions,
+): Promise<BrvConfigLanguage | undefined> {
   try {
-    const response = await withDaemonRetry<SettingsListResponse>(async (client) =>
-      client.requestWithAck<SettingsListResponse>(SettingsEvents.LIST),
+    const response = await withDaemonRetry<SettingsListResponse>(
+      async (client) => client.requestWithAck<SettingsListResponse>(SettingsEvents.LIST),
+      options,
     )
     const byKey = new Map(response.items.map((item) => [item.key, item.current]))
-    const mode = byKey.get(LANGUAGE_MODE_KEY)
-    const code = byKey.get(LANGUAGE_CODE_KEY)
+    const mode = byKey.get(SETTINGS_KEYS.LANGUAGE_MODE)
+    const code = byKey.get(SETTINGS_KEYS.LANGUAGE_CODE)
     if (mode !== 'fixed') return undefined
     if (typeof code !== 'string') return undefined
     return {code, mode: 'fixed'}

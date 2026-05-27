@@ -1,4 +1,5 @@
 import {LANGUAGE_NAMES} from '../../../../shared/language/language-names.js'
+import {SETTINGS_KEYS} from '../../../../shared/types/settings-keys.js'
 import {
   AGENT_LLM_ITERATION_BUDGET_MS,
   AGENT_LLM_REQUEST_TIMEOUT_MS,
@@ -77,22 +78,6 @@ export type SettingItem = {
   readonly restartRequired: boolean
 }
 
-/**
- * Single source of truth for setting key names. Importers must reference
- * these constants instead of inline string literals so a rename of one
- * key is a typecheck error at every call site (validator, bootstrap,
- * agent snapshot read, CLI tests).
- */
-export const SETTINGS_KEYS = {
-  AGENT_POOL_MAX_CONCURRENT_TASKS: 'agentPool.maxConcurrentTasksPerProject',
-  AGENT_POOL_MAX_SIZE: 'agentPool.maxSize',
-  LANGUAGE_CODE: 'language.code',
-  LANGUAGE_MODE: 'language.mode',
-  LLM_ITERATION_BUDGET_MS: 'llm.iterationBudgetMs',
-  LLM_REQUEST_TIMEOUT_MS: 'llm.requestTimeoutMs',
-  TASK_HISTORY_MAX_ENTRIES: 'taskHistory.maxEntries',
-  UPDATE_CHECK_FOR_UPDATES: 'update.checkForUpdates',
-} as const
 
 export const SETTINGS_REGISTRY: readonly SettingDescriptor[] = [
   {

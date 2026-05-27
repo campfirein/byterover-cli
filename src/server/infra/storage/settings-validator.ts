@@ -5,7 +5,8 @@ import type {
   SettingDescriptor,
 } from '../../core/domain/entities/settings.js'
 
-import {findSettingDescriptor, SETTINGS_KEYS} from '../../core/domain/entities/settings.js'
+import {SETTINGS_KEYS} from '../../../shared/types/settings-keys.js'
+import {findSettingDescriptor} from '../../core/domain/entities/settings.js'
 
 export class UnknownSettingKeyError extends Error {
   public readonly key: string
