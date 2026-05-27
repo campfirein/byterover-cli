@@ -57,6 +57,7 @@ export function EnumSettingsRow({row}: Props) {
       <Select
         disabled={setMutation.isPending}
         onValueChange={(next) => {
+          if (next === null) return
           choose(next).catch(noop)
         }}
         value={current}

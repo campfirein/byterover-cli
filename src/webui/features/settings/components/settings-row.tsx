@@ -56,6 +56,11 @@ function IntegerSettingsRow({row}: Props) {
       return
     }
 
+    if (typeof parsed.value !== 'number') {
+      setError(`Expected an integer for ${row.key}`)
+      return
+    }
+
     if (parsed.value === row.current) {
       setError(undefined)
       setBuffer(String(parsed.value))
@@ -64,11 +69,12 @@ function IntegerSettingsRow({row}: Props) {
     }
 
     setError(undefined)
-    const response = await setMutation.mutateAsync({key: row.key, value: parsed.value})
+    const numericValue: number = parsed.value
+    const response = await setMutation.mutateAsync({key: row.key, value: numericValue})
     if (response.ok) {
       markDirty(row.key, row.restartRequired)
       isUserEditingRef.current = false
-      toast.success(`${label} set to ${toastValue(parsed.value)}`)
+      toast.success(`${label} set to ${toastValue(numericValue)}`)
       return
     }
 
