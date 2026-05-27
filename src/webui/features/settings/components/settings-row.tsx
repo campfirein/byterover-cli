@@ -118,7 +118,7 @@ function TextSettingsRow({row}: Props) {
           className={cn('text-xs leading-snug', hasError ? 'text-destructive' : 'text-muted-foreground')}
           id={descriptionId}
         >
-          {error ?? `${row.description} (range ${row.displayRange})`}
+          {error ?? (row.displayRange ? `${row.description} (range ${row.displayRange})` : row.description)}
         </span>
       </div>
       <div className="flex shrink-0 items-center gap-2">

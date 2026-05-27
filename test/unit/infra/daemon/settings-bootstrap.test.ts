@@ -180,6 +180,31 @@ describe('bootstrapSettings', () => {
       const result = await bootstrapSettings({log: newLogger().write, store})
       expect(result.transportHost).to.equal(TRANSPORT_HOST)
     })
+
+    it('falls back to default when settings value is whitespace-only', async () => {
+      const store = new StubSettingsStore({invalid: [], values: {'network.host': '   '}})
+      const result = await bootstrapSettings({log: newLogger().write, store})
+      expect(result.transportHost).to.equal(TRANSPORT_HOST)
+    })
+
+    it('reports source=default when neither env nor setting is set', async () => {
+      const store = new StubSettingsStore({invalid: [], values: {}})
+      const result = await bootstrapSettings({log: newLogger().write, store})
+      expect(result.transportHostSource).to.equal('default')
+    })
+
+    it('reports source=settings when the setting value is used', async () => {
+      const store = new StubSettingsStore({invalid: [], values: {'network.host': '0.0.0.0'}})
+      const result = await bootstrapSettings({log: newLogger().write, store})
+      expect(result.transportHostSource).to.equal('settings')
+    })
+
+    it('reports source=env when the env var wins', async () => {
+      process.env[ENV_KEY] = '10.0.0.1'
+      const store = new StubSettingsStore({invalid: [], values: {'network.host': '0.0.0.0'}})
+      const result = await bootstrapSettings({log: newLogger().write, store})
+      expect(result.transportHostSource).to.equal('env')
+    })
   })
 })
 

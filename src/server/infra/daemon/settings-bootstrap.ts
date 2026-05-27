@@ -28,6 +28,8 @@ export type ResolvedSettings = {
    *   BRV_TRANSPORT_HOST env > network.host setting > TRANSPORT_HOST default.
    */
   readonly transportHost: string
+  /** Where `transportHost` was sourced from. Surfaced in the daemon boot log. */
+  readonly transportHostSource: 'default' | 'env' | 'settings'
 }
 
 export type BootstrapSettingsOptions = {
@@ -54,16 +56,28 @@ export async function bootstrapSettings(options: BootstrapSettingsOptions): Prom
   }
 
   const envHost = process.env[TRANSPORT_HOST_ENV]?.trim()
-  const transportHost =
-    envHost !== undefined && envHost.length > 0
-      ? envHost
-      : readString(snapshot, SETTINGS_KEYS.NETWORK_HOST, TRANSPORT_HOST)
+  let transportHost: string
+  let transportHostSource: 'default' | 'env' | 'settings'
+  if (envHost !== undefined && envHost.length > 0) {
+    transportHost = envHost
+    transportHostSource = 'env'
+  } else {
+    const settingsHost = readString(snapshot, SETTINGS_KEYS.NETWORK_HOST)
+    if (settingsHost === undefined) {
+      transportHost = TRANSPORT_HOST
+      transportHostSource = 'default'
+    } else {
+      transportHost = settingsHost
+      transportHostSource = 'settings'
+    }
+  }
 
   return {
     agentMaxConcurrentTasks: readNumber(snapshot, SETTINGS_KEYS.AGENT_POOL_MAX_CONCURRENT_TASKS, AGENT_MAX_CONCURRENT_TASKS),
     agentPoolMaxSize: readNumber(snapshot, SETTINGS_KEYS.AGENT_POOL_MAX_SIZE, AGENT_POOL_MAX_SIZE),
     taskHistoryMaxEntries: readNumber(snapshot, SETTINGS_KEYS.TASK_HISTORY_MAX_ENTRIES, TASK_HISTORY_DEFAULT_MAX_ENTRIES),
     transportHost,
+    transportHostSource,
   }
 }
 
@@ -72,7 +86,15 @@ function readNumber(snapshot: SettingsStartupSnapshot, key: string, fallback: nu
   return typeof value === 'number' ? value : fallback
 }
 
-function readString(snapshot: SettingsStartupSnapshot, key: string, fallback: string): string {
+/**
+ * Returns the trimmed snapshot value for `key`, or `undefined` if missing /
+ * not-a-string / empty / whitespace-only. Caller picks the fallback so the
+ * `transportHostSource` distinction (env vs settings vs default) stays
+ * accurate even when the persisted value happens to equal the default.
+ */
+function readString(snapshot: SettingsStartupSnapshot, key: string): string | undefined {
   const value = snapshot.values[key]
-  return typeof value === 'string' && value.length > 0 ? value : fallback
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
 }

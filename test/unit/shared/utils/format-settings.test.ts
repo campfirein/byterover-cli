@@ -103,6 +103,26 @@ describe('format-settings (shared)', () => {
       expect(rows.map((r) => r.category)).to.deep.equal(['concurrency', 'llm', 'task-history'])
     })
 
+    it('places network between llm and task-history (matches CLI + WebUI order)', () => {
+      // Guards against CATEGORY_ORDER drift between the shared list (TUI
+      // consumer) and the oclif local list (`brv settings` CLI). Both should
+      // agree on the network<->task-history relative ordering.
+      const rows = buildSettingsRows([
+        makeItem({category: 'task-history', key: 'taskHistory.maxEntries'}),
+        makeItem({
+          category: 'network',
+          current: '127.0.0.1',
+          default: '127.0.0.1',
+          key: 'network.host',
+          max: undefined,
+          min: undefined,
+          type: 'string',
+        }),
+        makeItem({category: 'llm', key: 'llm.iterationBudgetMs', unit: 'ms'}),
+      ])
+      expect(rows.map((r) => r.category)).to.deep.equal(['llm', 'network', 'task-history'])
+    })
+
     it('appends the coupling hint to llm.requestTimeoutMs range', () => {
       const rows = buildSettingsRows([
         makeItem({category: 'llm', key: 'llm.requestTimeoutMs', max: 3_600_000, min: 10_000, unit: 'ms'}),

@@ -12,11 +12,19 @@
  * a security boundary, so this is acceptable.
  */
 export function generateUuid(): string {
-  const c = (globalThis as {crypto?: Crypto}).crypto
-  if (c?.randomUUID) return c.randomUUID()
+  // DOM lib types `globalThis.crypto` as mandatory, but at runtime it may
+  // legitimately be absent (Node SSR pre-20, test stubs via
+  // `Object.defineProperty(globalThis, 'crypto', {value: undefined})`).
+  // Plain `!== undefined` is the canonical guard; `typeof` is forbidden by
+  // the `unicorn/no-typeof-undefined` rule, and `as` casts are forbidden
+  // by the CLAUDE.md TS rule.
+  const c = globalThis.crypto
+  if (c !== undefined && typeof c.randomUUID === 'function') {
+    return c.randomUUID()
+  }
 
   const bytes = new Uint8Array(16)
-  if (c?.getRandomValues) {
+  if (c !== undefined && typeof c.getRandomValues === 'function') {
     c.getRandomValues(bytes)
   } else {
     for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256)

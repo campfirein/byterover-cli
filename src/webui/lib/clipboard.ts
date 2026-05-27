@@ -10,8 +10,13 @@
  * Returns `true` on success, `false` if every path failed.
  */
 export async function copyTextToClipboard(text: string): Promise<boolean> {
-  const nav = (globalThis as {navigator?: Navigator}).navigator
-  if (nav?.clipboard?.writeText) {
+  // Plain `!== undefined` is the canonical guard; DOM lib types `navigator`
+  // / `document` as mandatory but tests stub them via
+  // `Object.defineProperty(globalThis, 'navigator', {value: undefined})`.
+  // `as` casts and `typeof X !== 'undefined'` are both forbidden (CLAUDE.md
+  // and `unicorn/no-typeof-undefined`).
+  const nav = globalThis.navigator
+  if (nav !== undefined && typeof nav.clipboard?.writeText === 'function') {
     try {
       await nav.clipboard.writeText(text)
       return true
@@ -24,9 +29,8 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
 }
 
 function execCommandFallback(text: string): boolean {
-  // eslint-disable-next-line no-undef
-  const doc = (globalThis as {document?: Document}).document
-  if (!doc?.body) return false
+  const doc = globalThis.document
+  if (doc === undefined || !doc.body) return false
 
   const textarea = doc.createElement('textarea')
   textarea.value = text

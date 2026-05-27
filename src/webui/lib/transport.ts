@@ -42,17 +42,25 @@ function registerClient(socket: Socket, projectPath: string) {
   socket.emit('room:join', 'broadcast-room')
 }
 
+/**
+ * Hostname the browser uses to reach the daemon transport. Falls back to
+ * `127.0.0.1` only when there's no `location` global (Node SSR / Vite dev
+ * pre-render). Exposed for unit-test coverage of the SSR fallback.
+ */
+export function resolveDaemonHost(): string {
+  const loc = globalThis.location
+  return loc === undefined ? '127.0.0.1' : loc.hostname
+}
+
 export async function connectToTransport(projectPath: string): Promise<ConnectResult> {
   const config = await fetchUiConfig()
 
-  // Connect to the daemon's transport server on its dynamic port.
   // Use the same hostname the WebUI page was loaded from so the browser
-  // works regardless of whether the daemon binds to 127.0.0.1 (default)
-  // or 0.0.0.0 (Docker / LAN access via `network.host` setting or
-  // `BRV_TRANSPORT_HOST` env). Inside a browser `location.hostname`
-  // (on `globalThis`) is guaranteed available.
-  const browserLocation = (globalThis as {location?: {hostname: string}}).location
-  const daemonHost = browserLocation === undefined ? '127.0.0.1' : browserLocation.hostname
+  // works regardless of whether the daemon binds to 127.0.0.1 (default) or
+  // 0.0.0.0 (Docker / LAN access via `network.host` setting or
+  // `BRV_TRANSPORT_HOST` env). `typeof` keeps SSR / Vite dev safe even
+  // though DOM lib types `location` as mandatory.
+  const daemonHost = resolveDaemonHost()
   const socket = io(`http://${daemonHost}:${config.daemonPort}`, {
     reconnection: true,
     reconnectionAttempts: 30,

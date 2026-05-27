@@ -186,11 +186,14 @@ function validateString(descriptor: StringSettingDescriptor, value: unknown): st
     )
   }
 
-  if (value.length === 0) {
-    throw new InvalidSettingValueError(descriptor.key, value, 'value must not be empty')
+  const trimmed = value.trim()
+  if (trimmed.length === 0) {
+    throw new InvalidSettingValueError(descriptor.key, value, 'value must not be empty or whitespace')
   }
 
-  return value
+  // Canonicalize on store so downstream consumers (server.listen, getaddrinfo)
+  // never see padding that would silently fail at bind time.
+  return trimmed
 }
 
 function numericSubset(values: Readonly<Record<string, SettingValue>>): Record<string, number> {

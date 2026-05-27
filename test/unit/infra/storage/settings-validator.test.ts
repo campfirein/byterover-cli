@@ -348,6 +348,29 @@ describe('SettingsValidator', () => {
         InvalidSettingValueError,
       )
     })
+
+    it('rejects a whitespace-only string', () => {
+      try {
+        validator.validate('network.host', '   ')
+        expect.fail('expected throw')
+      } catch (error) {
+        expect(error).to.be.instanceOf(InvalidSettingValueError)
+        if (error instanceof InvalidSettingValueError) {
+          expect(error.key).to.equal('network.host')
+          expect(error.message.toLowerCase()).to.match(/empty|whitespace/)
+        }
+      }
+    })
+
+    it('trims surrounding whitespace on a valid value', () => {
+      expect(validator.validate('network.host', '  127.0.0.1  ')).to.equal('127.0.0.1')
+    })
+
+    it('preserves internal whitespace (only outer trim applied)', () => {
+      // Hostnames with internal whitespace are invalid at the OS level but the
+      // validator's job is type-shape, not DNS rules. Internal whitespace stays.
+      expect(validator.validate('network.host', 'a b')).to.equal('a b')
+    })
   })
 
   describe('partition (string descriptor)', () => {

@@ -35,8 +35,8 @@ export type RowParseResult =
 export const CATEGORY_ORDER: readonly SettingsRowCategory[] = [
   'concurrency',
   'llm',
-  'task-history',
   'network',
+  'task-history',
   'updates',
   'other',
 ]

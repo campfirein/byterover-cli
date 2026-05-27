@@ -246,6 +246,17 @@ describe('brv settings (index)', () => {
           restartRequired: true,
           type: 'string',
         },
+        {
+          category: 'task-history',
+          current: 1000,
+          default: 1000,
+          description: 'h',
+          key: 'taskHistory.maxEntries',
+          max: 10_000,
+          min: 10,
+          restartRequired: true,
+          type: 'integer',
+        },
       ],
     })
 
@@ -258,10 +269,15 @@ describe('brv settings (index)', () => {
     expect(hostRow).to.include('0.0.0.0')
     expect(hostRow).to.include('127.0.0.1')
 
-    // NETWORK section must appear AFTER LLM and BEFORE TASK HISTORY (per CATEGORY_ORDER).
+    // NETWORK section must appear AFTER CONCURRENCY and BEFORE TASK HISTORY
+    // (per CATEGORY_ORDER). The earlier weaker assertion only checked the
+    // concurrency < network half, letting the shared CATEGORY_ORDER drift
+    // out of step with the CLI's local order undetected.
     const concurrencyIdx = loggedMessages.findIndex((m) => m.includes('CONCURRENCY'))
     const networkIdx = loggedMessages.findIndex((m) => m.includes('NETWORK'))
+    const taskHistoryIdx = loggedMessages.findIndex((m) => m.includes('TASK HISTORY'))
     expect(concurrencyIdx).to.be.lessThan(networkIdx)
+    expect(networkIdx).to.be.lessThan(taskHistoryIdx)
   })
 
   it('adds the coupling hint inline on llm.requestTimeoutMs only', async () => {

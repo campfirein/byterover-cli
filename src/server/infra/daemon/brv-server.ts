@@ -40,7 +40,6 @@ import {
   BRV_DIR,
   HEARTBEAT_FILE,
   TASK_HEARTBEAT_INTERVAL_MS,
-  TRANSPORT_HOST,
   WEBUI_DEFAULT_PORT,
 } from '../../constants.js'
 import {
@@ -78,6 +77,7 @@ import {FileProviderConfigStore} from '../storage/file-provider-config-store.js'
 import {FileSettingsStore} from '../storage/file-settings-store.js'
 import {createProviderKeychainStore} from '../storage/provider-keychain-store.js'
 import {createTokenStore} from '../storage/token-store.js'
+import {isPortAvailable} from '../transport/port-utils.js'
 import {SocketIOTransportServer} from '../transport/socket-io-transport-server.js'
 import {createWebUiMiddleware} from '../webui/webui-middleware.js'
 import {WebUiServer} from '../webui/webui-server.js'
@@ -98,6 +98,17 @@ import {ShutdownHandler} from './shutdown-handler.js'
 
 function log(msg: string): void {
   processLog(`[Daemon] ${msg}`)
+}
+
+/**
+ * Loopback hosts that do NOT trigger the non-loopback security warning at
+ * daemon boot. Anything else (0.0.0.0, LAN IPs, public IPs, hostnames) is
+ * treated as externally reachable per the ENG-2968 review thread on PR #716.
+ */
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
+
+function isLoopbackHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(host.toLowerCase())
 }
 
 /**
@@ -158,8 +169,36 @@ async function main(): Promise<void> {
 
   log('Starting daemon...')
 
-  // 2. Select port (random batch scan in dynamic range 49152-65535)
-  const portResult = await selectDaemonPort()
+  // 1b. Bootstrap settings BEFORE selecting a port: `network.host` (with
+  // optional `BRV_TRANSPORT_HOST` env override) determines the bind
+  // interface for the Socket.IO transport AND the WebUI HTTP server.
+  // We must know the host *before* probing port availability — otherwise
+  // selectDaemonPort would check the loopback while the real bind ends up
+  // on a different interface, leading to a false-OK probe and an
+  // EADDRINUSE at the real bind. Bootstrap is pure I/O (settings.json
+  // read) with internal try/catch, so a parse failure falls back to
+  // defaults rather than throwing. It runs outside the try block on
+  // purpose: no instance lock or server state to clean up yet.
+  const settingsStore = new FileSettingsStore()
+  const resolvedSettings = await bootstrapSettings({log, store: settingsStore})
+  const {transportHost, transportHostSource} = resolvedSettings
+  log(`Daemon transport host: ${transportHost} (source: ${transportHostSource})`)
+  if (!isLoopbackHost(transportHost)) {
+    // The Socket.IO transport has no per-connection auth and currently
+    // defaults to `corsOrigin: '*'`. A non-loopback bind means any host that
+    // can reach this interface can invoke daemon commands. Surface a clear
+    // boot-time warning so operators see the trust assumption without
+    // having to read the source. Auth is tracked as a follow-up ticket.
+    log(
+      `[security] Daemon Socket.IO is bound on ${transportHost} with no per-connection auth. ` +
+        `Use only on trusted networks.`,
+    )
+  }
+
+  // 2. Select port (random batch scan in dynamic range 49152-65535) — probe
+  // on the SAME host the real bind will use so non-loopback hosts get an
+  // accurate availability check.
+  const portResult = await selectDaemonPort({checker: (port) => isPortAvailable(port, transportHost)})
   if (!portResult.success) {
     log('Failed to find available port for daemon (dynamic port range 49152-65535 exhausted)')
     // eslint-disable-next-line n/no-process-exit, unicorn/no-process-exit
@@ -204,17 +243,9 @@ async function main(): Promise<void> {
     // 4a. Construct transport server. start() is deferred to step 11 so all handlers register before sockets connect.
     transportServer = new SocketIOTransportServer()
 
-    // Bootstrap settings BEFORE binding any server: `network.host` (with
-    // optional `BRV_TRANSPORT_HOST` env override) determines the interface
-    // both the WebUI HTTP server and the Socket.IO transport bind to.
-    // task-history cache configuration still happens at step 7 with the
-    // rest of the resolved settings.
-    const settingsStore = new FileSettingsStore()
-    const resolvedSettings = await bootstrapSettings({log, store: settingsStore})
-    const {transportHost} = resolvedSettings
-    if (transportHost !== TRANSPORT_HOST) {
-      log(`Daemon will bind on ${transportHost} (TRANSPORT_HOST default is ${TRANSPORT_HOST})`)
-    }
+    // (Settings were already bootstrapped above at step 1b so `transportHost`
+    // could drive the port-availability probe AND both server binds. The
+    // remaining resolved fields are applied to their consumers at step 7.)
 
     // 4b. Start Web UI server on stable port (separate from transport)
     const daemonDir = dirname(fileURLToPath(import.meta.url))
@@ -642,8 +673,9 @@ async function main(): Promise<void> {
 
       // Stop existing webui server if running
       if (webuiServer?.isRunning()) {
+        const previousPort = webuiServer.getPort() ?? '?'
         await webuiServer.stop()
-        log(`Stopped web UI server on port ${webuiServer.getPort() ?? '?'}`)
+        log(`Stopped web UI server on ${transportHost}:${previousPort}`)
       }
 
       // Create fresh Express app for the new server
@@ -663,7 +695,7 @@ async function main(): Promise<void> {
       await webuiServer.start(newPort, transportHost)
       writeWebuiState(newPort)
       writeWebuiPreferredPort(newPort)
-      log(`Web UI server restarted on port ${newPort} (persisted)`)
+      log(`Web UI server restarted on ${transportHost}:${newPort} (persisted)`)
 
       return {port: newPort, success: true}
     })

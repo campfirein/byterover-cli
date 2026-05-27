@@ -4,9 +4,11 @@ import {Children, createElement, type FC, isValidElement, memo, ReactElement, ty
 import ReactMarkdown, {type Components, type Options} from 'react-markdown'
 import remarkFrontmatter from 'remark-frontmatter'
 import remarkGfm from 'remark-gfm'
+import {toast} from 'sonner'
 
 import {hasConflictMarkers} from '../../../../shared/utils/conflict-markers'
 import {copyTextToClipboard} from '../../../lib/clipboard'
+import {noop} from '../../../lib/noop'
 import {oneDark, SyntaxHighlighter} from '../../../lib/syntax-highlighter'
 
 // ── CodeBlock ──────────────────────────────────────────────────────────────
@@ -19,9 +21,18 @@ interface CodeBlockProps {
 const CodeBlock: FC<CodeBlockProps> = memo(({language, value}) => {
   const [isCopied, setIsCopied] = useState(false)
 
-  const handleCopy = () => {
+  // Await the copy and only show the checkmark when it actually succeeds.
+  // The previous fire-and-forget implementation showed the success checkmark
+  // even when the underlying API failed (e.g. insecure-context HTTP without
+  // a `document.execCommand` fallback path), giving users false confidence.
+  const handleCopy = async () => {
+    const ok = await copyTextToClipboard(value)
+    if (!ok) {
+      toast.error('Failed to copy to clipboard', {duration: 2000})
+      return
+    }
+
     setIsCopied(true)
-    copyTextToClipboard(value).catch(() => {})
     setTimeout(() => setIsCopied(false), 1000)
   }
 
@@ -32,7 +43,7 @@ const CodeBlock: FC<CodeBlockProps> = memo(({language, value}) => {
         <div className="flex items-center py-1">
           <Button
             className="hover:bg-border text-xs focus-visible:ring-1 focus-visible:ring-offset-0"
-            onClick={handleCopy}
+            onClick={() => handleCopy().catch(noop)}
             size="xs"
             variant="ghost"
           >

@@ -159,7 +159,10 @@ export const SETTINGS_REGISTRY: readonly SettingDescriptor[] = [
   {
     category: 'network',
     default: TRANSPORT_HOST,
-    description: 'Host interface the daemon binds to. Use 0.0.0.0 for Docker / LAN access.',
+    // <= 80 chars to satisfy the WebUI tooltip budget enforced by the
+    // settings-registry test. Calls out the trust assumption explicitly
+    // because the daemon has no per-connection auth gate today.
+    description: 'Host the daemon binds to. 0.0.0.0 = LAN-reachable, no auth gate.',
     key: SETTINGS_KEYS.NETWORK_HOST,
     restartRequired: true,
     type: 'string',
