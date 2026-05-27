@@ -1,7 +1,7 @@
 import type {SettingsItemDTO} from '../transport/events/settings-events.js'
-import type {RowParseResult, SettingsRow, SettingsRowCategory, SettingsRowUnit} from '../types/settings-row.js'
+import type {RowParseResult, SettingsRow, SettingsRowUnit} from '../types/settings-row.js'
 
-import {CATEGORY_ORDER} from '../types/settings-row.js'
+import {CATEGORY_ORDER, toRowCategory} from '../types/settings-row.js'
 import {formatCount, formatDuration, parseDuration} from './format-duration.js'
 
 export function buildSettingsRows(items: readonly SettingsItemDTO[]): SettingsRow[] {
@@ -176,20 +176,6 @@ function toEnumRow(item: EnumSettingsItemDTO): SettingsRow {
 
 function renderBoolean(value: boolean): string {
   return value ? '[ on ]' : '[ off ]'
-}
-
-function toRowCategory(category: SettingsItemDTO['category']): SettingsRowCategory {
-  if (
-    category === 'concurrency' ||
-    category === 'language' ||
-    category === 'llm' ||
-    category === 'task-history' ||
-    category === 'updates'
-  ) {
-    return category
-  }
-
-  return 'other'
 }
 
 function formatIntegerRange(item: IntegerSettingsItemDTO, unit: SettingsRowUnit): string {

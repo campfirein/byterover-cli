@@ -5,22 +5,15 @@ import {
   type SettingsItemDTO,
   type SettingsListResponse,
 } from '../../../shared/transport/events/settings-events.js'
+import {
+  CATEGORY_HEADERS,
+  CATEGORY_ORDER,
+  type SettingsRowCategory,
+  toRowCategory,
+} from '../../../shared/types/settings-row.js'
 import {formatCount, formatDuration} from '../../../shared/utils/format-duration.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
-
-type CategoryName = 'concurrency' | 'llm' | 'task-history' | 'updates'
-
-const CATEGORY_ORDER: readonly CategoryName[] = ['concurrency', 'llm', 'task-history', 'updates']
-
-const CATEGORY_HEADERS: Readonly<Record<CategoryName, string>> = {
-  concurrency: 'CONCURRENCY',
-  llm: 'LLM',
-  'task-history': 'TASK HISTORY',
-  updates: 'UPDATES',
-}
-
-const OTHER_HEADER = 'OTHER'
 
 export default class Settings extends Command {
   public static description =
@@ -83,22 +76,15 @@ export default class Settings extends Command {
       this.log('')
     }
 
-    const otherRows = byCategory.get('__other__')
-    if (otherRows && otherRows.length > 0) {
-      this.log(OTHER_HEADER)
-      for (const row of otherRows) this.log(formatRow(row))
-      this.log('')
-    }
-
     this.log('Set:   brv settings set <key> <value>')
     this.log('Reset: brv settings reset <key>')
   }
 }
 
-function groupByCategory(items: readonly SettingsItemDTO[]): Map<string, SettingsItemDTO[]> {
-  const map = new Map<string, SettingsItemDTO[]>()
+function groupByCategory(items: readonly SettingsItemDTO[]): Map<SettingsRowCategory, SettingsItemDTO[]> {
+  const map = new Map<SettingsRowCategory, SettingsItemDTO[]>()
   for (const item of items) {
-    const bucket = item.category ?? '__other__'
+    const bucket: SettingsRowCategory = toRowCategory(item.category)
     const list = map.get(bucket) ?? []
     list.push(item)
     map.set(bucket, list)

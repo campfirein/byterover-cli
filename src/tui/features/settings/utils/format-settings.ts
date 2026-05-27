@@ -1,14 +1,10 @@
-import {CATEGORY_ORDER, type SettingsRow, type SettingsRowCategory} from '../../../../shared/types/settings-row.js'
+import {
+  CATEGORY_HEADERS,
+  CATEGORY_ORDER,
+  type SettingsRow,
+  type SettingsRowCategory,
+} from '../../../../shared/types/settings-row.js'
 import {formatDuration} from '../../../../shared/utils/format-duration.js'
-
-const CATEGORY_HEADERS: Readonly<Record<SettingsRowCategory, string>> = {
-  concurrency: 'CONCURRENCY',
-  language: 'LANGUAGE',
-  llm: 'LLM',
-  other: 'OTHER',
-  'task-history': 'TASK HISTORY',
-  updates: 'UPDATES',
-}
 
 export function groupRowsByCategory(rows: readonly SettingsRow[]): ReadonlyArray<{
   readonly category: SettingsRowCategory
