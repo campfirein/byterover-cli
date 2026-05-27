@@ -14,11 +14,18 @@
  */
 
 import type {ClientType} from '../../core/domain/client/client-info.js'
+import type {IAnalyticsClient} from '../../core/interfaces/analytics/i-analytics-client.js'
 import type {IClientManager, ProjectEmptyCallback} from '../../core/interfaces/client/i-client-manager.js'
 
+import {AnalyticsEventNames} from '../../../shared/analytics/event-names.js'
 import {ClientInfo} from '../../core/domain/client/client-info.js'
+import {hashProjectPath} from '../../utils/hash-path.js'
+import {processLog} from '../../utils/process-logger.js'
+import {clientKindContext} from '../transport/client-kind-context.js'
 
 export class ClientManager implements IClientManager {
+  /** Optional analytics client for M15.5 WebUI session events */
+  private analyticsClient: IAnalyticsClient | undefined
   /** Callback for when a client registers */
   private clientConnectedCallback?: () => void
   /** Callback for when a client unregisters */
@@ -87,6 +94,12 @@ export class ClientManager implements IClientManager {
       this.removeFromProjectIndex(clientId, existing.projectPath)
     }
 
+    // M15.5: on reconnect of a webui client, close out the prior session so
+    // analytics doesn't orphan an unmatched started event.
+    if (existing?.type === 'webui') {
+      this.emitWebuiSessionEnded(existing)
+    }
+
     const client = new ClientInfo({
       connectedAt: Date.now(),
       id: clientId,
@@ -97,6 +110,12 @@ export class ClientManager implements IClientManager {
 
     if (projectPath) {
       this.addToProjectIndex(clientId, projectPath)
+    }
+
+    // M15.5: WebUI session lifecycle. Fires AFTER `clients.set` so any
+    // analytics-side hook can still look the client up by id.
+    if (type === 'webui') {
+      this.emitWebuiSessionStarted(client)
     }
 
     // Only notify idle timeout policy for new clients, not re-registrations.
@@ -114,9 +133,24 @@ export class ClientManager implements IClientManager {
     client.setAgentName(agentName)
   }
 
+  /**
+   * M15.5: register the analytics client. Setter pattern because
+   * ClientManager is constructed in brv-server.ts before analyticsClient
+   * exists (which is built inside setupFeatureHandlers).
+   */
+  setAnalyticsClient(client: IAnalyticsClient): void {
+    this.analyticsClient = client
+  }
+
   unregister(clientId: string): void {
     const client = this.clients.get(clientId)
     if (!client) return
+
+    // M15.5: emit BEFORE clients.delete so we can still read client.type /
+    // .connectedAt / .projectPath.
+    if (client.type === 'webui') {
+      this.emitWebuiSessionEnded(client)
+    }
 
     this.clients.delete(clientId)
 
@@ -176,6 +210,62 @@ export class ClientManager implements IClientManager {
     if (!hasExternalClients) {
       this.projectEmptyCallback(projectPath)
     }
+  }
+
+  /**
+   * M15.5: emit webui_session_ended. Wrapped in clientKindContext so
+   * SuperPropertiesResolver stamps client_kind='webui' on the envelope
+   * (daemon-internal emit bypasses the transport wrap). try/processLog
+   * pattern so analytics failures never block connection bookkeeping.
+   */
+  private emitWebuiSessionEnded(client: ClientInfo): void {
+    const {analyticsClient} = this
+    if (!analyticsClient) return
+    // Clamp at 0 to defend against clock skew (e.g. NTP adjustment between
+    // register and unregister). The schema enforces `nonnegative()`; a
+    // negative value would otherwise leak through this direct-track path
+    // (which bypasses the wire-side safeParse in AnalyticsHandler).
+    const sessionDurationMs = Math.max(0, Date.now() - client.connectedAt)
+    // eslint-disable-next-line camelcase
+    clientKindContext.run({client_kind: 'webui'}, () => {
+      try {
+        /* eslint-disable camelcase */
+        analyticsClient.track(AnalyticsEventNames.WEBUI_SESSION_ENDED, {
+          ...(client.projectPath === undefined ? {} : {project_path_hash: hashProjectPath(client.projectPath)}),
+          session_duration_ms: sessionDurationMs,
+          started_at_unix_ms: client.connectedAt,
+        })
+        /* eslint-enable camelcase */
+      } catch (error) {
+        processLog(
+          `[ClientManager] analytics track webui_session_ended failed: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+    })
+  }
+
+  /**
+   * M15.5: emit webui_session_started. See emitWebuiSessionEnded for the
+   * clientKindContext rationale.
+   */
+  private emitWebuiSessionStarted(client: ClientInfo): void {
+    const {analyticsClient} = this
+    if (!analyticsClient) return
+    // eslint-disable-next-line camelcase
+    clientKindContext.run({client_kind: 'webui'}, () => {
+      try {
+        /* eslint-disable camelcase */
+        analyticsClient.track(AnalyticsEventNames.WEBUI_SESSION_STARTED, {
+          ...(client.projectPath === undefined ? {} : {project_path_hash: hashProjectPath(client.projectPath)}),
+          started_at_unix_ms: client.connectedAt,
+        })
+        /* eslint-enable camelcase */
+      } catch (error) {
+        processLog(
+          `[ClientManager] analytics track webui_session_started failed: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+    })
   }
 
   private removeFromProjectIndex(clientId: string, projectPath: string): void {
