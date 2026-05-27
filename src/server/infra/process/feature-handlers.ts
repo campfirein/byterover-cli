@@ -177,7 +177,8 @@ export async function setupFeatureHandlers({
 
   // Global handlers (no project context needed)
   new ConfigHandler({transport}).setup()
-  new SettingsHandler({store: settingsStore, transport}).setup()
+  // SettingsHandler is constructed below, after analyticsClient is built,
+  // so it can receive the optional analyticsClient dep for M15.4 emits.
 
   // GlobalConfig: handler retains a sync-cached `analytics` flag so M2.5's
   // AnalyticsClient.isEnabled can be a sync getter (file reads are async).
@@ -271,6 +272,11 @@ export async function setupFeatureHandlers({
   // M2.6: route incoming analytics:track events from non-forked clients
   // (TUI, oclif, MCP, webui) to the same singleton.
   new AnalyticsHandler({analyticsClient, transport}).setup()
+
+  // Global SettingsHandler (no project context). Deferred from line 180 so
+  // analyticsClient is in scope for M15.4 `setting_changed` / `setting_reset`
+  // emits.
+  new SettingsHandler({analyticsClient, store: settingsStore, transport}).setup()
 
   // M11.2: webui-facing read API. Shares the same JsonlAnalyticsStore instance
   // as the AnalyticsClient so reads see exactly what trackAsync persisted.
@@ -425,6 +431,7 @@ export async function setupFeatureHandlers({
   }).setup()
 
   new ResetHandler({
+    analyticsClient,
     contextTreeService,
     contextTreeSnapshotService,
     curateLogStoreFactory: (projectPath) => new FileCurateLogStore({baseDir: getProjectDataDir(projectPath)}),
@@ -434,6 +441,7 @@ export async function setupFeatureHandlers({
   }).setup()
 
   new ReviewHandler({
+    analyticsClient,
     curateLogStoreFactory: (projectPath) => new FileCurateLogStore({baseDir: getProjectDataDir(projectPath)}),
     onResolved({projectPath, taskId}) {
       broadcastToProject(projectPath, ReviewEvents.NOTIFY, {pendingCount: 0, taskId})
@@ -515,6 +523,7 @@ export async function setupFeatureHandlers({
   }).setup()
 
   new ContextTreeHandler({
+    analyticsClient,
     contextFileReader,
     contextTreeService,
     gitService,
