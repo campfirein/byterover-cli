@@ -106,11 +106,7 @@ describe('TaskTypes', () => {
     })
   })
 
-  // The M12 schemas hardcode literal task_type values and still REJECT
-  // the new tool-mode types. M14.2 is the follow-up that migrates them
-  // to z.enum(TASK_TYPE_VALUES); until then these regressions are
-  // EXPECTED and documented as such in M14.1's TDD.
-  describe('M12 schemas still reject tool-mode types (M14.2 follow-up)', () => {
+  describe('M12 per-flavor schemas accept tool-mode types (M14.2)', () => {
     const curatePayload = {
       duration_ms: 100,
       operations_added: 0,
@@ -123,26 +119,40 @@ describe('TaskTypes', () => {
       task_id: 't-1',
     }
 
-    it('CurateRunCompletedSchema still rejects curate-tool-mode', () => {
-      expect(() =>
-        CurateRunCompletedSchema.parse({...curatePayload, task_type: TaskTypes.CURATE_TOOL_MODE}),
-      ).to.throw()
+    const queryPayload = {
+      cache_hit: false,
+      duration_ms: 100,
+      matched_doc_count: 0,
+      outcome: 'completed' as const,
+      read_doc_count: 0,
+      read_tool_call_count: 0,
+      search_call_count: 0,
+      task_id: 't-1',
+    }
+
+    it('CurateRunCompletedSchema accepts curate-tool-mode', () => {
+      const parsed = CurateRunCompletedSchema.parse({
+        ...curatePayload,
+        task_type: TaskTypes.CURATE_TOOL_MODE,
+      })
+      expect(parsed.task_type).to.equal('curate-tool-mode')
     })
 
-    it('QueryCompletedSchema still rejects query-tool-mode', () => {
-      const queryPayload = {
-        cache_hit: false,
-        duration_ms: 100,
-        matched_doc_count: 0,
-        outcome: 'completed' as const,
-        read_doc_count: 0,
-        read_tool_call_count: 0,
-        search_call_count: 0,
-        task_id: 't-1',
-      }
-      expect(() =>
-        QueryCompletedSchema.parse({...queryPayload, task_type: TaskTypes.QUERY_TOOL_MODE}),
-      ).to.throw()
+    it('CurateRunCompletedSchema still accepts the legacy curate / curate-folder values', () => {
+      const curate = CurateRunCompletedSchema.parse({...curatePayload, task_type: TaskTypes.CURATE})
+      expect(curate.task_type).to.equal('curate')
+      const folder = CurateRunCompletedSchema.parse({...curatePayload, task_type: TaskTypes.CURATE_FOLDER})
+      expect(folder.task_type).to.equal('curate-folder')
+    })
+
+    it('QueryCompletedSchema accepts query-tool-mode', () => {
+      const parsed = QueryCompletedSchema.parse({...queryPayload, task_type: TaskTypes.QUERY_TOOL_MODE})
+      expect(parsed.task_type).to.equal('query-tool-mode')
+    })
+
+    it('QueryCompletedSchema still accepts the legacy query value', () => {
+      const parsed = QueryCompletedSchema.parse({...queryPayload, task_type: TaskTypes.QUERY})
+      expect(parsed.task_type).to.equal('query')
     })
   })
 })

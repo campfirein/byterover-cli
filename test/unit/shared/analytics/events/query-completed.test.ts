@@ -90,8 +90,13 @@ describe('QueryCompletedSchema', () => {
       expect(QueryCompletedSchema.safeParse({...baseValid, tier: -1}).success).to.equal(false)
     })
 
-    it('rejects task_type other than literal "query"', () => {
-      expect(QueryCompletedSchema.safeParse({...baseValid, task_type: 'curate'}).success).to.equal(false)
+    it('rejects an unknown task_type but accepts every canonical TASK_TYPE_VALUES entry', () => {
+      // M14.2 widened task_type from z.literal('query') to the canonical
+      // TASK_TYPE_VALUES tuple so query-tool-mode round-trips the wire
+      // boundary. Genuinely unknown values still reject.
+      expect(QueryCompletedSchema.safeParse({...baseValid, task_type: 'not-a-real-type'}).success).to.equal(false)
+      expect(QueryCompletedSchema.safeParse({...baseValid, task_type: 'query-tool-mode'}).success).to.equal(true)
+      expect(QueryCompletedSchema.safeParse({...baseValid, task_type: 'curate'}).success).to.equal(true)
     })
 
     it('rejects negative or non-integer counts', () => {
