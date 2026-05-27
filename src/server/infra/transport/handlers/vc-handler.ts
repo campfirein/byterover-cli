@@ -1,6 +1,9 @@
 import fs from 'node:fs'
 import {basename, join} from 'node:path'
 
+import type {AnalyticsEventName} from '../../../../shared/analytics/event-names.js'
+import type {PropsArg} from '../../../../shared/analytics/events/index.js'
+import type {IAnalyticsClient} from '../../../core/interfaces/analytics/i-analytics-client.js'
 import type {ITokenStore} from '../../../core/interfaces/auth/i-token-store.js'
 import type {IContextTreeService} from '../../../core/interfaces/context-tree/i-context-tree-service.js'
 import type {GitCommit, GitDiffSide, IGitService} from '../../../core/interfaces/services/i-git-service.js'
@@ -10,6 +13,7 @@ import type {IProjectConfigStore} from '../../../core/interfaces/storage/i-proje
 import type {ITransportServer} from '../../../core/interfaces/transport/i-transport-server.js'
 import type {IVcGitConfig, IVcGitConfigStore} from '../../../core/interfaces/vc/i-vc-git-config-store.js'
 
+import {AnalyticsEventNames} from '../../../../shared/analytics/event-names.js'
 import {
   type IVcAddRequest,
   type IVcAddResponse,
@@ -62,6 +66,8 @@ import {GitAuthError, GitError} from '../../../core/domain/errors/git-error.js'
 import {NotAuthenticatedError} from '../../../core/domain/errors/task-error.js'
 import {VcError} from '../../../core/domain/errors/vc-error.js'
 import {ensureContextTreeGitignore, ensureGitignoreEntries} from '../../../utils/gitignore.js'
+import {hashProjectPath} from '../../../utils/hash-path.js'
+import {processLog} from '../../../utils/process-logger.js'
 import {generateContextTreeIndex, regenerateContextTreeIndex} from '../../context-tree/index-generator.js'
 import {buildCogitRemoteUrl, isValidBranchName, parseUserFacingUrl} from '../../git/cogit-url.js'
 import {type ProjectBroadcaster, type ProjectPathResolver, resolveRequiredProjectPath} from './handler-types.js'
@@ -120,6 +126,13 @@ function resolveDiffSides(mode: VcDiffMode): {from: GitDiffSide; to: GitDiffSide
 }
 
 export interface IVcHandlerDeps {
+  /**
+   * Optional. When provided, the handler emits per-vc-event analytics at
+   * existing success terminals. Failure emits are NOT added in this pass
+   * because every catch block in this handler throws (no return), and the
+   * additive-only rule forbids new try/catch wrappers.
+   */
+  analyticsClient?: IAnalyticsClient
   broadcastToProject: ProjectBroadcaster
   contextTreeService: IContextTreeService
   gitRemoteBaseUrl: string
@@ -138,6 +151,7 @@ export interface IVcHandlerDeps {
  * Handles vc:* events (Version Control commands).
  */
 export class VcHandler {
+  private readonly analyticsClient: IAnalyticsClient | undefined
   private readonly broadcastToProject: ProjectBroadcaster
   private readonly contextTreeService: IContextTreeService
   private readonly gitRemoteBaseUrl: string
@@ -152,6 +166,7 @@ export class VcHandler {
   private readonly webAppUrl: string
 
   constructor(deps: IVcHandlerDeps) {
+    this.analyticsClient = deps.analyticsClient
     this.broadcastToProject = deps.broadcastToProject
     this.gitRemoteBaseUrl = deps.gitRemoteBaseUrl
     this.contextTreeService = deps.contextTreeService
@@ -325,6 +340,15 @@ export class VcHandler {
     )
   }
 
+  /**
+   * Classify a remote URL into 'byterover' or 'external' for analytics
+   * segmentation. Matches the daemon's configured `gitRemoteBaseUrl` prefix.
+   */
+  private classifyRemoteKind(url: string | undefined): 'byterover' | 'external' {
+    if (!url) return 'external'
+    return this.gitRemoteBaseUrl && url.startsWith(this.gitRemoteBaseUrl) ? 'byterover' : 'external'
+  }
+
   private async computeDiff(directory: string, path: string, side: VcDiffSide): Promise<IVcDiffResponse> {
     if (side === 'staged') {
       const [head, stage] = await Promise.all([
@@ -340,6 +364,20 @@ export class VcHandler {
       fs.promises.readFile(join(directory, path), 'utf8').catch(() => ''),
     ])
     return {newContent: workingTree, oldContent: stage ?? '', path}
+  }
+
+  /**
+   * Analytics emit helper. Mirrors the try/processLog pattern from other
+   * handlers so analytics failures never affect command outcomes.
+   */
+  private emitAnalytics<E extends AnalyticsEventName>(event: E, ...rest: PropsArg<E>): void {
+    const client = this.analyticsClient
+    if (!client) return
+    try {
+      client.track(event, ...rest)
+    } catch (error) {
+      processLog(`[Vc] analytics track ${event} failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   /**
@@ -421,7 +459,18 @@ export class VcHandler {
     // but transport payloads are untrusted — validate at the boundary.
     if (data.action === 'create' || data.action === 'delete') {
       if (!data.name) throw new VcError('Branch name is required.', VcErrorCode.INVALID_BRANCH_NAME)
-      if (data.action === 'create') return this.handleBranchCreate(directory, data.name, data.startPoint)
+      if (data.action === 'create') {
+        const created = await this.handleBranchCreate(directory, data.name, data.startPoint)
+        /* eslint-disable camelcase */
+        this.emitAnalytics(AnalyticsEventNames.VC_BRANCHED, {
+          from_default_branch: data.startPoint === undefined || data.startPoint === 'main',
+          outcome: 'success',
+          project_path_hash: hashProjectPath(projectPath),
+        })
+        /* eslint-enable camelcase */
+        return created
+      }
+
       return this.handleBranchDelete(directory, data.name)
     }
 
@@ -586,6 +635,14 @@ export class VcHandler {
         throw error
       }
 
+      /* eslint-disable camelcase */
+      this.emitAnalytics(AnalyticsEventNames.VC_CHECKED_OUT, {
+        branch_kind: 'created',
+        outcome: 'success',
+        project_path_hash: hashProjectPath(projectPath),
+      })
+      /* eslint-enable camelcase */
+
       return {branch: data.branch, created: true, previousBranch}
     }
 
@@ -629,6 +686,14 @@ export class VcHandler {
 
       throw error
     }
+
+    /* eslint-disable camelcase */
+    this.emitAnalytics(AnalyticsEventNames.VC_CHECKED_OUT, {
+      branch_kind: 'existing',
+      outcome: 'success',
+      project_path_hash: hashProjectPath(projectPath),
+    })
+    /* eslint-enable camelcase */
 
     return {branch: data.branch, created: false, previousBranch}
   }
@@ -727,6 +792,14 @@ export class VcHandler {
       throw new VcError(`Clone failed: ${msg}`, VcErrorCode.CLONE_FAILED)
     }
 
+    /* eslint-disable camelcase */
+    this.emitAnalytics(AnalyticsEventNames.VC_CLONED, {
+      outcome: 'success',
+      project_path_hash: hashProjectPath(projectPath),
+      remote_kind: this.classifyRemoteKind(cloneUrl),
+    })
+    /* eslint-enable camelcase */
+
     return {
       gitDir: join(contextTreeDir, '.git'),
       spaceName,
@@ -762,6 +835,14 @@ export class VcHandler {
       directory,
       message: data.message,
     })
+
+    /* eslint-disable camelcase */
+    this.emitAnalytics(AnalyticsEventNames.VC_COMMIT, {
+      had_message: Boolean(data.message),
+      outcome: 'success',
+      project_path_hash: hashProjectPath(projectPath),
+    })
+    /* eslint-enable camelcase */
 
     return {message: commit.message, sha: commit.sha}
   }
@@ -906,6 +987,14 @@ export class VcHandler {
       }),
     )
 
+    /* eslint-disable camelcase */
+    this.emitAnalytics(AnalyticsEventNames.VC_DISCARDED, {
+      discard_scope: filePaths.length > 1 ? 'all' : 'file',
+      outcome: 'success',
+      project_path_hash: hashProjectPath(projectPath),
+    })
+    /* eslint-enable camelcase */
+
     return {count: results.filter(Boolean).length}
   }
 
@@ -941,6 +1030,14 @@ export class VcHandler {
       throw new VcError(message, VcErrorCode.FETCH_FAILED)
     }
 
+    /* eslint-disable camelcase */
+    this.emitAnalytics(AnalyticsEventNames.VC_FETCHED, {
+      outcome: 'success',
+      project_path_hash: hashProjectPath(projectPath),
+      remote_kind: this.classifyRemoteKind(remotes.find((r) => r.remote === remote)?.url),
+    })
+    /* eslint-enable camelcase */
+
     return {remote}
   }
 
@@ -960,6 +1057,14 @@ export class VcHandler {
 
     // 4. Add .brv entries to project .gitignore (prevents `git add .` fatal error from nested .git)
     await ensureGitignoreEntries(projectPath)
+
+    /* eslint-disable camelcase */
+    this.emitAnalytics(AnalyticsEventNames.VC_INIT, {
+      had_existing_git_dir: reinitialized,
+      outcome: 'success',
+      project_path_hash: hashProjectPath(projectPath),
+    })
+    /* eslint-enable camelcase */
 
     return {
       gitDir: join(contextTreeDir, '.git'),
@@ -1050,6 +1155,13 @@ export class VcHandler {
         directory,
         message: data.message,
       })
+      /* eslint-disable camelcase */
+      this.emitAnalytics(AnalyticsEventNames.VC_MERGED, {
+        had_fast_forward: false,
+        outcome: 'success',
+        project_path_hash: hashProjectPath(projectPath),
+      })
+      /* eslint-enable camelcase */
       return {action: 'continue'}
     }
 
@@ -1071,6 +1183,13 @@ export class VcHandler {
     // Self-merge check
     const currentBranch = await this.gitService.getCurrentBranch({directory})
     if (currentBranch && data.branch === currentBranch) {
+      /* eslint-disable camelcase */
+      this.emitAnalytics(AnalyticsEventNames.VC_MERGED, {
+        had_fast_forward: true,
+        outcome: 'success',
+        project_path_hash: hashProjectPath(projectPath),
+      })
+      /* eslint-enable camelcase */
       return {action: 'merge', alreadyUpToDate: true, branch: data.branch}
     }
 
@@ -1109,6 +1228,13 @@ export class VcHandler {
           directory,
           message: data.message ?? `Merge branch '${data.branch}'`,
         })
+        /* eslint-disable camelcase */
+        this.emitAnalytics(AnalyticsEventNames.VC_MERGED, {
+          had_fast_forward: false,
+          outcome: 'success',
+          project_path_hash: hashProjectPath(projectPath),
+        })
+        /* eslint-enable camelcase */
         return {action: 'merge', branch: data.branch}
       }
 
@@ -1116,11 +1242,25 @@ export class VcHandler {
     }
 
     if (result.alreadyUpToDate) {
+      /* eslint-disable camelcase */
+      this.emitAnalytics(AnalyticsEventNames.VC_MERGED, {
+        had_fast_forward: true,
+        outcome: 'success',
+        project_path_hash: hashProjectPath(projectPath),
+      })
+      /* eslint-enable camelcase */
       return {action: 'merge', alreadyUpToDate: true, branch: data.branch}
     }
 
     // Merge changed the topic set — refresh the derived navigation index.
     await this.regenerateIndexBestEffort(directory, projectPath)
+    /* eslint-disable camelcase */
+    this.emitAnalytics(AnalyticsEventNames.VC_MERGED, {
+      had_fast_forward: false,
+      outcome: 'success',
+      project_path_hash: hashProjectPath(projectPath),
+    })
+    /* eslint-enable camelcase */
     return {action: 'merge', branch: data.branch}
   }
 
@@ -1175,6 +1315,14 @@ export class VcHandler {
             directory,
             message: `Merge branch '${branch}' of ${remote}`,
           })
+          /* eslint-disable camelcase */
+          this.emitAnalytics(AnalyticsEventNames.VC_PULLED, {
+            branch_name_hash: hashProjectPath(branch),
+            outcome: 'success',
+            project_path_hash: hashProjectPath(projectPath),
+            remote_kind: this.classifyRemoteKind(remotes.find((r) => r.remote === remote)?.url),
+          })
+          /* eslint-enable camelcase */
           return {alreadyUpToDate: false, branch}
         }
 
@@ -1214,6 +1362,15 @@ export class VcHandler {
       // Pull changed the topic set — refresh the derived navigation index.
       await this.regenerateIndexBestEffort(directory, projectPath)
     }
+
+    /* eslint-disable camelcase */
+    this.emitAnalytics(AnalyticsEventNames.VC_PULLED, {
+      branch_name_hash: hashProjectPath(branch),
+      outcome: 'success',
+      project_path_hash: hashProjectPath(projectPath),
+      remote_kind: this.classifyRemoteKind(remotes.find((r) => r.remote === remote)?.url),
+    })
+    /* eslint-enable camelcase */
 
     return {alreadyUpToDate, branch}
   }
@@ -1294,6 +1451,15 @@ export class VcHandler {
       throw new VcError(message, VcErrorCode.PUSH_FAILED)
     }
 
+    /* eslint-disable camelcase */
+    this.emitAnalytics(AnalyticsEventNames.VC_PUSHED, {
+      branch_name_hash: hashProjectPath(branch),
+      outcome: 'success',
+      project_path_hash: hashProjectPath(projectPath),
+      remote_kind: this.classifyRemoteKind(remotes.find((r) => r.remote === 'origin')?.url),
+    })
+    /* eslint-enable camelcase */
+
     return {alreadyUpToDate, branch, upstreamSet}
   }
 
@@ -1327,6 +1493,15 @@ export class VcHandler {
       }
 
       await this.gitService.removeRemote({directory, remote: 'origin'})
+
+      /* eslint-disable camelcase */
+      this.emitAnalytics(AnalyticsEventNames.VC_REMOTE_CHANGED, {
+        change_kind: 'removed',
+        outcome: 'success',
+        project_path_hash: hashProjectPath(projectPath),
+        remote_kind: this.classifyRemoteKind(existingUrl),
+      })
+      /* eslint-enable camelcase */
 
       return {action: 'remove'}
     }
@@ -1378,6 +1553,15 @@ export class VcHandler {
       await this.projectConfigStore.write(updated, projectPath)
     }
 
+    /* eslint-disable camelcase */
+    this.emitAnalytics(AnalyticsEventNames.VC_REMOTE_CHANGED, {
+      change_kind: data.subcommand === 'add' ? 'added' : 'url_set',
+      outcome: 'success',
+      project_path_hash: hashProjectPath(projectPath),
+      remote_kind: this.classifyRemoteKind(resolved.url),
+    })
+    /* eslint-enable camelcase */
+
     return {action: data.subcommand === 'add' ? 'add' : 'set-url', url: resolved.url}
   }
 
@@ -1416,6 +1600,14 @@ export class VcHandler {
       })
 
       const isUnstage = Boolean(data.filePaths) || (mode === 'mixed' && (!data.ref || data.ref === 'HEAD'))
+
+      /* eslint-disable camelcase */
+      this.emitAnalytics(AnalyticsEventNames.VC_RESET_EXECUTED, {
+        outcome: 'success',
+        project_path_hash: hashProjectPath(projectPath),
+        reset_mode: mode,
+      })
+      /* eslint-enable camelcase */
 
       return {
         filesUnstaged: isUnstage ? result.filesChanged : undefined,

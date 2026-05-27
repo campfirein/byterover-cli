@@ -1,3 +1,5 @@
+import type {AnalyticsEventName} from '../../../../shared/analytics/event-names.js'
+import type {PropsArg} from '../../../../shared/analytics/events/index.js'
 import type {
   SettingsErrorDTO,
   SettingsGetRequest,
@@ -11,14 +13,18 @@ import type {
   SettingsSetResponse,
 } from '../../../../shared/transport/events/settings-events.js'
 import type {SettingDescriptor, SettingItem} from '../../../core/domain/entities/settings.js'
+import type {IAnalyticsClient} from '../../../core/interfaces/analytics/i-analytics-client.js'
 import type {ISettingsStore} from '../../../core/interfaces/storage/i-settings-store.js'
 import type {ITransportServer} from '../../../core/interfaces/transport/i-transport-server.js'
 
+import {AnalyticsEventNames} from '../../../../shared/analytics/event-names.js'
 import {SettingsEvents} from '../../../../shared/transport/events/settings-events.js'
 import {findSettingDescriptor, SETTINGS_REGISTRY} from '../../../core/domain/entities/settings.js'
+import {processLog} from '../../../utils/process-logger.js'
 import {InvalidSettingValueError, UnknownSettingKeyError} from '../../storage/settings-validator.js'
 
 export interface SettingsHandlerDeps {
+  readonly analyticsClient?: IAnalyticsClient
   readonly store: ISettingsStore
   readonly transport: ITransportServer
 }
@@ -30,10 +36,12 @@ export interface SettingsHandlerDeps {
  * leak across the wire.
  */
 export class SettingsHandler {
+  private readonly analyticsClient: IAnalyticsClient | undefined
   private readonly store: ISettingsStore
   private readonly transport: ITransportServer
 
   public constructor(deps: SettingsHandlerDeps) {
+    this.analyticsClient = deps.analyticsClient
     this.store = deps.store
     this.transport = deps.transport
   }
@@ -70,8 +78,25 @@ export class SettingsHandler {
       async (data) => {
         try {
           await this.store.set(data.key, data.value)
+          const descriptor = findSettingDescriptor(data.key)
+          /* eslint-disable camelcase */
+          this.emitAnalytics(AnalyticsEventNames.SETTING_CHANGED, {
+            outcome: 'success',
+            setting_key: data.key,
+            value_changed_from_default: descriptor ? data.value !== descriptor.default : undefined,
+            value_kind: descriptor?.type ?? 'integer',
+          })
+          /* eslint-enable camelcase */
           return {ok: true, restartRequired: true}
         } catch (error) {
+          /* eslint-disable camelcase */
+          this.emitAnalytics(AnalyticsEventNames.SETTING_CHANGED, {
+            failure_kind: classifySettingsFailure(error),
+            outcome: 'failure',
+            setting_key: data.key,
+            value_kind: findSettingDescriptor(data.key)?.type ?? 'integer',
+          })
+          /* eslint-enable camelcase */
           return {error: errorToDTO(error, data.key, data.value), ok: false}
         }
       },
@@ -82,13 +107,53 @@ export class SettingsHandler {
       async (data) => {
         try {
           await this.store.reset(data.key)
+          /* eslint-disable camelcase */
+          this.emitAnalytics(AnalyticsEventNames.SETTING_RESET, {
+            outcome: 'success',
+            setting_key: data.key,
+            value_kind: findSettingDescriptor(data.key)?.type ?? 'integer',
+          })
+          /* eslint-enable camelcase */
           return {ok: true, restartRequired: true}
         } catch (error) {
+          /* eslint-disable camelcase */
+          this.emitAnalytics(AnalyticsEventNames.SETTING_RESET, {
+            failure_kind: classifySettingsFailure(error),
+            outcome: 'failure',
+            setting_key: data.key,
+            value_kind: findSettingDescriptor(data.key)?.type ?? 'integer',
+          })
+          /* eslint-enable camelcase */
           return {error: errorToDTO(error, data.key), ok: false}
         }
       },
     )
   }
+
+  /**
+   * Analytics emit helper. Mirrors the try/processLog pattern from other
+   * handlers so analytics failures never affect command outcomes.
+   */
+  private emitAnalytics<E extends AnalyticsEventName>(event: E, ...rest: PropsArg<E>): void {
+    const client = this.analyticsClient
+    if (!client) return
+    try {
+      client.track(event, ...rest)
+    } catch (error) {
+      processLog(`[Settings] analytics track ${event} failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+}
+
+function classifySettingsFailure(error: unknown): string {
+  if (error instanceof UnknownSettingKeyError) return 'unknown_key'
+  if (error instanceof InvalidSettingValueError) return 'validation'
+  if (error instanceof Error && 'code' in error) {
+    const code = String((error as {code: unknown}).code)
+    if (code.startsWith('E')) return 'config_write'
+  }
+
+  return 'unknown'
 }
 
 function toItemDTO(item: SettingItem): SettingsItemDTO {
