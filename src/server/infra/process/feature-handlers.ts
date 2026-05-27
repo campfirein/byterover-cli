@@ -460,6 +460,7 @@ export async function setupFeatureHandlers({
   }).setup()
 
   new ConnectorsHandler({
+    analyticsClient,
     connectorManagerFactory,
     resolveProjectPath,
     transport,
@@ -471,6 +472,7 @@ export async function setupFeatureHandlers({
   const hubKeychainStore = createHubKeychainStore()
 
   await new HubHandler({
+    analyticsClient,
     hubInstallService,
     hubKeychainStore,
     hubRegistryConfigStore,
@@ -480,6 +482,7 @@ export async function setupFeatureHandlers({
   }).setup()
 
   new InitHandler({
+    analyticsClient,
     broadcastToProject,
     cogitPullService,
     connectorManagerFactory,
