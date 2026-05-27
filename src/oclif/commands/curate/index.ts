@@ -2,13 +2,15 @@ import {Args, Command, Flags} from '@oclif/core'
 
 import type {BrvConfigLanguage} from '../../../server/core/domain/entities/brv-config.js'
 
-import {SETTINGS_KEYS} from '../../../server/core/domain/entities/settings.js'
 import {ProjectConfigStore} from '../../../server/infra/config/file-config-store.js'
-import {FileSettingsStore} from '../../../server/infra/storage/file-settings-store.js'
+import {SettingsEvents, type SettingsListResponse} from '../../../shared/transport/events/settings-events.js'
 import {continueSession, kickoffSession, resolveProjectRoot} from '../../lib/curate-session.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
 import {argvRequestsJsonFormat, CURATE_REMOVED_FLAGS, findRemovedFlagMessage} from '../../lib/removed-flags.js'
+
+const LANGUAGE_MODE_KEY = 'language.mode'
+const LANGUAGE_CODE_KEY = 'language.code'
 
 /** Parsed flags type */
 type CurateFlags = {
@@ -264,11 +266,20 @@ Bad examples:
   }
 
   /**
-   * Resolve the language preference. Reads from daemon settings (the
-   * source of truth) and falls back to `.brv/config.json` for users who
-   * still have a per-project override from before language moved to
-   * global settings. Missing or default values return `undefined`,
-   * which the prompts treat as the auto clause.
+   * Resolve the language preference. Daemon settings (the source of
+   * truth) take precedence; a per-project `.brv/config.json language`
+   * field acts as a fallback for users who configured language before
+   * it moved to global settings.
+   *
+   * Note on precedence: only daemon `mode: 'fixed'` short-circuits the
+   * fallback. An explicit daemon `mode: 'auto'` reads as "no opinion"
+   * and falls through to project config, so a stale project-config
+   * `fixed/X` will still win. This is intentional for the migration
+   * window — distinguishing "user explicitly chose auto" from "user
+   * never touched settings" needs raw-overrides access that the
+   * transport doesn't expose today, and the bug only manifests for
+   * users with a pre-existing per-project `language` field. Revisit
+   * once project-config language is fully sunset.
    */
   private async resolveLanguagePreference(projectRoot: string): Promise<BrvConfigLanguage | undefined> {
     const fromSettings = await readLanguageFromSettings()
@@ -285,11 +296,12 @@ Bad examples:
 
 async function readLanguageFromSettings(): Promise<BrvConfigLanguage | undefined> {
   try {
-    const store = new FileSettingsStore()
-    const items = await store.list()
-    const byKey = new Map(items.map((item) => [item.key, item.current]))
-    const mode = byKey.get(SETTINGS_KEYS.LANGUAGE_MODE)
-    const code = byKey.get(SETTINGS_KEYS.LANGUAGE_CODE)
+    const response = await withDaemonRetry<SettingsListResponse>(async (client) =>
+      client.requestWithAck<SettingsListResponse>(SettingsEvents.LIST),
+    )
+    const byKey = new Map(response.items.map((item) => [item.key, item.current]))
+    const mode = byKey.get(LANGUAGE_MODE_KEY)
+    const code = byKey.get(LANGUAGE_CODE_KEY)
     if (mode !== 'fixed') return undefined
     if (typeof code !== 'string') return undefined
     return {code, mode: 'fixed'}
