@@ -16,9 +16,7 @@
 
 import type {BrvConfigLanguage} from '../entities/brv-config.js'
 
-export {LANGUAGE_NAMES} from '../../../../shared/language/language-names.js'
-
-import {LANGUAGE_NAMES as LANGUAGE_NAMES_LOCAL} from '../../../../shared/language/language-names.js'
+import {LANGUAGE_NAMES} from '../../../../shared/language/language-names.js'
 
 const AUTO_CLAUSE =
   "Match the user's input language for human-readable content: body text of `<bv-*>` elements, list items, and the `title` / `summary` attributes on `<bv-topic>`. Keep tag names, attribute names, enum values, and the `path` attribute in English for tooling consistency. Code snippets and identifiers stay verbatim."
@@ -54,6 +52,6 @@ export function buildLanguageClause(language?: BrvConfigLanguage): string {
     return AUTO_CLAUSE
   }
 
-  const name = LANGUAGE_NAMES_LOCAL[language.code] ?? `"${language.code}"`
+  const name = LANGUAGE_NAMES[language.code] ?? `"${language.code}"`
   return buildFixedClause(name)
 }

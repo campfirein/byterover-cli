@@ -301,6 +301,12 @@ Bad examples:
  * on any non-fixed mode, missing/non-string code, or daemon error —
  * callers should treat `undefined` as "no opinion" and fall back to
  * project config / the auto clause.
+ *
+ * Uses a tight retry budget by default (1 retry, 0ms delay) because this
+ * runs on every `brv curate` kickoff: `withDaemonRetry`'s 10× retries ×
+ * 1s default would block kickoff for ~9s when the daemon is unreachable
+ * before the catch trips the project-config fallback. The caller can
+ * override either field by passing it in `options`.
  */
 export async function readLanguageFromSettings(
   options?: DaemonClientOptions,
@@ -308,7 +314,7 @@ export async function readLanguageFromSettings(
   try {
     const response = await withDaemonRetry<SettingsListResponse>(
       async (client) => client.requestWithAck<SettingsListResponse>(SettingsEvents.LIST),
-      options,
+      {maxRetries: 1, retryDelayMs: 0, ...options},
     )
     const byKey = new Map(response.items.map((item) => [item.key, item.current]))
     const mode = byKey.get(SETTINGS_KEYS.LANGUAGE_MODE)

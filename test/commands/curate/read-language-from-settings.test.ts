@@ -1,5 +1,6 @@
 import type {ConnectionResult, ITransportClient} from '@campfirein/brv-transport-client'
 
+import {DaemonSpawnError} from '@campfirein/brv-transport-client'
 import {expect} from 'chai'
 import sinon, {restore, stub} from 'sinon'
 
@@ -116,5 +117,25 @@ describe('readLanguageFromSettings', () => {
     })
 
     expect(result).to.equal(undefined)
+  })
+
+  it('uses a tight retry budget by default — no long kickoff delay when daemon is unreachable', async () => {
+    // withDaemonRetry's default is MAX_RETRIES=10 × DEFAULT_RETRY_DELAY_MS=1000ms, which would
+    // make every `brv curate` kickoff sit through ~9s of retries before the catch returns
+    // undefined and the project-config fallback runs. readLanguageFromSettings should override
+    // the defaults to {maxRetries: 1, retryDelayMs: 0} so a missing daemon trips the fallback
+    // immediately.
+    mockConnector.rejects(new DaemonSpawnError('daemon not running'))
+
+    const result = await readLanguageFromSettings({
+      transportConnector: mockConnector,
+      // intentionally no maxRetries / retryDelayMs — verify the tight default
+    })
+
+    expect(result).to.equal(undefined)
+    // `withDaemonRetry` treats `maxRetries` as total attempts (`for attempt <= maxRetries`), so
+    // {maxRetries: 1} means a single attempt. With the prior MAX_RETRIES=10 default the connector
+    // would have been called 10 times; the cap below catches any regression to the loose default.
+    expect(mockConnector.callCount).to.be.at.most(2)
   })
 })
