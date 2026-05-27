@@ -3,6 +3,7 @@ import type {SinonStubbedInstance} from 'sinon'
 import {expect} from 'chai'
 import {restore, stub} from 'sinon'
 
+import type {IAnalyticsClient} from '../../../../../src/server/core/interfaces/analytics/i-analytics-client.js'
 import type {ITokenStore} from '../../../../../src/server/core/interfaces/auth/i-token-store.js'
 import type {IContextTreeMerger} from '../../../../../src/server/core/interfaces/context-tree/i-context-tree-merger.js'
 import type {IContextTreeService} from '../../../../../src/server/core/interfaces/context-tree/i-context-tree-service.js'
@@ -30,6 +31,7 @@ import {
   ProjectNotInitError,
 } from '../../../../../src/server/core/domain/errors/task-error.js'
 import {SpaceHandler} from '../../../../../src/server/infra/transport/handlers/space-handler.js'
+import {AnalyticsEventNames} from '../../../../../src/shared/analytics/event-names.js'
 import {PullEvents} from '../../../../../src/shared/transport/events/pull-events.js'
 import {SpaceEvents} from '../../../../../src/shared/transport/events/space-events.js'
 
@@ -991,6 +993,101 @@ describe('SpaceHandler', () => {
 
       const result = await callListHandler()
       expect(result.teams).to.exist
+    })
+  })
+
+  describe('space_switched analytics emits', () => {
+    let analyticsClient: IAnalyticsClient & {trackSpy: ReturnType<typeof stub>}
+
+    function makeFakeAnalyticsClient(): IAnalyticsClient & {trackSpy: ReturnType<typeof stub>} {
+      const trackSpy = stub()
+      return {
+        abort: stub(),
+        flush: stub().resolves({events: []}),
+        getRuntimeState: stub().resolves({droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}),
+        onAuthTransition: stub().resolves(),
+        track: trackSpy,
+        trackSpy,
+      } as unknown as IAnalyticsClient & {trackSpy: ReturnType<typeof stub>}
+    }
+
+    function createHandlerWithAnalytics(): void {
+      const handler = new SpaceHandler({
+        analyticsClient,
+        broadcastToProject,
+        cogitPullService,
+        contextTreeMerger,
+        contextTreeService: contextTreeService as unknown as IContextTreeService,
+        contextTreeSnapshotService,
+        contextTreeWriterService,
+        projectConfigStore,
+        resolveProjectPath,
+        spaceService,
+        teamService,
+        tokenStore,
+        transport,
+      })
+      handler.setup()
+    }
+
+    function emitsOf(name: string): Array<{args: unknown[]}> {
+      return analyticsClient.trackSpy.getCalls().filter((c: {args: unknown[]}) => c.args[0] === name)
+    }
+
+    beforeEach(() => {
+      analyticsClient = makeFakeAnalyticsClient()
+    })
+
+    it('emits space_switched outcome=success on switch to a different space', async () => {
+      setupSwitchMocks()
+      createHandlerWithAnalytics()
+
+      await callSwitchHandler({spaceId: 'space-2'})
+
+      const calls = emitsOf(AnalyticsEventNames.SPACE_SWITCHED)
+      expect(calls.length).to.equal(1)
+      const props = calls[0].args[1] as {from_space_id: string; outcome: string; to_space_id?: string}
+      expect(props.outcome).to.equal('success')
+      expect(props.from_space_id).to.equal('space-1')
+      expect(props.to_space_id).to.equal('space-2')
+    })
+
+    it('emits space_switched outcome=success on no-op (same space) when existing space is set', async () => {
+      setupSwitchMocks()
+      createHandlerWithAnalytics()
+
+      await callSwitchHandler({spaceId: 'space-1'})
+
+      const calls = emitsOf(AnalyticsEventNames.SPACE_SWITCHED)
+      expect(calls.length).to.equal(1)
+      const props = calls[0].args[1] as {from_space_id: string; to_space_id?: string}
+      expect(props.from_space_id).to.equal('space-1')
+      expect(props.to_space_id).to.equal('space-1')
+    })
+
+    it('does NOT emit space_switched on first-time connect (no existing space)', async () => {
+      setupSwitchMocks(createLocalOnlyConfig())
+      createHandlerWithAnalytics()
+
+      await callSwitchHandler({spaceId: 'space-2'})
+
+      const calls = emitsOf(AnalyticsEventNames.SPACE_SWITCHED)
+      expect(calls.length).to.equal(0)
+    })
+
+    it('emits space_switched outcome=failure when pull throws', async () => {
+      setupSwitchMocks()
+      cogitPullService.pull.rejects(new Error('network down'))
+      createHandlerWithAnalytics()
+
+      await callSwitchHandler({spaceId: 'space-2'})
+
+      const calls = emitsOf(AnalyticsEventNames.SPACE_SWITCHED)
+      expect(calls.length).to.equal(1)
+      const props = calls[0].args[1] as {failure_kind?: string; from_space_id: string; outcome: string}
+      expect(props.outcome).to.equal('failure')
+      expect(props.failure_kind).to.equal('pull_failed')
+      expect(props.from_space_id).to.equal('space-1')
     })
   })
 })

@@ -445,6 +445,7 @@ export async function setupFeatureHandlers({
   }).setup()
 
   new SpaceHandler({
+    analyticsClient,
     broadcastToProject,
     cogitPullService,
     contextTreeMerger,
@@ -498,6 +499,7 @@ export async function setupFeatureHandlers({
   }).setup()
 
   new VcHandler({
+    analyticsClient,
     broadcastToProject,
     contextTreeService,
     gitRemoteBaseUrl: envConfig.gitRemoteBaseUrl,
@@ -521,8 +523,8 @@ export async function setupFeatureHandlers({
   }).setup()
 
   // Worktree & source handlers
-  new WorktreeHandler({resolveProjectPath, transport}).setup()
-  new SourceHandler({resolveProjectPath, transport}).setup()
+  new WorktreeHandler({analyticsClient, resolveProjectPath, transport}).setup()
+  new SourceHandler({analyticsClient, resolveProjectPath, transport}).setup()
 
   log('Feature handlers registered')
 
