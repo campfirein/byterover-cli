@@ -1,3 +1,6 @@
+import type {AnalyticsEventName} from '../../../../shared/analytics/event-names.js'
+import type {PropsArg} from '../../../../shared/analytics/events/index.js'
+import type {IAnalyticsClient} from '../../../core/interfaces/analytics/i-analytics-client.js'
 import type {ITokenStore} from '../../../core/interfaces/auth/i-token-store.js'
 import type {IContextTreeMerger} from '../../../core/interfaces/context-tree/i-context-tree-merger.js'
 import type {IContextTreeService} from '../../../core/interfaces/context-tree/i-context-tree-service.js'
@@ -9,6 +12,7 @@ import type {ITeamService} from '../../../core/interfaces/services/i-team-servic
 import type {IProjectConfigStore} from '../../../core/interfaces/storage/i-project-config-store.js'
 import type {ITransportServer} from '../../../core/interfaces/transport/i-transport-server.js'
 
+import {AnalyticsEventNames} from '../../../../shared/analytics/event-names.js'
 import {PullEvents} from '../../../../shared/transport/events/pull-events.js'
 import {
   SpaceEvents,
@@ -25,6 +29,7 @@ import {
   SpaceNotFoundError,
 } from '../../../core/domain/errors/task-error.js'
 import {syncConfigToXdg} from '../../../utils/config-xdg-sync.js'
+import {processLog} from '../../../utils/process-logger.js'
 import {
   guardAgainstGitVc,
   hasAnyChanges,
@@ -34,6 +39,7 @@ import {
 } from './handler-types.js'
 
 export interface SpaceHandlerDeps {
+  analyticsClient?: IAnalyticsClient
   broadcastToProject: ProjectBroadcaster
   cogitPullService: ICogitPullService
   contextTreeMerger: IContextTreeMerger
@@ -53,6 +59,7 @@ export interface SpaceHandlerDeps {
  * Business logic for space listing and switching — no terminal/UI calls.
  */
 export class SpaceHandler {
+  private readonly analyticsClient: IAnalyticsClient | undefined
   private readonly broadcastToProject: ProjectBroadcaster
   private readonly cogitPullService: ICogitPullService
   private readonly contextTreeMerger: IContextTreeMerger
@@ -67,6 +74,7 @@ export class SpaceHandler {
   private readonly transport: ITransportServer
 
   constructor(deps: SpaceHandlerDeps) {
+    this.analyticsClient = deps.analyticsClient
     this.broadcastToProject = deps.broadcastToProject
     this.cogitPullService = deps.cogitPullService
     this.contextTreeMerger = deps.contextTreeMerger
@@ -87,6 +95,20 @@ export class SpaceHandler {
     this.transport.onRequest<SpaceSwitchRequest, SpaceSwitchResponse>(SpaceEvents.SWITCH, (data, clientId) =>
       this.handleSwitch(data, clientId),
     )
+  }
+
+  /**
+   * Analytics emit helper. Mirrors the try/processLog pattern from other
+   * handlers so analytics failures never affect command outcomes.
+   */
+  private emitAnalytics<E extends AnalyticsEventName>(event: E, ...rest: PropsArg<E>): void {
+    const client = this.analyticsClient
+    if (!client) return
+    try {
+      client.track(event, ...rest)
+    } catch (error) {
+      processLog(`[Space] analytics track ${event} failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   private async handleList(clientId: string): Promise<SpaceListResponse> {
@@ -140,6 +162,16 @@ export class SpaceHandler {
 
     // No-op: switching to the currently active space
     if (existingConfig.spaceId === data.spaceId) {
+      if (existingConfig.spaceId) {
+        /* eslint-disable camelcase */
+        this.emitAnalytics(AnalyticsEventNames.SPACE_SWITCHED, {
+          from_space_id: existingConfig.spaceId,
+          outcome: 'success',
+          to_space_id: data.spaceId,
+        })
+        /* eslint-enable camelcase */
+      }
+
       return {
         config: {
           spaceId: existingConfig.spaceId,
@@ -258,6 +290,16 @@ export class SpaceHandler {
 
     // Pull failed and config was rolled back — return the old config with success: false
     if (pullError) {
+      if (existingConfig.spaceId) {
+        /* eslint-disable camelcase */
+        this.emitAnalytics(AnalyticsEventNames.SPACE_SWITCHED, {
+          failure_kind: 'pull_failed',
+          from_space_id: existingConfig.spaceId,
+          outcome: 'failure',
+        })
+        /* eslint-enable camelcase */
+      }
+
       return {
         config: {
           spaceId: existingConfig.spaceId,
@@ -269,6 +311,16 @@ export class SpaceHandler {
         pullError,
         success: false,
       }
+    }
+
+    if (existingConfig.spaceId && newConfig.spaceId) {
+      /* eslint-disable camelcase */
+      this.emitAnalytics(AnalyticsEventNames.SPACE_SWITCHED, {
+        from_space_id: existingConfig.spaceId,
+        outcome: 'success',
+        to_space_id: newConfig.spaceId,
+      })
+      /* eslint-enable camelcase */
     }
 
     return {

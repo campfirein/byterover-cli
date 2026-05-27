@@ -1,11 +1,15 @@
 import {mkdir, unlink, writeFile} from 'node:fs/promises'
 import {dirname, join, relative} from 'node:path'
 
+import type {AnalyticsEventName} from '../../../../shared/analytics/event-names.js'
+import type {PropsArg} from '../../../../shared/analytics/events/index.js'
+import type {IAnalyticsClient} from '../../../core/interfaces/analytics/i-analytics-client.js'
 import type {ICurateLogStore} from '../../../core/interfaces/storage/i-curate-log-store.js'
 import type {IProjectConfigStore} from '../../../core/interfaces/storage/i-project-config-store.js'
 import type {IReviewBackupStore} from '../../../core/interfaces/storage/i-review-backup-store.js'
 import type {ITransportServer} from '../../../core/interfaces/transport/i-transport-server.js'
 
+import {AnalyticsEventNames} from '../../../../shared/analytics/event-names.js'
 import {
   type AgentChangeOperation,
   type ReviewDecideTaskRequest,
@@ -20,6 +24,8 @@ import {
   type ReviewSetDisabledResponse,
 } from '../../../../shared/transport/events/review-events.js'
 import {BRV_DIR, CONTEXT_TREE_DIR} from '../../../constants.js'
+import {hashProjectPath} from '../../../utils/hash-path.js'
+import {processLog} from '../../../utils/process-logger.js'
 import {type ProjectPathResolver, resolveRequiredProjectPath} from './handler-types.js'
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -28,6 +34,7 @@ type CurateLogStoreFactory = (projectPath: string) => ICurateLogStore
 type ReviewBackupStoreFactory = (projectPath: string) => IReviewBackupStore
 
 export interface ReviewHandlerDeps {
+  analyticsClient?: IAnalyticsClient
   curateLogStoreFactory: CurateLogStoreFactory
   /** Called after all pending ops for a task are decided. Used to notify TUI clients. */
   onResolved?: (info: {projectPath: string; taskId: string}) => void
@@ -41,6 +48,7 @@ type PendingOp = {
   additionalFilePaths?: string[]
   logId: string
   operationIndex: number
+  type: string
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -66,6 +74,7 @@ function projectContextTreeFilePath(absoluteFilePath: string | undefined, contex
  * Mirrors the per-file logic in review-api-handler.ts but operates at task scope.
  */
 export class ReviewHandler {
+  private readonly analyticsClient: IAnalyticsClient | undefined
   private readonly curateLogStoreFactory: CurateLogStoreFactory
   private readonly onResolved: ReviewHandlerDeps['onResolved']
   private readonly projectConfigStore: IProjectConfigStore
@@ -74,6 +83,7 @@ export class ReviewHandler {
   private readonly transport: ITransportServer
 
   constructor(deps: ReviewHandlerDeps) {
+    this.analyticsClient = deps.analyticsClient
     this.curateLogStoreFactory = deps.curateLogStoreFactory
     this.onResolved = deps.onResolved
     this.projectConfigStore = deps.projectConfigStore
@@ -109,120 +119,40 @@ export class ReviewHandler {
     )
   }
 
+  /**
+   * Analytics emit helper. Mirrors the try/processLog pattern from other
+   * handlers so analytics failures never affect command outcomes.
+   */
+  private emitAnalytics<E extends AnalyticsEventName>(event: E, ...rest: PropsArg<E>): void {
+    const client = this.analyticsClient
+    if (!client) return
+    try {
+      client.track(event, ...rest)
+    } catch (error) {
+      processLog(`[Review] analytics track ${event} failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
   private async handleDecideTask(
     {decision, filePaths: filterPaths, taskId}: ReviewDecideTaskRequest,
     clientId: string,
   ): Promise<ReviewDecideTaskResponse> {
     const projectPath = resolveRequiredProjectPath(this.resolveProjectPath, clientId)
-    const contextTreeDir = join(projectPath, BRV_DIR, CONTEXT_TREE_DIR)
-
-    const store = this.curateLogStoreFactory(projectPath)
-    const backupStore = this.reviewBackupStoreFactory(projectPath)
-    const entries = await store.list()
-
-    // Collect pending ops grouped by relative file path for this taskId
-    const pendingByPath = new Map<string, PendingOp[]>()
-
-    for (const entry of entries) {
-      if (entry.taskId !== taskId) continue
-
-      for (let i = 0; i < entry.operations.length; i++) {
-        const op = entry.operations[i]
-        if (op.reviewStatus !== 'pending') continue
-
-        const rel = projectContextTreeFilePath(op.filePath, contextTreeDir)
-        if (!rel) continue
-
-        let ops = pendingByPath.get(rel)
-        if (!ops) {
-          ops = []
-          pendingByPath.set(rel, ops)
-        }
-
-        ops.push({additionalFilePaths: op.additionalFilePaths, logId: entry.id, operationIndex: i})
-      }
-    }
-
-    // If filePaths filter is provided, only process those files
-    if (filterPaths?.length) {
-      const filterSet = new Set(filterPaths)
-      const keysToDelete = [...pendingByPath.keys()].filter((key) => !filterSet.has(key))
-      for (const key of keysToDelete) pendingByPath.delete(key)
-    }
-
-    type FileResult = {ops: PendingOp[]; path: string; reverted: boolean}
-
-    // Apply decision for each affected file in parallel.
-    // allSettled so a single file failure does not block log updates for files that succeeded.
-    const settled = await Promise.allSettled(
-      [...pendingByPath.entries()].map(async ([relPath, ops]): Promise<FileResult> => {
-        let reverted = false
-        const allAdditionalPaths = [...new Set(ops.flatMap((o) => o.additionalFilePaths ?? []))]
-
-        if (decision === 'rejected') {
-          const absolutePath = join(contextTreeDir, relPath)
-          const backupContent = await backupStore.read(relPath)
-
-          // null backup = ADD operation (new file) → remove it; existing backup → restore
-          await (backupContent === null
-            ? unlink(absolutePath).catch(() => {})
-            : writeFileWithDirs(absolutePath, backupContent))
-
-          // Restore additional paths (MERGE source, folder DELETE contents).
-          // Best-effort: partial failures must not block the log update below.
-          await Promise.allSettled(
-            allAdditionalPaths.map(async (absPath) => {
-              const rel = relative(contextTreeDir, absPath)
-              const content = await backupStore.read(rel)
-              if (content !== null) await writeFileWithDirs(absPath, content)
-            }),
-          )
-
-          reverted = true
-        }
-
-        // Clear backups for both approve and reject (current state becomes new baseline)
-        await backupStore.delete(relPath)
-        await Promise.allSettled(
-          allAdditionalPaths.map((absPath) => backupStore.delete(relative(contextTreeDir, absPath))),
-        )
-
-        return {ops, path: relPath, reverted}
-      }),
-    )
-
-    // Only update log entries for files that were successfully processed.
-    // Files that failed remain pending and can be retried.
-    const fileResults = settled
-      .filter((r): r is PromiseFulfilledResult<FileResult> => r.status === 'fulfilled')
-      .map((r) => r.value)
-
-    // Batch-update review status grouped by logId (one read+write per entry file)
-    const byLogId = new Map<string, Array<{operationIndex: number; reviewStatus: 'approved' | 'rejected'}>>()
-    for (const {ops} of fileResults) {
-      for (const {logId, operationIndex} of ops) {
-        let batch = byLogId.get(logId)
-        if (!batch) {
-          batch = []
-          byLogId.set(logId, batch)
-        }
-
-        batch.push({operationIndex, reviewStatus: decision})
-      }
-    }
-
-    await Promise.all(
-      [...byLogId.entries()].map(([logId, updates]) => store.batchUpdateOperationReviewStatus(logId, updates)),
-    )
+    const decisionEvent = decision === 'approved' ? AnalyticsEventNames.REVIEW_APPROVED : AnalyticsEventNames.REVIEW_REJECTED
 
     try {
-      this.onResolved?.({projectPath, taskId})
-    } catch {
-      // Best-effort notification — never block the response
+      return await this.runDecideTask({decision, filterPaths, projectPath, taskId})
+    } catch (error) {
+      /* eslint-disable camelcase */
+      this.emitAnalytics(decisionEvent, {
+        failure_kind: classifyReviewFailure(error),
+        operation_kind: 'unknown',
+        outcome: 'failure',
+        project_path_hash: hashProjectPath(projectPath),
+      })
+      /* eslint-enable camelcase */
+      throw error
     }
-
-    const totalCount = fileResults.reduce((sum, {ops}) => sum + ops.length, 0)
-    return {files: fileResults.map(({path, reverted}) => ({path, reverted})), totalCount}
   }
 
   private async handleGetDisabled(clientId: string): Promise<ReviewGetDisabledResponse> {
@@ -317,13 +247,199 @@ export class ReviewHandler {
     clientId: string,
   ): Promise<ReviewSetDisabledResponse> {
     const projectPath = resolveRequiredProjectPath(this.resolveProjectPath, clientId)
-    const config = await this.projectConfigStore.read(projectPath)
-    if (!config) {
-      throw new Error(`Project not initialized: ${projectPath}. Run \`brv init\` first.`)
+    try {
+      const config = await this.projectConfigStore.read(projectPath)
+      if (!config) {
+        throw new Error(`Project not initialized: ${projectPath}. Run \`brv init\` first.`)
+      }
+
+      const updated = config.withReviewDisabled(reviewDisabled)
+      await this.projectConfigStore.write(updated, projectPath)
+
+      /* eslint-disable camelcase */
+      this.emitAnalytics(AnalyticsEventNames.REVIEW_TOGGLED, {
+        new_state: reviewDisabled ? 'disabled' : 'enabled',
+        outcome: 'success',
+        project_path_hash: hashProjectPath(projectPath),
+      })
+      /* eslint-enable camelcase */
+
+      return {reviewDisabled}
+    } catch (error) {
+      /* eslint-disable camelcase */
+      this.emitAnalytics(AnalyticsEventNames.REVIEW_TOGGLED, {
+        failure_kind: classifyReviewFailure(error),
+        outcome: 'failure',
+        project_path_hash: hashProjectPath(projectPath),
+      })
+      /* eslint-enable camelcase */
+      throw error
+    }
+  }
+
+  private async runDecideTask(params: {
+    decision: 'approved' | 'rejected'
+    filterPaths?: string[]
+    projectPath: string
+    taskId: string
+  }): Promise<ReviewDecideTaskResponse> {
+    const {decision, filterPaths, projectPath, taskId} = params
+    const contextTreeDir = join(projectPath, BRV_DIR, CONTEXT_TREE_DIR)
+
+    const store = this.curateLogStoreFactory(projectPath)
+    const backupStore = this.reviewBackupStoreFactory(projectPath)
+    const entries = await store.list()
+
+    // Collect pending ops grouped by relative file path for this taskId
+    const pendingByPath = new Map<string, PendingOp[]>()
+
+    for (const entry of entries) {
+      if (entry.taskId !== taskId) continue
+
+      for (let i = 0; i < entry.operations.length; i++) {
+        const op = entry.operations[i]
+        if (op.reviewStatus !== 'pending') continue
+
+        const rel = projectContextTreeFilePath(op.filePath, contextTreeDir)
+        if (!rel) continue
+
+        let ops = pendingByPath.get(rel)
+        if (!ops) {
+          ops = []
+          pendingByPath.set(rel, ops)
+        }
+
+        ops.push({additionalFilePaths: op.additionalFilePaths, logId: entry.id, operationIndex: i, type: String(op.type)})
+      }
     }
 
-    const updated = config.withReviewDisabled(reviewDisabled)
-    await this.projectConfigStore.write(updated, projectPath)
-    return {reviewDisabled}
+    // If filePaths filter is provided, only process those files
+    if (filterPaths?.length) {
+      const filterSet = new Set(filterPaths)
+      const keysToDelete = [...pendingByPath.keys()].filter((key) => !filterSet.has(key))
+      for (const key of keysToDelete) pendingByPath.delete(key)
+    }
+
+    type FileResult = {ops: PendingOp[]; path: string; reverted: boolean}
+
+    // Apply decision for each affected file in parallel.
+    // allSettled so a single file failure does not block log updates for files that succeeded.
+    const settled = await Promise.allSettled(
+      [...pendingByPath.entries()].map(async ([relPath, ops]): Promise<FileResult> => {
+        let reverted = false
+        const allAdditionalPaths = [...new Set(ops.flatMap((o) => o.additionalFilePaths ?? []))]
+
+        if (decision === 'rejected') {
+          const absolutePath = join(contextTreeDir, relPath)
+          const backupContent = await backupStore.read(relPath)
+
+          // null backup = ADD operation (new file) → remove it; existing backup → restore
+          await (backupContent === null
+            ? unlink(absolutePath).catch(() => {})
+            : writeFileWithDirs(absolutePath, backupContent))
+
+          // Restore additional paths (MERGE source, folder DELETE contents).
+          // Best-effort: partial failures must not block the log update below.
+          await Promise.allSettled(
+            allAdditionalPaths.map(async (absPath) => {
+              const rel = relative(contextTreeDir, absPath)
+              const content = await backupStore.read(rel)
+              if (content !== null) await writeFileWithDirs(absPath, content)
+            }),
+          )
+
+          reverted = true
+        }
+
+        // Clear backups for both approve and reject (current state becomes new baseline)
+        await backupStore.delete(relPath)
+        await Promise.allSettled(
+          allAdditionalPaths.map((absPath) => backupStore.delete(relative(contextTreeDir, absPath))),
+        )
+
+        return {ops, path: relPath, reverted}
+      }),
+    )
+
+    // Only update log entries for files that were successfully processed.
+    // Files that failed remain pending and can be retried.
+    const fileResults = settled
+      .filter((r): r is PromiseFulfilledResult<FileResult> => r.status === 'fulfilled')
+      .map((r) => r.value)
+
+    // Batch-update review status grouped by logId (one read+write per entry file)
+    const byLogId = new Map<string, Array<{operationIndex: number; reviewStatus: 'approved' | 'rejected'}>>()
+    for (const {ops} of fileResults) {
+      for (const {logId, operationIndex} of ops) {
+        let batch = byLogId.get(logId)
+        if (!batch) {
+          batch = []
+          byLogId.set(logId, batch)
+        }
+
+        batch.push({operationIndex, reviewStatus: decision})
+      }
+    }
+
+    await Promise.all(
+      [...byLogId.entries()].map(([logId, updates]) => store.batchUpdateOperationReviewStatus(logId, updates)),
+    )
+
+    try {
+      this.onResolved?.({projectPath, taskId})
+    } catch {
+      // Best-effort notification — never block the response
+    }
+
+    const decisionEvent = decision === 'approved' ? AnalyticsEventNames.REVIEW_APPROVED : AnalyticsEventNames.REVIEW_REJECTED
+    if (fileResults.length === 0) {
+      /* eslint-disable camelcase */
+      this.emitAnalytics(decisionEvent, {
+        failure_kind: 'not_found',
+        operation_kind: 'unknown',
+        outcome: 'failure',
+        project_path_hash: hashProjectPath(projectPath),
+      })
+      /* eslint-enable camelcase */
+    } else {
+      for (const fileResult of fileResults) {
+        for (const op of fileResult.ops) {
+          /* eslint-disable camelcase */
+          this.emitAnalytics(decisionEvent, {
+            operation_kind: op.type.toLowerCase(),
+            outcome: 'success',
+            project_path_hash: hashProjectPath(projectPath),
+          })
+          /* eslint-enable camelcase */
+        }
+      }
+
+      // Per-file rejections from Promise.allSettled — emit failure rows
+      const rejectedCount = settled.filter((r) => r.status === 'rejected').length
+      for (let i = 0; i < rejectedCount; i++) {
+        /* eslint-disable camelcase */
+        this.emitAnalytics(decisionEvent, {
+          failure_kind: 'snapshot_missing',
+          operation_kind: 'unknown',
+          outcome: 'failure',
+          project_path_hash: hashProjectPath(projectPath),
+        })
+        /* eslint-enable camelcase */
+      }
+    }
+
+    const totalCount = fileResults.reduce((sum, {ops}) => sum + ops.length, 0)
+    return {files: fileResults.map(({path, reverted}) => ({path, reverted})), totalCount}
   }
+}
+
+function classifyReviewFailure(error: unknown): string {
+  if (error instanceof Error && error.message.includes('not initialized')) return 'unknown'
+  if (error instanceof Error && 'code' in error) {
+    const code = String((error as {code: unknown}).code)
+    if (code.startsWith('E')) return 'config_write'
+  }
+
+  if (error instanceof Error && /write|ENOENT|EACCES|EPERM|disk/.test(error.message)) return 'config_write'
+  return 'unknown'
 }
