@@ -73,10 +73,8 @@ export default class SettingsReset extends Command {
             success: true,
           })
         } else {
-          this.log(
-            `Setting reset: ${args.key} back to default (${renderValue(descriptor, descriptor.default)}). ` +
-              'Run `brv restart` to apply.',
-          )
+          const base = `Setting reset: ${args.key} back to default (${renderValue(descriptor, descriptor.default)}).`
+          this.log(descriptor.restartRequired ? `${base} Run \`brv restart\` to apply.` : base)
         }
 
         return
@@ -99,7 +97,8 @@ export default class SettingsReset extends Command {
   }
 }
 
-function renderValue(item: SettingsItemDTO, value: number): string {
+function renderValue(item: SettingsItemDTO, value: boolean | number): string {
+  if (typeof value === 'boolean') return value ? 'true' : 'false'
   if (item.unit === 'ms') return formatDuration(value)
   return formatCount(value)
 }

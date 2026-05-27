@@ -19,6 +19,7 @@ import type {IBillingConfigStore} from '../../core/interfaces/storage/i-billing-
 import type {ISettingsStore} from '../../core/interfaces/storage/i-settings-store.js'
 import type {ITransportServer} from '../../core/interfaces/transport/i-transport-server.js'
 import type {AnalyticsFlushScheduler} from '../analytics/analytics-flush-scheduler.js'
+import type {ClientManager} from '../client/client-manager.js'
 import type {ProjectBroadcaster, ProjectPathResolver} from '../transport/handlers/handler-types.js'
 
 import {ReviewEvents} from '../../../shared/transport/events/review-events.js'
@@ -77,6 +78,7 @@ import {
   HubHandler,
   InitHandler,
   LocationsHandler,
+  MigrateHandler,
   ModelHandler,
   ProviderHandler,
   PullHandler,
@@ -102,6 +104,13 @@ export interface FeatureHandlersOptions {
   authStateStore: IAuthStateStore
   billingConfigStoreFactory: (projectPath: string) => IBillingConfigStore
   broadcastToProject: ProjectBroadcaster
+  /**
+   * M15.5: optional ClientManager. When provided, setupFeatureHandlers
+   * wires the analyticsClient into it so WebUI session lifecycle events
+   * (`webui_session_started` / `webui_session_ended`) can fire from
+   * register/unregister.
+   */
+  clientManager?: ClientManager
   getActiveProjectPaths: () => string[]
   log: (msg: string) => void
   projectRegistry: IProjectRegistry
@@ -147,6 +156,7 @@ export async function setupFeatureHandlers({
   authStateStore,
   billingConfigStoreFactory,
   broadcastToProject,
+  clientManager,
   getActiveProjectPaths,
   log,
   projectRegistry,
@@ -268,6 +278,10 @@ export async function setupFeatureHandlers({
   // exists, register it so `brv analytics disable` can call
   // `abort()` to cancel any in-flight HTTP.
   globalConfigHandler.setAnalyticsClient(analyticsClient)
+
+  // M15.5: hook the analytics client into ClientManager so register/unregister
+  // can fire webui_session_started / webui_session_ended for browser sessions.
+  clientManager?.setAnalyticsClient(analyticsClient)
 
   // M2.6: route incoming analytics:track events from non-forked clients
   // (TUI, oclif, MCP, webui) to the same singleton.
@@ -429,6 +443,8 @@ export async function setupFeatureHandlers({
     tokenStore,
     transport,
   }).setup()
+
+  new MigrateHandler({resolveProjectPath, transport}).setup()
 
   new ResetHandler({
     analyticsClient,

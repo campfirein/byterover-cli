@@ -111,6 +111,39 @@ function assertFailureKindDiscipline(value: unknown, label: string): void {
   expect(tag, `${label}: failure_kind must be snake_case (a-z + _), got "${tag}"`).to.match(/^[a-z][a-z_]*$/)
 }
 
+function makeValidTokenStoreFixture(): ITokenStore {
+  return {
+    clear: stub().resolves(),
+    load: stub().resolves(createValidToken()),
+    save: stub().resolves(),
+  } as unknown as ITokenStore
+}
+
+function makeMissingTokenStoreFixture(): ITokenStore {
+  return {
+    clear: stub().resolves(),
+    load: stub().resolves(),
+    save: stub().resolves(),
+  } as unknown as ITokenStore
+}
+
+function makeExpiredTokenStoreFixture(): ITokenStore {
+  const expired = new AuthToken({
+    accessToken: 'expired-access',
+    expiresAt: new Date(Date.now() - 60_000),
+    refreshToken: 'expired-refresh',
+    sessionKey: 'expired-session',
+    tokenType: 'Bearer',
+    userEmail: 'test@example.com',
+    userId: 'user-123',
+  })
+  return {
+    clear: stub().resolves(),
+    load: stub().resolves(expired),
+    save: stub().resolves(),
+  } as unknown as ITokenStore
+}
+
 function createMockProviderConfigStore(
   options: {isConnected?: boolean} = {},
 ): SinonStubbedInstance<IProviderConfigStore> {
@@ -666,6 +699,64 @@ describe('AuthHandler — setupExternalAuthSync', () => {
       const props = trackCalls[0].args[1] as {failure_kind?: string; outcome: string}
       expect(props.outcome).to.equal('failure')
       assertFailureKindDiscipline(props.failure_kind, 'auth_login API-key failure emit')
+    })
+  })
+
+  describe('setupGetState', () => {
+    it('returns isAuthorized=true and skips brvConfig when body is undefined (TUI sends no body)', async () => {
+      createHandler({tokenStore: makeValidTokenStoreFixture()})
+      const handler = transport._handlers.get(AuthEvents.GET_STATE)!
+
+       
+      const result = await handler(undefined, 'client-1')
+
+      expect(result.isAuthorized).to.equal(true)
+      expect(result.user).to.deep.include({email: 'test@example.com', id: 'user-123'})
+      expect(result.brvConfig).to.equal(undefined)
+      expect(result.authToken).to.have.property('accessToken', 'test-access-token')
+      expect(projectConfigStore.read.called, 'projectConfigStore.read should not be called without projectPath').to.be
+        .false
+    })
+
+    it('returns full state including brvConfig when body has projectPath (WebUI happy path)', async () => {
+      createHandler({tokenStore: makeValidTokenStoreFixture()})
+      const handler = transport._handlers.get(AuthEvents.GET_STATE)!
+
+      const result = await handler({projectPath: '/foo'}, 'client-1')
+
+      expect(result.isAuthorized).to.equal(true)
+      expect(result.brvConfig).to.deep.include({spaceId: 'space-1', teamId: 'team-1'})
+      expect(projectConfigStore.read.calledOnceWith('/foo')).to.be.true
+    })
+
+    it('returns isAuthorized=true and skips brvConfig when body is empty object', async () => {
+      createHandler({tokenStore: makeValidTokenStoreFixture()})
+      const handler = transport._handlers.get(AuthEvents.GET_STATE)!
+
+      const result = await handler({}, 'client-1')
+
+      expect(result.isAuthorized).to.equal(true)
+      expect(result.brvConfig).to.equal(undefined)
+      expect(projectConfigStore.read.called).to.be.false
+    })
+
+    it('returns isAuthorized=false when token is missing, regardless of body', async () => {
+      createHandler({tokenStore: makeMissingTokenStoreFixture()})
+      const handler = transport._handlers.get(AuthEvents.GET_STATE)!
+
+       
+      const result = await handler(undefined, 'client-1')
+
+      expect(result).to.deep.equal({isAuthorized: false})
+    })
+
+    it('returns isAuthorized=false when token is expired, regardless of body', async () => {
+      createHandler({tokenStore: makeExpiredTokenStoreFixture()})
+      const handler = transport._handlers.get(AuthEvents.GET_STATE)!
+
+      const result = await handler({projectPath: '/foo'}, 'client-1')
+
+      expect(result).to.deep.equal({isAuthorized: false})
     })
   })
 })

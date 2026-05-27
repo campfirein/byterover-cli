@@ -89,6 +89,7 @@ describe('SettingsHandler', () => {
         'llm.iterationBudgetMs',
         'llm.requestTimeoutMs',
         'taskHistory.maxEntries',
+        'update.checkForUpdates',
       ])
       const maxSizeItem = result.items.find((i) => i.key === 'agentPool.maxSize')
       expect(maxSizeItem?.current).to.equal(25)
@@ -216,6 +217,68 @@ describe('SettingsHandler', () => {
         expect(result.error.value).to.equal(0)
         expect(result.error.message).to.include('range')
       }
+    })
+
+    describe('type pre-validation (T3 invalid_value_type)', () => {
+      it('rejects a boolean value sent to an integer key', async () => {
+        const result = await invokeSet({key: 'agentPool.maxSize', value: true})
+
+        expect(result.ok).to.be.false
+        if (!result.ok) {
+          expect(result.error.code).to.equal('invalid_value_type')
+          expect(result.error.key).to.equal('agentPool.maxSize')
+          expect(result.error.expected).to.equal('integer')
+          expect(result.error.got).to.equal('boolean')
+        }
+
+        // Pre-validation must happen BEFORE the store is touched.
+        expect(store.calls.filter((c) => c.method === 'set')).to.have.lengthOf(0)
+      })
+
+      it('rejects a numeric value sent to a boolean key', async () => {
+        const result = await invokeSet({key: 'update.checkForUpdates', value: 5})
+
+        expect(result.ok).to.be.false
+        if (!result.ok) {
+          expect(result.error.code).to.equal('invalid_value_type')
+          expect(result.error.key).to.equal('update.checkForUpdates')
+          expect(result.error.expected).to.equal('boolean')
+          expect(result.error.got).to.equal('number')
+        }
+
+        expect(store.calls.filter((c) => c.method === 'set')).to.have.lengthOf(0)
+      })
+
+      it('accepts a boolean value sent to a boolean key and forwards to the store', async () => {
+        const result = await invokeSet({key: 'update.checkForUpdates', value: false})
+
+        expect(result.ok).to.be.true
+        const setCalls = store.calls.filter((c) => c.method === 'set')
+        expect(setCalls).to.have.lengthOf(1)
+        expect(setCalls[0].args).to.deep.equal(['update.checkForUpdates', false])
+      })
+
+      it('falls through to unknown_key when the descriptor itself is missing (does not pre-validate type)', async () => {
+        store.setBehavior = async (key) => {
+          throw new UnknownSettingKeyError(key)
+        }
+
+        const result = await invokeSet({key: 'not.a.real.key', value: 1})
+
+        expect(result.ok).to.be.false
+        if (!result.ok) expect(result.error.code).to.equal('unknown_key')
+      })
+
+      it('still surfaces a range violation as invalid_value (not invalid_value_type)', async () => {
+        store.setBehavior = async (key, value) => {
+          throw new InvalidSettingValueError(key, value, 'value 0 is outside allowed range [1, 100]')
+        }
+
+        const result = await invokeSet({key: 'agentPool.maxSize', value: 0})
+
+        expect(result.ok).to.be.false
+        if (!result.ok) expect(result.error.code).to.equal('invalid_value')
+      })
     })
   })
 

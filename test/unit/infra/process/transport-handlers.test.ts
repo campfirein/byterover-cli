@@ -69,6 +69,7 @@ describe('TransportHandlers', () => {
     }
 
     mockAgentPool = {
+      cancelQueuedTask: sandbox.stub().returns(false),
       getEntries: sandbox.stub().returns([]),
       getSize: sandbox.stub().returns(0),
       handleAgentDisconnected: sandbox.stub(),
@@ -551,7 +552,7 @@ describe('TransportHandlers', () => {
   })
 
   describe('Task Cancellation', () => {
-    it('should forward cancel to agent when connected', () => {
+    it('should forward cancel to agent when connected', async () => {
       const createHandler = requestHandlers.get(TransportTaskEventNames.CREATE)
       registerAgentWithStatus('agent-001')
 
@@ -559,7 +560,7 @@ describe('TransportHandlers', () => {
       createHandler!({content: 'Cancel test', taskId, type: 'curate'}, 'client-001')
 
       const cancelHandler = requestHandlers.get(TransportTaskEventNames.CANCEL)
-      const result = cancelHandler!({taskId}, 'client-001')
+      const result = await cancelHandler!({taskId}, 'client-001')
 
       expect(result).to.deep.equal({success: true})
       expect(
@@ -569,7 +570,7 @@ describe('TransportHandlers', () => {
       ).to.be.true
     })
 
-    it('should cancel task locally when no agent registered for project', () => {
+    it('should cancel task locally when no agent registered for project', async () => {
       const createHandler = requestHandlers.get(TransportTaskEventNames.CREATE)
 
       // Create task WITHOUT registering agent first
@@ -579,7 +580,7 @@ describe('TransportHandlers', () => {
 
       // Cancel should succeed — task is tracked, cancelled locally (no agent to forward to)
       const cancelHandler = requestHandlers.get(TransportTaskEventNames.CANCEL)
-      const result = cancelHandler!({taskId}, 'client-001')
+      const result = await cancelHandler!({taskId}, 'client-001')
 
       expect(result).to.deep.equal({success: true})
 
@@ -588,9 +589,9 @@ describe('TransportHandlers', () => {
         .to.be.true
     })
 
-    it('should return error for non-existent task', () => {
+    it('should return error for non-existent task', async () => {
       const cancelHandler = requestHandlers.get(TransportTaskEventNames.CANCEL)
-      const result = cancelHandler!({taskId: 'non-existent-task'}, 'client-001')
+      const result = await cancelHandler!({taskId: 'non-existent-task'}, 'client-001')
 
       expect(result).to.deep.equal({error: 'Task not found', success: false})
     })
@@ -741,7 +742,7 @@ describe('TransportHandlers', () => {
       ).to.be.true
     })
 
-    it('should clear tasks map after agent disconnect', () => {
+    it('should clear tasks map after agent disconnect', async () => {
       const createHandler = requestHandlers.get(TransportTaskEventNames.CREATE)
       registerAgentWithStatus('agent-001')
 
@@ -756,12 +757,12 @@ describe('TransportHandlers', () => {
 
       // Try to cancel the old task - should fail (not found)
       const cancelHandler = requestHandlers.get(TransportTaskEventNames.CANCEL)
-      const result = cancelHandler!({taskId: 'old-task-id'}, 'client-001')
+      const result = await cancelHandler!({taskId: 'old-task-id'}, 'client-001')
 
       expect(result).to.deep.equal({error: 'Task not found', success: false})
     })
 
-    it('should not affect non-agent client disconnections', () => {
+    it('should not affect non-agent client disconnections', async () => {
       const createHandler = requestHandlers.get(TransportTaskEventNames.CREATE)
       registerAgentWithStatus('agent-001')
 
@@ -774,7 +775,7 @@ describe('TransportHandlers', () => {
       // Agent should still be connected, task should still exist
       // Cancel should still work
       const cancelHandler = requestHandlers.get(TransportTaskEventNames.CANCEL)
-      const result = cancelHandler!({taskId}, 'client-002')
+      const result = await cancelHandler!({taskId}, 'client-002')
 
       expect(result).to.deep.equal({success: true})
     })
@@ -1081,7 +1082,7 @@ describe('TransportHandlers', () => {
   })
 
   describe('Cleanup', () => {
-    it('should clear tasks and agent on cleanup()', () => {
+    it('should clear tasks and agent on cleanup()', async () => {
       const createHandler = requestHandlers.get(TransportTaskEventNames.CREATE)
       registerAgentWithStatus('agent-001')
 
@@ -1092,7 +1093,7 @@ describe('TransportHandlers', () => {
 
       // After cleanup, cancel should fail (no tasks)
       const cancelHandler = requestHandlers.get(TransportTaskEventNames.CANCEL)
-      const result = cancelHandler!({taskId: 'any-task'}, 'client-001')
+      const result = await cancelHandler!({taskId: 'any-task'}, 'client-001')
       expect(result).to.deep.equal({error: 'Task not found', success: false})
 
       // Restart should fail (no agent)
@@ -1492,7 +1493,7 @@ describe('TransportHandlers', () => {
       }
     })
 
-    it('should handle rapid create/cancel cycles', () => {
+    it('should handle rapid create/cancel cycles', async () => {
       const createHandler = requestHandlers.get(TransportTaskEventNames.CREATE)
       const cancelHandler = requestHandlers.get(TransportTaskEventNames.CANCEL)
       registerAgentWithStatus('agent-001')
@@ -1500,7 +1501,8 @@ describe('TransportHandlers', () => {
       for (let i = 0; i < 20; i++) {
         const taskId = randomUUID()
         createHandler!({content: `Rapid ${i}`, taskId, type: 'curate'}, 'client-001')
-        const cancelResult = cancelHandler!({taskId}, 'client-001')
+        // eslint-disable-next-line no-await-in-loop
+        const cancelResult = await cancelHandler!({taskId}, 'client-001')
         expect(cancelResult).to.deep.equal({success: true})
       }
     })

@@ -68,7 +68,7 @@ type BuildInput = {
  *     transient store error doesn't fail an otherwise-successful curate.
  *
  * Call this immediately before `writeHtmlTopic` in both the daemon's
- * `case 'curate-html-direct'` and the CLI's `continueSession`.
+ * `case 'curate-tool-mode'` and the CLI's `continueSession`.
  */
 export async function backupContextTreeFile(input: {
   /** Absolute path to the file `writeHtmlTopic` will (over)write. */
@@ -105,7 +105,7 @@ export async function backupContextTreeFile(input: {
  * (`cur-<timestamp_ms>`); a random UUID would silently produce an entry
  * that `list()` and `getById()` cannot find.
  *
- * Both the daemon's `curate-html-direct` handler and the CLI's
+ * Both the daemon's `curate-tool-mode` handler and the CLI's
  * `continueSession` use this helper so the on-disk log shape stays
  * identical regardless of which surface initiated the curate.
  *

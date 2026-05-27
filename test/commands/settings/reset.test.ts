@@ -33,6 +33,19 @@ class TestableSettingsReset extends SettingsReset {
   }
 }
 
+function makeBooleanGetResponse(key: string, current: boolean): unknown {
+  return {
+    category: 'updates',
+    current,
+    default: true,
+    description: 'desc',
+    key,
+    ok: true,
+    restartRequired: false,
+    type: 'boolean',
+  }
+}
+
 function makeGetResponse(key: string): unknown {
   if (key === 'llm.iterationBudgetMs') {
     return {
@@ -230,5 +243,35 @@ describe('brv settings reset', () => {
 
   it('emits a one-line help mentioning the restart-required behavior', () => {
     expect(SettingsReset.description ?? '').to.match(/restart/i)
+  })
+
+  describe('boolean keys (T4)', () => {
+    it('echoes the boolean default ("back to default (true)") and omits the restart hint', async () => {
+      dispatchByEvent((event) => {
+        if (event === SettingsEvents.GET) return makeBooleanGetResponse('update.checkForUpdates', false)
+        if (event === SettingsEvents.RESET) return {ok: true, restartRequired: false}
+        throw new Error('unexpected event')
+      })
+
+      await createCommand('update.checkForUpdates').run()
+
+      const output = loggedMessages.join('\n')
+      expect(output).to.match(/Setting reset: update\.checkForUpdates back to default \(true\)/)
+      expect(output, 'must not mention `brv restart` for restartRequired:false keys').to.not.match(/brv restart/i)
+      expect(process.exitCode ?? 0).to.equal(0)
+    })
+
+    it('keeps the restart hint for integer keys that require restart (regression)', async () => {
+      dispatchByEvent((event) => {
+        if (event === SettingsEvents.GET) return makeGetResponse('agentPool.maxSize')
+        if (event === SettingsEvents.RESET) return {ok: true, restartRequired: true}
+        throw new Error('unexpected event')
+      })
+
+      await createCommand('agentPool.maxSize').run()
+
+      const output = loggedMessages.join('\n')
+      expect(output).to.match(/Run `brv restart` to apply/)
+    })
   })
 })

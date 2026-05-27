@@ -42,7 +42,7 @@ export type HtmlWriteSuccess = {
    * come from the `related` ref resolver (broken refs); the channel is
    * open to future read-only post-write checks. Always an array —
    * empty means a clean write. Wire formats may omit the field when
-   * empty (see `agent-process.ts` curate-html-direct case).
+   * empty (see `agent-process.ts` curate-tool-mode case).
    */
   warnings: readonly string[]
   /** The cleaned HTML actually persisted (after fence-stripping). */

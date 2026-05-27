@@ -24,6 +24,7 @@ interface ContextTreeContextValue {
   isFetchingTree: boolean
   isUpdating: boolean
   navigateHome: () => void
+  navigateToPath: (path: string) => void
   nodes: ContextTreeNodeDTO[]
   saveChanges: () => Promise<void>
   selectedNode: ContextTreeNodeDTO | undefined
@@ -91,14 +92,14 @@ export function ContextTreeProvider({children}: {children: ReactNode}) {
     })
   }, [])
 
-  const handleSelect = useCallback(
-    (node: ContextTreeNodeDTO) => {
-      expandNestedPath(node.path)
+  const navigateToPath = useCallback(
+    (path: string) => {
+      expandNestedPath(path)
 
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev)
-          next.set('path', node.path)
+          next.set('path', path)
           return next
         },
         {replace: true},
@@ -109,6 +110,8 @@ export function ContextTreeProvider({children}: {children: ReactNode}) {
     },
     [expandNestedPath, setSearchParams],
   )
+
+  const handleSelect = useCallback((node: ContextTreeNodeDTO) => navigateToPath(node.path), [navigateToPath])
 
   const navigateHome = useCallback(() => {
     setSearchParams(
@@ -166,6 +169,7 @@ export function ContextTreeProvider({children}: {children: ReactNode}) {
     isFetchingTree,
     isUpdating: updateMutation.isPending,
     navigateHome,
+    navigateToPath,
     nodes,
     saveChanges,
     selectedNode,

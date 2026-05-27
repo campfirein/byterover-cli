@@ -8,7 +8,7 @@ import type {
   CurateHtmlDirectInputPayload,
   CurateHtmlDirectResultPayload,
   CurateHtmlWriteError,
-} from '../utils/curate-html-direct'
+} from '../utils/curate-tool-mode'
 
 import {SectionLabel, TerminalDot} from './task-detail-shared'
 
@@ -25,7 +25,7 @@ export function CurateHtmlDirectInputView({payload}: {payload: CurateHtmlDirectI
           </div>
         )}
         <Card className="ring-border bg-card p-4" size="sm">
-          <TopicViewer html={payload.html} />
+          <TopicViewer breadcrumb={{show: false}} html={payload.html} />
         </Card>
       </div>
     </section>
@@ -85,7 +85,7 @@ function WriteErrorItem({error}: {error: CurateHtmlWriteError}) {
         <div className="ml-6">
           <p className="text-muted-foreground mono mb-1 text-[10px] uppercase tracking-wider">Existing content</p>
           <Card className="ring-border bg-background p-3" size="sm">
-            <TopicViewer html={error.existingContent} />
+            <TopicViewer breadcrumb={{show: false}} html={error.existingContent} />
           </Card>
         </div>
       )}

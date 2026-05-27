@@ -301,7 +301,7 @@ describe('brv-curate-tool', () => {
   })
 
   describe('dispatch — task type + payload', () => {
-    it('submits task type "curate-html-direct" with JSON-encoded content', async () => {
+    it('submits task type "curate-tool-mode" with JSON-encoded content', async () => {
       const {client, simulateEvent} = createMockClient()
       const requestStub = client.requestWithAck as SinonStub
       requestStub.callsFake((event: string, data: {taskId?: string}) => {
@@ -323,7 +323,7 @@ describe('brv-curate-tool', () => {
       const createCall = requestStub.getCalls().find((c: {args: unknown[]}) => c.args[0] === 'task:create')
       expect(createCall, 'task:create dispatched').to.exist
       const payload = createCall!.args[1] as {content: string; type: string}
-      expect(payload.type).to.equal('curate-html-direct')
+      expect(payload.type).to.equal('curate-tool-mode')
 
       const decoded = decodeCurateHtmlContent(payload.content)
       expect(decoded.html).to.equal(VALID_HTML)

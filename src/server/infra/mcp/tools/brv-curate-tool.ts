@@ -150,7 +150,7 @@ export const BrvCurateInputSchema = z
 /**
  * Registers the brv-curate tool with the MCP server.
  *
- * Post-M3: routes through the daemon's `curate-html-direct` task type,
+ * Post-M3: routes through the daemon's `curate-tool-mode` task type,
  * which validates the HTML and writes the topic via `writeHtmlTopic` —
  * no LLM dispatch, no provider required.
  *
@@ -226,7 +226,7 @@ export function registerBrvCurateTool(
           content: encodeCurateHtmlContent({confirmOverwrite, html, meta}),
           projectPath: taskContext.projectRoot,
           taskId,
-          type: 'curate-html-direct',
+          type: 'curate-tool-mode',
           worktreeRoot: taskContext.worktreeRoot,
         })
 

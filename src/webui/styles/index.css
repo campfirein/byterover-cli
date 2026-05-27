@@ -217,3 +217,18 @@
   background: transparent;
   backdrop-filter: none;
 }
+
+/*
+ * Smooth hash-anchor scrolling for TopicViewer surfaces.
+ * <bv-index> renders <a href="#domain-..."> links that scroll to <section id="domain-...">.
+ * The actual scroll container lives inside the shared DetailBody, which we can't class directly,
+ * so we target any scroll container that contains a .bv-topic-viewer descendant.
+ * Containers marked [data-stick-to-bottom] (e.g., the task streaming view) opt out because
+ * scroll-behavior:smooth would animate useStickToBottom's scrollTop writes and fight the snap.
+ * Wrapped in prefers-reduced-motion so users who opt out of motion don't get the animation.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .overflow-y-auto:not([data-stick-to-bottom]):has(.bv-topic-viewer) {
+    scroll-behavior: smooth;
+  }
+}

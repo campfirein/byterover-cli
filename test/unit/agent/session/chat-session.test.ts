@@ -445,6 +445,80 @@ describe('ChatSession', () => {
     it('should not throw when no currentController exists', () => {
       expect(() => session.cancel()).to.not.throw()
     })
+
+    it('should return true when fallback controller is aborted', async () => {
+      ;(mockLLMService.completeTask as SinonStub).callsFake(async (_input, options) => {
+        await new Promise<void>((resolve) => {
+          const signal = options?.signal as AbortSignal
+          signal.addEventListener('abort', () => resolve(), {once: true})
+        })
+        return 'response'
+      })
+
+      const runPromise = session.run('input')
+      const result = session.cancel()
+      await runPromise.catch(() => {})
+
+      expect(result).to.equal(true)
+    })
+
+    it('should return false when no controller exists for the given taskId', () => {
+      expect(session.cancel('unknown-task')).to.equal(false)
+    })
+
+    it('should return false when no fallback controller and no taskId given', () => {
+      expect(session.cancel()).to.equal(false)
+    })
+
+    it('should abort only the controller matching the given taskId', async () => {
+      const aborts: Record<string, boolean> = {a: false, b: false}
+      ;(mockLLMService.completeTask as SinonStub).callsFake(async (_input, options) => {
+        const taskId = options?.taskId as string
+        const signal = options?.signal as AbortSignal
+        await new Promise<void>((resolve) => {
+          signal.addEventListener('abort', () => {
+            aborts[taskId] = true
+            resolve()
+          }, {once: true})
+        })
+        return 'response'
+      })
+
+      const runA = session.run('a', {taskId: 'a'})
+      const runB = session.run('b', {taskId: 'b'})
+
+      const result = session.cancel('a')
+      await runA.catch(() => {})
+
+      // After cancelling A, B's controller must still be present and B must still
+      // be pending. Cancelling B explicitly lets the test finish.
+      expect(aborts.a).to.equal(true)
+      expect(aborts.b).to.equal(false)
+
+      session.cancel('b')
+      await runB.catch(() => {})
+
+      expect(result).to.equal(true)
+      expect(aborts.b).to.equal(true)
+    })
+
+    it('should be idempotent: second cancel for the same taskId returns false', async () => {
+      ;(mockLLMService.completeTask as SinonStub).callsFake(async (_input, options) => {
+        const signal = options?.signal as AbortSignal
+        await new Promise<void>((resolve) => {
+          signal.addEventListener('abort', () => resolve(), {once: true})
+        })
+        return 'response'
+      })
+
+      const runPromise = session.run('input', {taskId: 'task-1'})
+      const first = session.cancel('task-1')
+      const second = session.cancel('task-1')
+      await runPromise.catch(() => {})
+
+      expect(first).to.equal(true)
+      expect(second).to.equal(false)
+    })
   })
 
   describe('dispose()', () => {

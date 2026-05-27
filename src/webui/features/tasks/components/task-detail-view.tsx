@@ -13,6 +13,8 @@ import {DetailHeader} from './task-detail-header'
 import {ErrorSection, InputSection, LiveStreamSection, NotFound, ResultSection} from './task-detail-sections'
 
 interface TaskDetailViewProps {
+  cancelling: boolean
+  onCancel: (taskId: string) => void
   taskId: string
 }
 
@@ -24,7 +26,7 @@ function hasRichDetail(task: StoredTask | undefined): boolean {
 }
 
 // eslint-disable-next-line complexity
-export function TaskDetailView({taskId}: TaskDetailViewProps) {
+export function TaskDetailView({cancelling, onCancel, taskId}: TaskDetailViewProps) {
   const storeTask = useTaskById(taskId)
   const isLiveInStore = storeTask !== undefined && isActiveStatus(storeTask.status)
   const needsFetch = !hasRichDetail(storeTask) && !isLiveInStore
@@ -70,9 +72,14 @@ export function TaskDetailView({taskId}: TaskDetailViewProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <DetailHeader now={now} task={task} />
+      <DetailHeader cancelling={cancelling} now={now} onCancel={onCancel} task={task} />
       <div className="border-border/50 border-t" />
-      <div className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto px-6 py-5" onScroll={onScroll} ref={scrollRef}>
+      <div
+        className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto px-6 py-5"
+        data-stick-to-bottom
+        onScroll={onScroll}
+        ref={scrollRef}
+      >
         <InputSection task={task} />
         <EventLogSection now={now} task={task} />
         {showLive && <LiveStreamSection task={task} />}

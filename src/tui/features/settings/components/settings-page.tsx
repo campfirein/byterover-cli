@@ -32,6 +32,19 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
   const hintMode: 'browse' | 'edit' | 'edit-error' | 'saving' =
     mode === 'edit' && rowError !== undefined ? 'edit-error' : mode
 
+  // Restart warning fires only when at least one dirty key actually
+  // requires a daemon restart. Boolean toggles (e.g. update.checkForUpdates,
+  // restartRequired: false) must not produce a misleading prompt.
+  const restartRequiredDirty = useMemo(() => {
+    const filtered = new Set<string>()
+    for (const dirtyKey of dirtyKeys) {
+      const row = rows.find((r) => r.key === dirtyKey)
+      if (row?.restartRequired === true) filtered.add(dirtyKey)
+    }
+
+    return filtered
+  }, [dirtyKeys, rows])
+
   const enterEdit = useCallback((row: SettingsRow) => {
     setEditBuffer(preFillBufferFor(row))
     setRowError(undefined)
@@ -86,6 +99,28 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
     [resetMutation],
   )
 
+  const toggleBoolean = useCallback(
+    async (row: SettingsRow) => {
+      if (row.type !== 'boolean' || typeof row.current !== 'boolean') return
+      setMode('saving')
+      setRowError(undefined)
+      const response = await setMutation.mutateAsync({key: row.key, value: !row.current})
+      if (response.ok) {
+        setDirtyKeys((previous) => {
+          const next = new Set(previous)
+          next.add(row.key)
+          return next
+        })
+        setMode('browse')
+        return
+      }
+
+      setRowError(response.error.message)
+      setMode('browse')
+    },
+    [setMutation],
+  )
+
   useInput(
     (input, key) => {
       if (key.escape) {
@@ -107,8 +142,14 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
         return
       }
 
-      if (key.return) {
-        enterEdit(rows[cursor])
+      if (key.return || input === ' ') {
+        const row = rows[cursor]
+        if (row.type === 'boolean') {
+          toggleBoolean(row).catch(() => {})
+        } else {
+          enterEdit(row)
+        }
+
         return
       }
 
@@ -175,7 +216,7 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
 
   return (
     <Box flexDirection="column">
-      {dirtyKeys.size > 0 && (
+      {restartRequiredDirty.size > 0 && (
         <Box marginBottom={1}>
           <Text color={colors.warning}>Settings changed. Run `brv restart` to apply.</Text>
         </Box>
@@ -184,7 +225,7 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
       <Box marginBottom={1}>
         <Text>SETTINGS</Text>
         <Text>{'    '}</Text>
-        <Text>scope: global - `brv restart` to apply</Text>
+        <Text>{restartRequiredDirty.size > 0 ? 'scope: global - `brv restart` to apply' : 'scope: global'}</Text>
       </Box>
 
       {groups.map((group) => (

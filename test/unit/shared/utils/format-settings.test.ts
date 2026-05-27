@@ -20,6 +20,18 @@ function makeItem(overrides: Partial<SettingsItemDTO> = {}): SettingsItemDTO {
   }
 }
 
+function makeBooleanItem(current: boolean): SettingsItemDTO {
+  return {
+    category: 'updates',
+    current,
+    default: true,
+    description: 'Check for brv updates at startup and notify when one is available',
+    key: 'update.checkForUpdates',
+    restartRequired: false,
+    type: 'boolean',
+  }
+}
+
 function makeRow(overrides: Partial<SettingsRow> = {}): SettingsRow {
   return {
     category: 'concurrency',
@@ -178,6 +190,67 @@ describe('format-settings (shared)', () => {
       const row = makeRow()
       expect(parseRowInput(row, '').kind).to.equal('error')
       expect(parseRowInput(row, '   ').kind).to.equal('error')
+    })
+  })
+
+  describe('boolean rows (T5)', () => {
+    it('includes boolean items in the output (no longer filtered)', () => {
+      const rows = buildSettingsRows([makeBooleanItem(true)])
+      expect(rows).to.have.lengthOf(1)
+      expect(rows[0].key).to.equal('update.checkForUpdates')
+    })
+
+    it('formats current=true as "[ on ]" and current=false as "[ off ]"', () => {
+      const onRow = buildSettingsRows([makeBooleanItem(true)])[0]
+      const offRow = buildSettingsRows([makeBooleanItem(false)])[0]
+      expect(onRow.displayCurrent).to.equal('[ on ]')
+      expect(offRow.displayCurrent).to.equal('[ off ]')
+    })
+
+    it('formats default=true the same way as current', () => {
+      const row = buildSettingsRows([makeBooleanItem(false)])[0]
+      expect(row.displayDefault).to.equal('[ on ]')
+    })
+
+    it('emits an empty displayRange for boolean rows (no min/max to render)', () => {
+      const row = buildSettingsRows([makeBooleanItem(true)])[0]
+      expect(row.displayRange).to.equal('')
+    })
+
+    it('preserves the "updates" category on the row', () => {
+      const row = buildSettingsRows([makeBooleanItem(true)])[0]
+      expect(row.category).to.equal('updates')
+    })
+
+    it('marks the row as modified when current differs from default', () => {
+      // current=false but default=true (per the helper) -> dirty
+      const row = buildSettingsRows([makeBooleanItem(false)])[0]
+      expect(row.modified).to.equal(true)
+    })
+
+    it('propagates restartRequired=false from the DTO onto the row', () => {
+      const row = buildSettingsRows([makeBooleanItem(true)])[0]
+      expect(row.restartRequired).to.equal(false)
+    })
+
+    it('keeps integer rows working when mixed with boolean rows', () => {
+      const rows = buildSettingsRows([
+        makeItem({current: 25, key: 'agentPool.maxSize'}),
+        makeBooleanItem(true),
+      ])
+      expect(rows.map((r) => r.key)).to.have.members(['agentPool.maxSize', 'update.checkForUpdates'])
+      const integerRow = rows.find((r) => r.key === 'agentPool.maxSize')
+      expect(integerRow?.displayCurrent).to.equal('25')
+      expect(integerRow?.displayRange).to.equal('1-100')
+    })
+
+    it('orders the updates category after task-history', () => {
+      const rows = buildSettingsRows([
+        makeBooleanItem(true),
+        makeItem({category: 'task-history', key: 'taskHistory.maxEntries'}),
+        makeItem({category: 'concurrency', key: 'agentPool.maxSize'}),
+      ])
+      expect(rows.map((r) => r.category)).to.deep.equal(['concurrency', 'task-history', 'updates'])
     })
   })
 })

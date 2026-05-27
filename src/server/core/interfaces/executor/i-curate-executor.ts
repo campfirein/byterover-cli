@@ -60,7 +60,7 @@ export interface ICurateExecutor {
 }
 
 /**
- * Wire envelope returned by the `curate-html-direct` daemon task type.
+ * Wire envelope returned by the `curate-tool-mode` daemon task type.
  *
  * Single-shot: the calling agent (typically over MCP) supplies a fully
  * authored `<bv-topic>` HTML document; the daemon validates via

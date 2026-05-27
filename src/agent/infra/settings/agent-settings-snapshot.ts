@@ -37,7 +37,9 @@ export async function loadAgentSettingsSnapshot(client: ITransportClient): Promi
     const response = await client.requestWithAck<SettingsListResponse>(SettingsEvents.LIST)
     const values: Record<string, number> = {}
     for (const item of response.items) {
-      values[item.key] = item.current
+      // Boolean descriptors round-trip the same wire shape but no agent
+      // consumer reads them today; ship-when-needed in a later ticket.
+      if (typeof item.current === 'number') values[item.key] = item.current
     }
 
     snapshot = values

@@ -46,6 +46,7 @@ function makeStubAgent(sandbox: SinonSandbox): ICipherAgent & {
 } {
   return {
     cancel: sandbox.stub().resolves(false),
+    cancelTask: sandbox.stub().resolves(false),
     createTaskSession: sandbox.stub().resolves('task-session-1'),
     deleteSandboxVariable: sandbox.stub(),
     deleteSandboxVariableOnSession: sandbox.stub(),
