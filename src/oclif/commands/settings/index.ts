@@ -114,8 +114,9 @@ function formatRow(item: SettingsItemDTO): string {
   return `  ${pad(item.key, 40)}  ${pad(current, 7)}  (default ${defaultStr})${''.padEnd(Math.max(0, 8 - defaultStr.length))}  ${range}`
 }
 
-function renderValue(item: SettingsItemDTO, value: boolean | number): string {
+function renderValue(item: SettingsItemDTO, value: boolean | number | string): string {
   if (typeof value === 'boolean') return value ? 'true' : 'false'
+  if (typeof value === 'string') return value
   return renderInteger(item, value)
 }
 

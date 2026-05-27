@@ -110,7 +110,7 @@ function restartRequiredFor(key: string): boolean {
  * Range, coupling, and fractional-number violations are left to the store's
  * validator and still surface as `invalid_value`.
  */
-function checkValueType(key: string, value: boolean | number): SettingsErrorDTO | undefined {
+function checkValueType(key: string, value: boolean | number | string): SettingsErrorDTO | undefined {
   const descriptor = findSettingDescriptor(key)
   if (descriptor === undefined) return undefined
 
@@ -137,6 +137,17 @@ function checkValueType(key: string, value: boolean | number): SettingsErrorDTO 
     }
   }
 
+  if (descriptor.type === 'enum' && got !== 'string') {
+    return {
+      code: 'invalid_value_type',
+      expected: 'enum',
+      got,
+      key,
+      message: `expected string for '${key}', got ${got}`,
+      value,
+    }
+  }
+
   return undefined
 }
 
@@ -149,7 +160,7 @@ function toItemDTO(item: SettingItem): SettingsItemDTO {
   return descriptorToDTO(descriptor, item.current)
 }
 
-function descriptorToDTO(descriptor: SettingDescriptor, current: boolean | number): SettingsItemDTO {
+function descriptorToDTO(descriptor: SettingDescriptor, current: boolean | number | string): SettingsItemDTO {
   const dto: SettingsItemDTO = {
     current,
     default: descriptor.default,
@@ -163,6 +174,10 @@ function descriptorToDTO(descriptor: SettingDescriptor, current: boolean | numbe
     dto.min = descriptor.min
     dto.max = descriptor.max
     if (descriptor.unit !== undefined) dto.unit = descriptor.unit
+  }
+
+  if (descriptor.type === 'enum') {
+    dto.options = descriptor.options
   }
 
   return dto

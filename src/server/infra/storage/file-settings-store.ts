@@ -132,7 +132,7 @@ export class FileSettingsStore implements ISettingsStore {
     return join(this.baseDir, SETTINGS_FILE)
   }
 
-  private async readOverrides(): Promise<Record<string, boolean | number>> {
+  private async readOverrides(): Promise<Record<string, boolean | number | string>> {
     const raw = await this.readRawValues()
     const {valid} = this.validator.partition(raw)
     return {...valid}

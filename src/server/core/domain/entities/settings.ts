@@ -6,13 +6,14 @@ import {
   TASK_HISTORY_DEFAULT_MAX_ENTRIES,
   UPDATE_CHECK_FOR_UPDATES_DEFAULT,
 } from '../../../constants.js'
+import {LANGUAGE_NAMES} from '../render/language-clause.js'
 
 /**
  * High-level concern the setting controls. Drives group headers in CLI
  * and TUI render output (uppercased). Web docs / WebUI consume this
  * field to render the same groupings independently of key naming.
  */
-export type SettingCategory = 'concurrency' | 'llm' | 'task-history' | 'updates'
+export type SettingCategory = 'concurrency' | 'language' | 'llm' | 'task-history' | 'updates'
 
 /**
  * Value-kind for dispatch between the duration formatter / parser
@@ -48,15 +49,21 @@ export type BooleanSettingDescriptor = BaseSettingDescriptor & {
   readonly type: 'boolean'
 }
 
+export type EnumSettingDescriptor = BaseSettingDescriptor & {
+  readonly default: string
+  readonly options: readonly string[]
+  readonly type: 'enum'
+}
+
 /**
  * Descriptor for a single user-configurable setting. Discriminated on
  * `type` so consumers narrow with a single check before reading
- * type-specific fields (`min`/`max` on integers, etc).
+ * type-specific fields (`min`/`max` on integers, `options` on enums, etc).
  *
  * Defaults reference the existing constants module so a constant change
  * automatically updates the setting's default.
  */
-export type SettingDescriptor = BooleanSettingDescriptor | IntegerSettingDescriptor
+export type SettingDescriptor = BooleanSettingDescriptor | EnumSettingDescriptor | IntegerSettingDescriptor
 
 /**
  * View of one setting: the key, the user's current override (or the default
@@ -64,8 +71,8 @@ export type SettingDescriptor = BooleanSettingDescriptor | IntegerSettingDescrip
  * shapes; consumers narrow on the corresponding descriptor's `type`.
  */
 export type SettingItem = {
-  readonly current: boolean | number
-  readonly default: boolean | number
+  readonly current: boolean | number | string
+  readonly default: boolean | number | string
   readonly key: string
   readonly restartRequired: boolean
 }
@@ -79,6 +86,8 @@ export type SettingItem = {
 export const SETTINGS_KEYS = {
   AGENT_POOL_MAX_CONCURRENT_TASKS: 'agentPool.maxConcurrentTasksPerProject',
   AGENT_POOL_MAX_SIZE: 'agentPool.maxSize',
+  LANGUAGE_CODE: 'language.code',
+  LANGUAGE_MODE: 'language.mode',
   LLM_ITERATION_BUDGET_MS: 'llm.iterationBudgetMs',
   LLM_REQUEST_TIMEOUT_MS: 'llm.requestTimeoutMs',
   TASK_HISTORY_MAX_ENTRIES: 'taskHistory.maxEntries',
@@ -145,6 +154,24 @@ export const SETTINGS_REGISTRY: readonly SettingDescriptor[] = [
     key: SETTINGS_KEYS.UPDATE_CHECK_FOR_UPDATES,
     restartRequired: false,
     type: 'boolean',
+  },
+  {
+    category: 'language',
+    default: 'auto',
+    description: 'Match input language (auto) or force a fixed language for written output',
+    key: SETTINGS_KEYS.LANGUAGE_MODE,
+    options: ['auto', 'fixed'],
+    restartRequired: false,
+    type: 'enum',
+  },
+  {
+    category: 'language',
+    default: 'en',
+    description: 'ISO-639-1 code applied when mode is fixed; ignored in auto mode',
+    key: SETTINGS_KEYS.LANGUAGE_CODE,
+    options: Object.keys(LANGUAGE_NAMES),
+    restartRequired: false,
+    type: 'enum',
   },
 ]
 

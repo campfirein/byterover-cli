@@ -103,8 +103,9 @@ export default class SettingsGet extends Command {
   }
 }
 
-function renderValue(item: SettingsItemDTO, value: boolean | number): string {
+function renderValue(item: SettingsItemDTO, value: boolean | number | string): string {
   if (typeof value === 'boolean') return value ? 'true' : 'false'
+  if (typeof value === 'string') return value
   return renderInteger(item, value)
 }
 
