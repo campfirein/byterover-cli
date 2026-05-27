@@ -8,6 +8,7 @@ import type {IGlobalConfigStore} from '../../../../../src/server/core/interfaces
 import {GLOBAL_CONFIG_VERSION} from '../../../../../src/server/constants.js'
 import {GlobalConfig} from '../../../../../src/server/core/domain/entities/global-config.js'
 import {GlobalConfigHandler} from '../../../../../src/server/infra/transport/handlers/global-config-handler.js'
+import {AnalyticsEventNames} from '../../../../../src/shared/analytics/event-names.js'
 import {GlobalConfigEvents} from '../../../../../src/shared/transport/events/global-config-events.js'
 import {createMockTransportServer, type MockTransportServer} from '../../../../helpers/mock-factories.js'
 
@@ -23,6 +24,24 @@ function createMockGlobalConfigStore(): SinonStubbedInstance<IGlobalConfigStore>
 // satisfy `unicorn/consistent-function-scoping`.
 function makeAnalyticsClientStub(): {abort: ReturnType<typeof stub>} {
   return {abort: stub()}
+}
+
+// M15.1: full analytics client double for the analytics_disabled emit tests.
+// Same module-scope hoist rationale as makeAnalyticsClientStub above.
+function makeTrackingClient(): {
+  abort: ReturnType<typeof stub>
+  flush: ReturnType<typeof stub>
+  getRuntimeState: ReturnType<typeof stub>
+  onAuthTransition: ReturnType<typeof stub>
+  track: ReturnType<typeof stub>
+} {
+  return {
+    abort: stub(),
+    flush: stub().resolves({events: []}),
+    getRuntimeState: stub().resolves({droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 0}),
+    onAuthTransition: stub().resolves(),
+    track: stub(),
+  }
 }
 
 describe('GlobalConfigHandler', () => {
@@ -347,6 +366,102 @@ describe('GlobalConfigHandler', () => {
       const response = await fn({analytics: false}, 'client-1')
 
       expect(response.current, 'works without analyticsClient').to.be.false
+    })
+  })
+
+  describe('M15.1 analytics_disabled emit', () => {
+    it('emits analytics_disabled exactly once on enable→disable transition', async () => {
+      const analyticsClient = makeTrackingClient()
+      const handlerWithClient = new GlobalConfigHandler({analyticsClient, globalConfigStore: store, transport})
+      handlerWithClient.setup()
+
+      const enabled = GlobalConfig.create('device-x').withAnalytics(true)
+      store.read.resolves(enabled)
+
+      const fn = transport._handlers.get(GlobalConfigEvents.SET_ANALYTICS)
+      if (!fn) throw new Error('SET_ANALYTICS handler not registered')
+      await fn({analytics: false}, 'client-1')
+
+      const trackCalls = analyticsClient.track
+        .getCalls()
+        .filter((c: {args: unknown[]}) => c.args[0] === AnalyticsEventNames.ANALYTICS_DISABLED)
+      expect(trackCalls.length, 'analytics_disabled fires exactly once on disable transition').to.equal(1)
+    })
+
+    it('emits BEFORE cachedAnalytics flips (so isEnabled reads true at track time)', async () => {
+      const analyticsClient = makeTrackingClient()
+      const handlerWithClient = new GlobalConfigHandler({analyticsClient, globalConfigStore: store, transport})
+      handlerWithClient.setup()
+
+      const enabled = GlobalConfig.create('device-x').withAnalytics(true)
+      store.read.resolves(enabled)
+      await handlerWithClient.refreshCache()
+      expect(handlerWithClient.getCachedAnalytics(), 'cache starts true after refresh').to.be.true
+
+      // Capture the value of cachedAnalytics at the moment track() is called.
+      let cacheAtTrack: boolean | undefined
+      analyticsClient.track.callsFake(() => {
+        cacheAtTrack = handlerWithClient.getCachedAnalytics()
+      })
+
+      const fn = transport._handlers.get(GlobalConfigEvents.SET_ANALYTICS)
+      if (!fn) throw new Error('SET_ANALYTICS handler not registered')
+      await fn({analytics: false}, 'client-1')
+
+      expect(cacheAtTrack, 'cache still reports true at the moment track fires').to.equal(true)
+      expect(handlerWithClient.getCachedAnalytics(), 'cache flips to false after the call returns').to.equal(false)
+    })
+
+    it('does NOT emit on idempotent disable (false → false)', async () => {
+      const analyticsClient = makeTrackingClient()
+      const handlerWithClient = new GlobalConfigHandler({analyticsClient, globalConfigStore: store, transport})
+      handlerWithClient.setup()
+
+      store.read.resolves() // no config = previous false
+
+      const fn = transport._handlers.get(GlobalConfigEvents.SET_ANALYTICS)
+      if (!fn) throw new Error('SET_ANALYTICS handler not registered')
+      await fn({analytics: false}, 'client-1')
+
+      const trackCalls = analyticsClient.track
+        .getCalls()
+        .filter((c: {args: unknown[]}) => c.args[0] === AnalyticsEventNames.ANALYTICS_DISABLED)
+      expect(trackCalls.length, 'no transition = no emit').to.equal(0)
+    })
+
+    it('does NOT emit on enable (false → true) — analytics_enabled is intentionally not tracked', async () => {
+      const analyticsClient = makeTrackingClient()
+      const handlerWithClient = new GlobalConfigHandler({analyticsClient, globalConfigStore: store, transport})
+      handlerWithClient.setup()
+
+      const disabled = GlobalConfig.create('device-x').withAnalytics(false)
+      store.read.resolves(disabled)
+
+      const fn = transport._handlers.get(GlobalConfigEvents.SET_ANALYTICS)
+      if (!fn) throw new Error('SET_ANALYTICS handler not registered')
+      await fn({analytics: true}, 'client-1')
+
+      const trackCalls = analyticsClient.track
+        .getCalls()
+        .filter((c: {args: unknown[]}) => c.args[0] === AnalyticsEventNames.ANALYTICS_DISABLED)
+      expect(trackCalls.length, 'enable must never produce analytics_disabled').to.equal(0)
+    })
+
+    it('does not crash the SET when track throws', async () => {
+      const analyticsClient = makeTrackingClient()
+      analyticsClient.track.throws(new Error('boom'))
+      const handlerWithClient = new GlobalConfigHandler({analyticsClient, globalConfigStore: store, transport})
+      handlerWithClient.setup()
+
+      const enabled = GlobalConfig.create('device-x').withAnalytics(true)
+      store.read.resolves(enabled)
+
+      const fn = transport._handlers.get(GlobalConfigEvents.SET_ANALYTICS)
+      if (!fn) throw new Error('SET_ANALYTICS handler not registered')
+      const response = await fn({analytics: false}, 'client-1')
+
+      expect(response.current, 'disable completes even when track throws').to.be.false
+      expect(response.previous).to.be.true
     })
   })
 })
