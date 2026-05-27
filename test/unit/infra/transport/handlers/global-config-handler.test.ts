@@ -26,7 +26,7 @@ function makeAnalyticsClientStub(): {abort: ReturnType<typeof stub>} {
   return {abort: stub()}
 }
 
-// M15.1: full analytics client double for the analytics_disabled emit tests.
+// Full analytics client double for the analytics_disabled emit tests.
 // Same module-scope hoist rationale as makeAnalyticsClientStub above.
 function makeTrackingClient(): {
   abort: ReturnType<typeof stub>
@@ -369,7 +369,7 @@ describe('GlobalConfigHandler', () => {
     })
   })
 
-  describe('M15.1 analytics_disabled emit', () => {
+  describe('analytics_disabled emit', () => {
     it('emits analytics_disabled exactly once on enable→disable transition', async () => {
       const analyticsClient = makeTrackingClient()
       const handlerWithClient = new GlobalConfigHandler({analyticsClient, globalConfigStore: store, transport})

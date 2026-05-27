@@ -290,9 +290,9 @@ export async function setupFeatureHandlers({
   }).setup()
 
   new AuthHandler({
-    // M15.1: thread the analytics client so the auth handler can emit
-    // auth_login / auth_logout on identity transitions. M6's Mixpanel
-    // alias() path keys off the auth_login event.
+    // Thread the analytics client so the auth handler can emit
+    // auth_login / auth_logout on identity transitions. The Mixpanel
+    // forwarder's alias() path keys off the auth_login event.
     analyticsClient,
     authService: new OAuthService(authConfig),
     authStateStore,

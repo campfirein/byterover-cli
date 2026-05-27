@@ -53,7 +53,7 @@ describe('SuperPropertiesResolver', () => {
     })
   })
 
-  describe('client_kind (M15.1)', () => {
+  describe('client_kind', () => {
     it('omits client_kind when no clientKindContext scope is active', async () => {
       const resolver = new SuperPropertiesResolver(makeStubStore(), () => '1.2.3')
 

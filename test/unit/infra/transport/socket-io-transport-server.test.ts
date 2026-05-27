@@ -448,7 +448,7 @@ describe('SocketIOTransportServer', () => {
     })
   })
 
-  describe('client_kind context wrap (M15.1)', () => {
+  describe('client_kind context wrap', () => {
     it('exposes the registered ClientType inside the request handler via getClientKindFromContext', async () => {
       const typeByClientId = new Map<string, ClientType>()
       server.setGetClientKind((clientId) => typeByClientId.get(clientId))

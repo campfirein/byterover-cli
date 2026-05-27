@@ -50,11 +50,10 @@ function toUserDTO(user: User): UserDTO {
 
 export interface AuthHandlerDeps {
   /**
-   * M15.1: optional. When provided, the handler emits `auth_login` /
+   * Optional. When provided, the handler emits `auth_login` /
    * `auth_logout` analytics events on identity transitions. Optional so
-   * that legacy construction (and unit tests that don't care about
-   * analytics) doesn't need to thread the dep through. Wired in
-   * `feature-handlers.ts`.
+   * legacy construction (and unit tests that don't care about analytics)
+   * doesn't need to thread the dep through. Wired in `feature-handlers.ts`.
    */
   analyticsClient?: IAnalyticsClient
   authService: IAuthService
@@ -151,7 +150,7 @@ export class AuthHandler {
   }
 
   /**
-   * M15.1: analytics emit helper. Mirrors the try/processLog pattern from
+   * Analytics emit helper. Mirrors the try/processLog pattern from
    * `analytics-hook.ts` so analytics failures never affect command outcomes.
    */
   private emitAnalytics<E extends AnalyticsEventName>(event: E, ...rest: PropsArg<E>): void {
@@ -190,9 +189,10 @@ export class AuthHandler {
       // new token without waiting for the next 5-second poll cycle.
       await this.authStateStore.loadToken()
 
-      // M15.1: emit AFTER loadToken so the per-event identity resolver
-      // stamps the row with the new authenticated user_id (M6's alias
-      // path keys off `{name: auth_login, outcome: success}`).
+      // Emit AFTER loadToken so the per-event identity resolver stamps
+      // the row with the new authenticated user_id (the Mixpanel
+      // forwarder's alias path keys off `{name: auth_login, outcome:
+      // success}`).
       this.emitAnalytics(AnalyticsEventNames.AUTH_LOGIN, {outcome: 'success'})
 
       this.transport.broadcast(AuthEvents.LOGIN_COMPLETED, {
@@ -205,7 +205,7 @@ export class AuthHandler {
         user: toUserDTO(user),
       })
     } catch (error) {
-      // M15.1: emit the failure terminal so the funnel sees both halves.
+      // Emit the failure terminal so the funnel sees both halves.
       // Identity is still anonymous (token never committed). `failure_kind`
       // is a coarse tag — never leak `error.message` here (would risk PII).
       // eslint-disable-next-line camelcase
@@ -311,7 +311,7 @@ export class AuthHandler {
           await this.tokenStore.save(authToken)
           await this.authStateStore.loadToken()
 
-          // M15.1: emit AFTER loadToken (same rationale as the OAuth path).
+          // Emit AFTER loadToken (same identity-stamping rationale as the OAuth path).
           this.emitAnalytics(AnalyticsEventNames.AUTH_LOGIN, {outcome: 'success'})
 
           this.transport.broadcast(AuthEvents.STATE_CHANGED, {
@@ -321,7 +321,7 @@ export class AuthHandler {
 
           return {success: true, userEmail: user.email}
         } catch (error) {
-          // M15.1: failure-path emit covers api-key auth failures (invalid key,
+          // Failure-path emit covers api-key auth failures (invalid key,
           // network error, user fetch failure). Stays anonymous — no token was
           // committed.
           // eslint-disable-next-line camelcase
@@ -340,22 +340,27 @@ export class AuthHandler {
         await this.disconnectByteRoverProvider()
         await this.authStateStore.loadToken()
 
-        // M15.1: emit AFTER cleanup but on the success terminal. The
-        // pre-transition flush hook fires when loadToken() above changes
-        // identity, draining any pending events under the logged-in
-        // identity. After loadToken() identity is anonymous, so this
-        // success row stamps anonymously — which correctly reflects "logout
-        // succeeded for the now-anonymous session." Downstream consumers
-        // join on `device_id` to attribute the logout back to the user.
+        // Emit on the success terminal (single-emit guarantee — a
+        // success emit at the START would double-fire with the catch
+        // branch when a later step throws). By the time we reach here
+        // loadToken() has already flipped identity to anonymous, so the
+        // success row stamps `{device_id}` only. The OLD-identity events
+        // (any pending tracks under the logged-in user) ship separately:
+        // wire-analytics-auth-pre-transition.ts hooks `onBeforeAuthChange`
+        // and awaits `flush()` before loadToken commits the identity
+        // change, draining them under the logged-in identity. Downstream
+        // consumers join `auth_logout` rows back to the user via
+        // `device_id`.
         this.emitAnalytics(AnalyticsEventNames.AUTH_LOGOUT, {outcome: 'success'})
 
         this.transport.broadcast(AuthEvents.STATE_CHANGED, {isAuthorized: false})
         return {success: true}
       } catch {
-        // M15.1: failure-path emit covers token-clear / provider-disconnect /
-        // state-reload errors. Identity may be either logged-in (if clear
-        // failed first) or anonymous (if clear succeeded but a later step
-        // failed) — both are correct for diagnostic purposes.
+        // Failure-path emit covers token-clear / provider-disconnect /
+        // state-reload errors. Identity at trackAsync-resolve time may be
+        // logged-in (clear failed first) or anonymous (clear succeeded but a
+        // later step failed); both are valid for diagnostic purposes.
+        // `failure_kind` is a coarse tag — never raw `error.message`.
         // eslint-disable-next-line camelcase
         this.emitAnalytics(AnalyticsEventNames.AUTH_LOGOUT, {failure_kind: 'logout_flow', outcome: 'failure'})
 

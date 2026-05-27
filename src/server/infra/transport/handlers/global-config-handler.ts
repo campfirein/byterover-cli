@@ -148,7 +148,7 @@ export class GlobalConfigHandler {
     const updated = current.withAnalytics(analytics)
     await this.globalConfigStore.write(updated)
 
-    // M15.1: emit BEFORE flipping `cachedAnalytics` so AnalyticsClient.isEnabled
+    // Emit BEFORE flipping `cachedAnalytics` so AnalyticsClient.isEnabled
     // (which reads the cache) still resolves true at track time and the row
     // enters the queue. After this line the cache flips to false and any
     // subsequent track() is no-op'd. analytics_enabled is intentionally NOT

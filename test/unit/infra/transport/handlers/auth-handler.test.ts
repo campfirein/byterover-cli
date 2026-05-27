@@ -96,6 +96,21 @@ function makeFakeAnalyticsClient(): IAnalyticsClient & {trackSpy: ReturnType<typ
   } as unknown as IAnalyticsClient & {trackSpy: ReturnType<typeof stub>}
 }
 
+/**
+ * `failure_kind` discipline: the emitted tag MUST be a coarse enum-like
+ * value — non-empty, ≤64 chars, snake_case (lowercase letters +
+ * underscores). Forbids whitespace, newlines, capital letters, symbols —
+ * catches a developer accidentally passing `getErrorMessage(error)` or
+ * `error.message` as the tag.
+ */
+function assertFailureKindDiscipline(value: unknown, label: string): void {
+  expect(value, `${label}: failure_kind must be a string`).to.be.a('string')
+  const tag = value as string
+  expect(tag.length, `${label}: failure_kind must be non-empty`).to.be.greaterThan(0)
+  expect(tag.length, `${label}: failure_kind must be ≤64 chars (got ${tag.length})`).to.be.lessThanOrEqual(64)
+  expect(tag, `${label}: failure_kind must be snake_case (a-z + _), got "${tag}"`).to.match(/^[a-z][a-z_]*$/)
+}
+
 function createMockProviderConfigStore(
   options: {isConnected?: boolean} = {},
 ): SinonStubbedInstance<IProviderConfigStore> {
@@ -539,7 +554,7 @@ describe('AuthHandler — setupExternalAuthSync', () => {
     })
   })
 
-  describe('analytics emits (M15.1)', () => {
+  describe('analytics emits', () => {
     it('emits auth_logout with outcome=success on the happy logout path', async () => {
       const analyticsClient = makeFakeAnalyticsClient()
       createHandler({analyticsClient})
@@ -575,7 +590,7 @@ describe('AuthHandler — setupExternalAuthSync', () => {
       expect(trackCalls.length, 'auth_logout fires exactly once on failure').to.equal(1)
       const props = trackCalls[0].args[1] as {failure_kind?: string; outcome: string}
       expect(props.outcome).to.equal('failure')
-      expect(props.failure_kind, 'failure_kind is a coarse tag, never a raw error message').to.be.a('string')
+      assertFailureKindDiscipline(props.failure_kind, 'auth_logout failure emit')
     })
 
     it('does not throw when analyticsClient.track throws on logout (analytics failures are swallowed)', async () => {
@@ -650,7 +665,7 @@ describe('AuthHandler — setupExternalAuthSync', () => {
       expect(trackCalls.length, 'auth_login fires exactly once on API-key failure').to.equal(1)
       const props = trackCalls[0].args[1] as {failure_kind?: string; outcome: string}
       expect(props.outcome).to.equal('failure')
-      expect(props.failure_kind).to.be.a('string')
+      assertFailureKindDiscipline(props.failure_kind, 'auth_login API-key failure emit')
     })
   })
 })

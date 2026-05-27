@@ -46,9 +46,9 @@ export class SocketIOTransportServer implements ITransportServer {
   private connectionHandlers: ConnectionHandler[] = []
   private disconnectionHandlers: ConnectionHandler[] = []
   /**
-   * M15.1: optional lookup that resolves a Socket.IO clientId to its
-   * registered `ClientType`. When set and the lookup returns a non-undefined
-   * value, every incoming request handler invocation is wrapped in
+   * Optional lookup that resolves a Socket.IO clientId to its registered
+   * `ClientType`. When set and the lookup returns a non-undefined value,
+   * every incoming request handler invocation is wrapped in
    * `clientKindContext.run({client_kind}, ...)` so SuperPropertiesResolver
    * can stamp `client_kind` on the analytics envelope. Pre-filter the
    * `agent` ClientType at the caller (return undefined) so agent-fork
@@ -153,7 +153,8 @@ export class SocketIOTransportServer implements ITransportServer {
 
   /**
    * Register a lookup that maps a socket clientId to its ClientType.
-   * Used by M15.1 to stamp `client_kind` on analytics super-properties.
+   * Used to stamp `client_kind` on analytics super-properties so handler
+   * emits inherit the originating client kind without per-handler wiring.
    * Setter (not constructor injection) because ClientManager is constructed
    * AFTER the transport server in brv-server.ts boot order.
    */
@@ -291,7 +292,7 @@ export class SocketIOTransportServer implements ITransportServer {
   private registerEventHandler(socket: Socket, event: string, handler: StoredRequestHandler): void {
     socket.on(event, async (data: unknown, callback?: (response: unknown) => void) => {
       try {
-        // M15.1: wrap the handler in clientKindContext so SuperPropertiesResolver
+        // Wrap the handler in clientKindContext so SuperPropertiesResolver
         // can stamp `client_kind` on any analytics event emitted during this
         // handler invocation. Skip the wrap when no lookup is registered or the
         // lookup returns undefined (agent-fork bypass / unregistered sockets).

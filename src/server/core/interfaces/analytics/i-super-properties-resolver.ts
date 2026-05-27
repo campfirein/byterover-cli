@@ -6,10 +6,10 @@ import type {ClientType} from '../../domain/client/client-info.js'
  * snake_case throughout. `device_id` is sourced from `GlobalConfig`;
  * the remaining four are static across the daemon's lifetime.
  *
- * `client_kind` (M15.1) is stamped when the analytics emit originates
- * from a Socket.IO transport call wrapped in `clientKindContext.run()`.
- * Absent when the emit happens outside any context wrap (daemon-internal
- * track or agent-fork connection).
+ * `client_kind` is stamped when the analytics emit originates from a
+ * Socket.IO transport call wrapped in `clientKindContext.run()`. Absent
+ * when the emit happens outside any context wrap (daemon-internal track
+ * or agent-fork connection).
  */
 export type SuperProperties = Readonly<{
   cli_version: string

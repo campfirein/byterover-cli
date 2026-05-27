@@ -3,7 +3,7 @@ import {expect} from 'chai'
 import {type AnalyticsEventName, AnalyticsEventNames} from '../../../../src/shared/analytics/event-names.js'
 
 describe('AnalyticsEventNames', () => {
-  it('should expose exactly the forty-six shipped event names (M15.1 adds 36)', () => {
+  it('should expose exactly the forty-six shipped event names', () => {
     expect(Object.keys(AnalyticsEventNames).sort()).to.deep.equal([
       'ANALYTICS_DISABLED',
       'AUTH_LOGIN',

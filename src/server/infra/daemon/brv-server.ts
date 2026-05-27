@@ -263,8 +263,8 @@ async function main(): Promise<void> {
     const projectRouter = new ProjectRouter({transport: transportServer})
     const clientManager = new ClientManager()
 
-    // M15.1: stamp `client_kind` on analytics super-properties for every
-    // request originating from a registered Socket.IO client. Agent-fork
+    // Stamp `client_kind` on analytics super-properties for every request
+    // originating from a registered Socket.IO client. Agent-fork
     // connections bypass the wrap (return undefined) so daemon-internal
     // task lifecycle emits stay envelope-clean.
     transportServer.setGetClientKind((clientId) => {
