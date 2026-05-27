@@ -99,10 +99,12 @@ describe('analytics:track transport round-trip integration (M2.6)', () => {
       {
         event: AnalyticsEventNames.CURATE_OPERATION_APPLIED,
         properties: {
-          absolute_path: '/tmp/x.md',
+          keywords: [],
           knowledge_path: 'kg/x.md',
           needs_review: false,
           operation_type: 'ADD',
+          relative_path: 'tmp/x.md',
+          tags: [],
           task_id: 't-1',
         },
       },
@@ -118,7 +120,7 @@ describe('analytics:track transport round-trip integration (M2.6)', () => {
     expect(event.identity).to.deep.equal({device_id: validDeviceId})
 
     // User-supplied properties preserved end-to-end
-    expect(event.properties.absolute_path).to.equal('/tmp/x.md')
+    expect(event.properties.relative_path).to.equal('tmp/x.md')
     expect(event.properties.operation_type).to.equal('ADD')
 
     // All five super-properties stamped on receipt

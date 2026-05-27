@@ -15,6 +15,7 @@
 
 import {expect} from 'chai'
 import {randomUUID} from 'node:crypto'
+import {relative as relativePath} from 'node:path'
 import {createSandbox, type SinonSandbox, type SinonStub} from 'sinon'
 
 import type {LlmToolResultEvent} from '../../../../src/server/core/domain/transport/schemas.js'
@@ -260,11 +261,12 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
     // readFile call order must match arrival order (proves per-task queue).
     expect(readFileCallOrder, 'readFile call order = arrival order').to.deep.equal(opSpecs.map((s) => s.filePath))
 
-    // Emit order must match arrival order.
+    // Emit order must match arrival order. M14 review: relative_path is
+    // relativized against the curate task's projectPath ('/proj').
     const emits = getCurateOpEmits(taskId)
     expect(emits).to.have.lengthOf(20)
     for (const [i, emit] of emits.entries()) {
-      expect(emit.absolute_path, `emit #${i} arrival order`).to.equal(opSpecs[i].filePath)
+      expect(emit.relative_path, `emit #${i} arrival order`).to.equal(relativePath('/proj', opSpecs[i].filePath))
     }
   })
 
@@ -297,8 +299,8 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
     expect(xEmits).to.have.lengthOf(15)
     expect(yEmits).to.have.lengthOf(15)
     for (let i = 0; i < 15; i++) {
-      expect(xEmits[i].absolute_path, `X emit #${i}`).to.equal(xSpecs[i].filePath)
-      expect(yEmits[i].absolute_path, `Y emit #${i}`).to.equal(ySpecs[i].filePath)
+      expect(xEmits[i].relative_path, `X emit #${i}`).to.equal(relativePath('/proj', xSpecs[i].filePath))
+      expect(yEmits[i].relative_path, `Y emit #${i}`).to.equal(relativePath('/proj', ySpecs[i].filePath))
     }
   })
 
@@ -340,7 +342,7 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
     // And per-op emit order matches arrival order.
     const opEmits = getCurateOpEmits(taskId)
     for (let i = 0; i < 50; i++) {
-      expect(opEmits[i].absolute_path, `op #${i} arrival order`).to.equal(specs[i].filePath)
+      expect(opEmits[i].relative_path, `op #${i} arrival order`).to.equal(relativePath('/proj', specs[i].filePath))
     }
   })
 
@@ -394,7 +396,9 @@ describe('AnalyticsHook async stress (integration through TaskRouter)', () => {
       expect(sequence[12], `${id}: M14.3 task_completed is last`).to.equal(AnalyticsEventNames.TASK_COMPLETED)
       const opEmits = getCurateOpEmits(id)
       for (let i = 0; i < 10; i++) {
-        expect(opEmits[i].absolute_path, `${id} op #${i} arrival order`).to.equal(specsByTask[id][i].filePath)
+        expect(opEmits[i].relative_path, `${id} op #${i} arrival order`).to.equal(
+          relativePath('/proj', specsByTask[id][i].filePath),
+        )
       }
     }
   })

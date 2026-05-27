@@ -64,10 +64,12 @@ describe('AnalyticsHandler', () => {
       const payload: AnalyticsTrackPayload = {
         event: AnalyticsEventNames.CURATE_OPERATION_APPLIED,
         properties: {
-          absolute_path: '/tmp/a.md',
+          keywords: [],
           knowledge_path: 'kg/a.md',
           needs_review: false,
           operation_type: 'ADD',
+          relative_path: 'tmp/a.md',
+          tags: [],
           task_id: 't-1',
         },
       }
@@ -76,10 +78,12 @@ describe('AnalyticsHandler', () => {
       expect(analyticsClient.trackCalls).to.have.lengthOf(1)
       expect(analyticsClient.trackCalls[0].event).to.equal(AnalyticsEventNames.CURATE_OPERATION_APPLIED)
       expect(analyticsClient.trackCalls[0].properties).to.deep.equal({
-        absolute_path: '/tmp/a.md',
+        keywords: [],
         knowledge_path: 'kg/a.md',
         needs_review: false,
         operation_type: 'ADD',
+        relative_path: 'tmp/a.md',
+        tags: [],
         task_id: 't-1',
       })
     })
@@ -116,7 +120,7 @@ describe('AnalyticsHandler', () => {
       new AnalyticsHandler({analyticsClient, transport}).setup()
 
       const handler = transport._handlers.get(AnalyticsEvents.TRACK) as AnalyticsTrackHandler
-      // CURATE_OPERATION_APPLIED requires absolute_path / knowledge_path / etc.
+      // CURATE_OPERATION_APPLIED requires relative_path / knowledge_path / etc.
       await handler({event: AnalyticsEventNames.CURATE_OPERATION_APPLIED, properties: {wrong: 'shape'}}, 'client-1')
       // QUERY_COMPLETED requires duration_ms / outcome / etc.
       await handler({event: AnalyticsEventNames.QUERY_COMPLETED, properties: {}}, 'client-1')

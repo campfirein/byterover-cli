@@ -145,12 +145,13 @@ describe('AnalyticsHook', () => {
       expect(m12Calls()).to.have.lengthOf(2)
       expect(m12Calls()[0].args[0]).to.equal(AnalyticsEventNames.CURATE_OPERATION_APPLIED)
       const firstProps = m12Calls()[0].args[1] as Record<string, unknown>
-      expect(firstProps.absolute_path).to.equal('/a.md')
+      // buildCurateTask sets projectPath:'/project'; path.relative('/project','/a.md') = '../a.md'
+      expect(firstProps.relative_path).to.equal('../a.md')
       expect(firstProps.knowledge_path).to.equal('notes/a')
       expect(firstProps.operation_type).to.equal('ADD')
       expect(firstProps.needs_review).to.equal(false)
-      expect(firstProps).to.not.have.property('tags')
-      expect(firstProps).to.not.have.property('keywords')
+      expect(firstProps.tags).to.deep.equal([])
+      expect(firstProps.keywords).to.deep.equal([])
       expect(firstProps).to.not.have.property('related')
 
       const secondProps = m12Calls()[1].args[1] as Record<string, unknown>
@@ -331,13 +332,14 @@ describe('AnalyticsHook', () => {
       expect(props.matched_doc_count).to.equal(7)
       const paths = props.read_paths_with_metadata as Array<Record<string, unknown>>
       expect(paths).to.have.lengthOf(3)
-      // sorted lexicographically
-      expect(paths.map((p) => p.absolute_path)).to.deep.equal(['/a.md', '/b.md', '/c.md'])
-      // each entry has only absolute_path, no metadata in M12.2
+      // sorted lexicographically; relativized against projectPath:'/project'
+      expect(paths.map((p) => p.relative_path)).to.deep.equal(['../a.md', '../b.md', '../c.md'])
+      // each entry has empty keywords/tags arrays and an empty related_paths
+      // list — no frontmatter source files exist in this in-memory test.
       for (const entry of paths) {
-        expect(entry).to.not.have.property('tags')
-        expect(entry).to.not.have.property('keywords')
-        expect(entry).to.not.have.property('related')
+        expect(entry.tags).to.deep.equal([])
+        expect(entry.keywords).to.deep.equal([])
+        expect(entry.related_paths).to.deep.equal([])
       }
     })
 
@@ -522,7 +524,7 @@ describe('AnalyticsHook', () => {
         expect(props.related).to.deep.equal(['z'])
       })
 
-      it('omits tags/keywords/related on DELETE ops (file gone post-op)', async () => {
+      it('keywords/tags default to empty arrays on DELETE ops (file gone post-op); related stays omitted', async () => {
         const filePath = join(tmpDir, 'gone.md')
         const task = buildCurateTask()
         await hook.onTaskCreate(task)
@@ -532,12 +534,12 @@ describe('AnalyticsHook', () => {
         )
 
         const props = m12Calls()[0].args[1] as Record<string, unknown>
-        expect(props).to.not.have.property('tags')
-        expect(props).to.not.have.property('keywords')
+        expect(props.tags).to.deep.equal([])
+        expect(props.keywords).to.deep.equal([])
         expect(props).to.not.have.property('related')
       })
 
-      it('omits tags/keywords/related when filePath cannot be read (ENOENT)', async () => {
+      it('keywords/tags default to empty arrays when filePath cannot be read (ENOENT)', async () => {
         const filePath = join(tmpDir, 'missing.md')
         const task = buildCurateTask()
         await hook.onTaskCreate(task)
@@ -547,10 +549,11 @@ describe('AnalyticsHook', () => {
         )
 
         const props = m12Calls()[0].args[1] as Record<string, unknown>
-        expect(props).to.not.have.property('tags')
+        expect(props.tags).to.deep.equal([])
+        expect(props.keywords).to.deep.equal([])
       })
 
-      it('omits tags/keywords/related on malformed YAML (no throw)', async () => {
+      it('keywords/tags default to empty arrays on malformed YAML (no throw)', async () => {
         const filePath = join(tmpDir, 'bad.md')
         writeFileSync(filePath, '---\nthis is: not [valid YAML\n---\nbody', 'utf8')
 
@@ -562,7 +565,8 @@ describe('AnalyticsHook', () => {
         )
 
         const props = m12Calls()[0].args[1] as Record<string, unknown>
-        expect(props).to.not.have.property('tags')
+        expect(props.tags).to.deep.equal([])
+        expect(props.keywords).to.deep.equal([])
       })
 
       it('caps arrays at 50 entries and strings at 256 chars per entry', async () => {
@@ -584,7 +588,7 @@ describe('AnalyticsHook', () => {
         expect(tags[0]).to.have.lengthOf(256)
       })
 
-      it('skips file reads entirely when isEnabled() returns false', async () => {
+      it('skips file reads entirely when isEnabled() returns false; keywords/tags fall back to []', async () => {
         const filePath = join(tmpDir, 'gated.md')
         writeMarkdown(filePath, {tags: ['should-not-appear']})
 
@@ -600,7 +604,8 @@ describe('AnalyticsHook', () => {
         )
 
         const props = filterM12(disabledBundle.trackStub)[0].args[1] as Record<string, unknown>
-        expect(props).to.not.have.property('tags')
+        expect(props.tags).to.deep.equal([])
+        expect(props.keywords).to.deep.equal([])
       })
     })
 
@@ -611,7 +616,9 @@ describe('AnalyticsHook', () => {
         writeMarkdown(a, {tags: ['ta']})
         writeMarkdown(b, {keywords: ['kb']})
 
+        // Pin projectPath to tmpDir so relative_path == 'a.md' / 'b.md'.
         const task = buildQueryTask({
+          projectPath: tmpDir,
           toolCalls: [
             {args: {filePath: a}, sessionId: 's', status: 'completed', timestamp: 1, toolName: 'read_file'},
             {args: {filePath: b}, sessionId: 's', status: 'completed', timestamp: 2, toolName: 'read_file'},
@@ -623,19 +630,20 @@ describe('AnalyticsHook', () => {
 
         const props = m12Calls()[0].args[1] as Record<string, unknown>
         const paths = props.read_paths_with_metadata as Array<Record<string, unknown>>
-        const byPath = Object.fromEntries(paths.map((p) => [p.absolute_path, p]))
-        expect(byPath[a].tags).to.deep.equal(['ta'])
-        expect(byPath[a]).to.not.have.property('keywords')
-        expect(byPath[b].keywords).to.deep.equal(['kb'])
-        expect(byPath[b]).to.not.have.property('tags')
+        const byPath = Object.fromEntries(paths.map((p) => [p.relative_path, p]))
+        expect(byPath['a.md'].tags).to.deep.equal(['ta'])
+        expect(byPath['a.md'].keywords).to.deep.equal([])
+        expect(byPath['b.md'].keywords).to.deep.equal(['kb'])
+        expect(byPath['b.md'].tags).to.deep.equal([])
       })
 
-      it('mixed readable + ENOENT paths: each entry independently has/omits metadata', async () => {
+      it('mixed readable + ENOENT paths: each entry has keywords/tags arrays (populated or empty)', async () => {
         const real = join(tmpDir, 'real.md')
         const missing = join(tmpDir, 'missing.md')
         writeMarkdown(real, {tags: ['ok']})
 
         const task = buildQueryTask({
+          projectPath: tmpDir,
           toolCalls: [
             {args: {filePath: real}, sessionId: 's', status: 'completed', timestamp: 1, toolName: 'read_file'},
             {args: {filePath: missing}, sessionId: 's', status: 'completed', timestamp: 2, toolName: 'read_file'},
@@ -647,9 +655,10 @@ describe('AnalyticsHook', () => {
 
         const props = m12Calls()[0].args[1] as Record<string, unknown>
         const paths = props.read_paths_with_metadata as Array<Record<string, unknown>>
-        const byPath = Object.fromEntries(paths.map((p) => [p.absolute_path, p]))
-        expect(byPath[real].tags).to.deep.equal(['ok'])
-        expect(byPath[missing]).to.not.have.property('tags')
+        const byPath = Object.fromEntries(paths.map((p) => [p.relative_path, p]))
+        expect(byPath['real.md'].tags).to.deep.equal(['ok'])
+        expect(byPath['missing.md'].tags).to.deep.equal([])
+        expect(byPath['missing.md'].keywords).to.deep.equal([])
       })
 
       it('skips per-path file reads when isEnabled() returns false', async () => {
@@ -672,7 +681,8 @@ describe('AnalyticsHook', () => {
 
         const props = filterM12(disabledBundle.trackStub)[0].args[1] as Record<string, unknown>
         const paths = props.read_paths_with_metadata as Array<Record<string, unknown>>
-        expect(paths[0]).to.not.have.property('tags')
+        expect(paths[0].tags).to.deep.equal([])
+        expect(paths[0].keywords).to.deep.equal([])
       })
     })
   })
@@ -712,8 +722,9 @@ describe('AnalyticsHook', () => {
       expect(filterM12(bundle.trackStub)).to.have.lengthOf(2)
       const first = filterM12(bundle.trackStub)[0].args[1] as Record<string, unknown>
       const second = filterM12(bundle.trackStub)[1].args[1] as Record<string, unknown>
-      expect(first.absolute_path, 'first emit must be op1').to.equal('/op1.md')
-      expect(second.absolute_path, 'second emit must be op2').to.equal('/op2.md')
+      // buildCurateTask projectPath:'/project'; absolute paths relativize with '../' prefix
+      expect(first.relative_path, 'first emit must be op1').to.equal('../op1.md')
+      expect(second.relative_path, 'second emit must be op2').to.equal('../op2.md')
     })
 
     it('onTaskCompleted waits for in-flight onToolResult work before emitting CURATE_RUN_COMPLETED', async () => {
@@ -765,9 +776,10 @@ describe('AnalyticsHook', () => {
 
       expect(filterM12(bundle.trackStub)).to.have.lengthOf(1)
       const props = filterM12(bundle.trackStub)[0].args[1] as Record<string, unknown>
-      expect(props.absolute_path).to.equal('/missing.md')
-      expect(props).to.not.have.property('keywords')
-      expect(props).to.not.have.property('tags')
+      // buildCurateTask sets projectPath:'/project'; '/missing.md' relativizes to '../missing.md'
+      expect(props.relative_path).to.equal('../missing.md')
+      expect(props.keywords).to.deep.equal([])
+      expect(props.tags).to.deep.equal([])
       expect(props).to.not.have.property('related')
     })
 

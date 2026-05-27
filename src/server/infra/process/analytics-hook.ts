@@ -1,5 +1,6 @@
 /* eslint-disable camelcase */
 import {readFile as readFileAsync} from 'node:fs/promises'
+import {relative as relativePath} from 'node:path'
 
 import type {AnalyticsEventName} from '../../../shared/analytics/event-names.js'
 import type {CurateRunCompletedProps} from '../../../shared/analytics/events/curate-run-completed.js'
@@ -30,6 +31,22 @@ import {QUERY_TASK_TYPES} from './query-log-handler.js'
 function toAnalyticsTaskType(daemonType: string): TaskType {
   if (daemonType === 'curate-html-direct') return TaskTypes.CURATE_TOOL_MODE
   return daemonType as TaskType
+}
+
+/**
+ * Convert an absolute filesystem path to a project-relative path for the
+ * analytics wire. Falls back to the input unchanged when projectPath is
+ * unset (e.g., search tasks scoped to the daemon root). Keeps emits free
+ * of `/Users/{name}` PII while still letting PMs reason about which file
+ * inside a project an operation touched.
+ */
+function toRelativePath(filePath: string, projectPath?: string): string {
+  if (!projectPath) return filePath
+  const rel = relativePath(projectPath, filePath)
+  // `path.relative` returns '' when paths are identical — defensively
+  // surface a leaf token rather than emit a zero-length wire string that
+  // would fail `z.string().min(1)`.
+  return rel === '' ? '.' : rel
 }
 
 // `CURATE_TASK_TYPES` is exported as a readonly tuple; wrap in a Set<string>
@@ -81,6 +98,8 @@ type CurateCounters = {
 type CurateTaskAnalyticsState = {
   counters: CurateCounters
   flavor: 'curate'
+  /** Captured at onTaskCreate so onToolResult emits can relativize op.filePath. */
+  projectPath?: string
   taskType: CurateTaskTypeLiteral
 }
 
@@ -206,6 +225,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
       this.tasks.set(task.taskId, {
         counters: {added: 0, deleted: 0, failed: 0, merged: 0, pendingReview: 0, updated: 0},
         flavor: 'curate',
+        projectPath: task.projectPath,
         taskType: task.type,
       })
       return
@@ -338,17 +358,24 @@ export class AnalyticsHook implements ITaskLifecycleHook {
 
     // M12.3: harvest per-path frontmatter on the same async read path used
     // for curate emits. Entries whose file is unreadable / has no frontmatter
-    // carry `absolute_path` alone (the three array fields stay absent).
-    // `Promise.all` preserves input-array order in the result regardless of
-    // which read settles first.
+    // carry empty keywords / tags / related_paths arrays — the wire shape
+    // is uniform regardless of read success. `Promise.all` preserves
+    // input-array order in the result regardless of which read settles first.
     const readPathsWithMetadata = await Promise.all(
       cappedPaths.map(async (p) => {
         const fm = await this.readFrontmatterFields(p)
         return {
-          absolute_path: p,
-          ...(fm.keywords ? {keywords: fm.keywords} : {}),
-          ...(fm.related ? {related: fm.related} : {}),
-          ...(fm.tags ? {tags: fm.tags} : {}),
+          keywords: fm.keywords ?? [],
+          // M14 review tightening: each related entry is structured so a
+          // later FU can populate the linked file's own keywords/tags
+          // without changing the wire shape.
+          related_paths: (fm.related ?? []).map((r) => ({
+            keywords: [],
+            relative_path: r,
+            tags: [],
+          })),
+          relative_path: toRelativePath(p, task.projectPath),
+          tags: fm.tags ?? [],
         }
       }),
     )
@@ -472,20 +499,21 @@ export class AnalyticsHook implements ITaskLifecycleHook {
 
       // M12.3: read post-op frontmatter for ADD / UPDATE / MERGE-target /
       // UPSERT. DELETE skips the read (file is gone). Frontmatter fields
-      // stay absent when the read fails (ENOENT, EACCES, malformed YAML).
+      // default to empty arrays when the read fails (ENOENT, EACCES,
+      // malformed YAML) so the wire shape stays uniform.
       // eslint-disable-next-line no-await-in-loop -- emit order MUST match op order
       const frontmatter = op.type === 'DELETE' ? {} : await this.readFrontmatterFields(op.filePath)
 
       this.emit(AnalyticsEventNames.CURATE_OPERATION_APPLIED, {
-        absolute_path: op.filePath,
         ...(op.confidence ? {confidence: op.confidence} : {}),
         ...(op.impact ? {impact: op.impact} : {}),
-        ...(frontmatter.keywords ? {keywords: frontmatter.keywords} : {}),
+        keywords: frontmatter.keywords ?? [],
         knowledge_path: op.path,
         needs_review: op.needsReview ?? false,
         operation_type: op.type,
         ...(frontmatter.related ? {related: frontmatter.related} : {}),
-        ...(frontmatter.tags ? {tags: frontmatter.tags} : {}),
+        relative_path: toRelativePath(op.filePath, state.projectPath),
+        tags: frontmatter.tags ?? [],
         task_id: taskId,
       })
     }
