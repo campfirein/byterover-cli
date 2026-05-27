@@ -23,14 +23,13 @@ import {CURATE_TASK_TYPES} from './curate-log-handler.js'
 import {QUERY_TASK_TYPES} from './query-log-handler.js'
 
 /**
- * Backstop sentinel emitted when the daemon dispatches a task type the
- *  analytics enum doesn't recognise. Keeps the event on the wire instead of
- *  silently failing the Zod check at the backend. Update TASK_TYPE_VALUES
- *  (M14.1) when a new daemon type lands; this is the drift alarm.
+ * Set of canonical task types accepted by the wire schema. Membership check
+ * runs in `toAnalyticsTaskType` to gate emits against the daemon dispatching
+ * a string TASK_TYPE_VALUES doesn't enumerate.
  */
-const UNKNOWN_TASK_TYPE: TaskType = 'unknown' as TaskType
+const ANALYTICS_TASK_TYPE_SET: ReadonlySet<TaskType> = new Set(Object.values(TaskTypes) as TaskType[])
 
-const ANALYTICS_TASK_TYPE_SET: ReadonlySet<string> = new Set(Object.values(TaskTypes))
+const isCanonicalTaskType = (value: string): value is TaskType => (ANALYTICS_TASK_TYPE_SET as Set<string>).has(value)
 
 /**
  * Translate the daemon's runtime task type string to the canonical
@@ -39,22 +38,24 @@ const ANALYTICS_TASK_TYPE_SET: ReadonlySet<string> = new Set(Object.values(TaskT
  * `'curate-tool-mode'`. Once the rename PR lands, the alias becomes
  * dead code and can be inlined.
  *
- * Guards an unknown daemon type with a process log + 'unknown' sentinel
- * fallback (PR #722 review): swallowing the value silently would let an
- * un-enumerated dispatch slip past the wire-side Zod check and disappear
- * at the backend; logging here keeps the drift debuggable at the daemon.
+ * Drift guard (PR #722 review re-review): if the daemon dispatches a
+ * type that isn't enumerated in `TASK_TYPE_VALUES`, fall back to
+ * `TaskTypes.UNKNOWN` (which is in the wire vocabulary, so the backend
+ * accepts the row) and log a daemon-side breadcrumb. The previous
+ * implementation cast a non-enumerated string back to `TaskType`,
+ * which silently failed the backend Zod check.
  */
 function toAnalyticsTaskType(daemonType: string): TaskType {
   if (daemonType === 'curate-html-direct') return TaskTypes.CURATE_TOOL_MODE
-  if (ANALYTICS_TASK_TYPE_SET.has(daemonType)) return daemonType as TaskType
-  processLog(`AnalyticsHook: unknown task type '${daemonType}' — falling back to '${UNKNOWN_TASK_TYPE}'`)
-  return UNKNOWN_TASK_TYPE
+  if (isCanonicalTaskType(daemonType)) return daemonType
+  processLog(`AnalyticsHook: unknown task type '${daemonType}' — falling back to '${TaskTypes.UNKNOWN}'`)
+  return TaskTypes.UNKNOWN
 }
 
 /**
  * Stable sentinel for paths that can't be safely emitted as project-
- *  relative — either outside the project root or the project root itself
- *  is unknown. The backend can group these without leaking host layout.
+ * relative — either outside the project root or the project root itself
+ * is unknown. The backend can group these without leaking host layout.
  */
 const OUTSIDE_PROJECT_PATH = '<outside-project>'
 

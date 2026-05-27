@@ -21,6 +21,11 @@ describe('TaskTypes', () => {
       'QUERY',
       'QUERY_TOOL_MODE',
       'SEARCH',
+      // PR #722 re-review: 'unknown' is the drift sentinel emitted by
+      // AnalyticsHook.toAnalyticsTaskType when the daemon dispatches a
+      // type that isn't enumerated above. Lives in the canonical
+      // vocabulary so the wire-side z.enum check accepts the row.
+      'UNKNOWN',
     ])
   })
 
@@ -34,6 +39,7 @@ describe('TaskTypes', () => {
     expect(TaskTypes.QUERY).to.equal('query')
     expect(TaskTypes.QUERY_TOOL_MODE).to.equal('query-tool-mode')
     expect(TaskTypes.SEARCH).to.equal('search')
+    expect(TaskTypes.UNKNOWN).to.equal('unknown')
   })
 
   it('should expose TaskType as the union of values', () => {
