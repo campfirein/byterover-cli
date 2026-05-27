@@ -2,7 +2,9 @@ import {Args, Command, Flags} from '@oclif/core'
 
 import type {BrvConfigLanguage} from '../../../server/core/domain/entities/brv-config.js'
 
+import {SETTINGS_KEYS} from '../../../server/core/domain/entities/settings.js'
 import {ProjectConfigStore} from '../../../server/infra/config/file-config-store.js'
+import {FileSettingsStore} from '../../../server/infra/storage/file-settings-store.js'
 import {continueSession, kickoffSession, resolveProjectRoot} from '../../lib/curate-session.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
@@ -262,18 +264,36 @@ Bad examples:
   }
 
   /**
-   * Read the per-project language preference from `.brv/config.json`.
-   * Missing config (fresh project) or missing field returns `undefined`,
-   * which the kickoff / correction prompts treat as the auto clause —
-   * match the user's input language. Read failures degrade silently to
-   * `undefined` so a corrupt config never blocks curate.
+   * Resolve the language preference. Reads from daemon settings (the
+   * source of truth) and falls back to `.brv/config.json` for users who
+   * still have a per-project override from before language moved to
+   * global settings. Missing or default values return `undefined`,
+   * which the prompts treat as the auto clause.
    */
   private async resolveLanguagePreference(projectRoot: string): Promise<BrvConfigLanguage | undefined> {
+    const fromSettings = await readLanguageFromSettings()
+    if (fromSettings !== undefined) return fromSettings
+
     try {
       const config = await new ProjectConfigStore().read(projectRoot)
       return config?.language
     } catch {
       return undefined
     }
+  }
+}
+
+async function readLanguageFromSettings(): Promise<BrvConfigLanguage | undefined> {
+  try {
+    const store = new FileSettingsStore()
+    const items = await store.list()
+    const byKey = new Map(items.map((item) => [item.key, item.current]))
+    const mode = byKey.get(SETTINGS_KEYS.LANGUAGE_MODE)
+    const code = byKey.get(SETTINGS_KEYS.LANGUAGE_CODE)
+    if (mode !== 'fixed') return undefined
+    if (typeof code !== 'string') return undefined
+    return {code, mode: 'fixed'}
+  } catch {
+    return undefined
   }
 }

@@ -48,6 +48,15 @@ export default class ConfigSet extends Command {
     const {args, flags} = await this.parse(ConfigSet)
     const format = flags.format as 'json' | 'text'
 
+    if (args.key === 'language.mode' || args.key === 'language.code') {
+      this.fail(
+        format,
+        'deprecated-key',
+        `'${args.key}' has moved to global settings. Run: brv settings set ${args.key} ${args.value}`,
+      )
+      return
+    }
+
     const projectRoot = resolveProjectRoot()
     const store = new ProjectConfigStore()
     const current = await store.read(projectRoot)
