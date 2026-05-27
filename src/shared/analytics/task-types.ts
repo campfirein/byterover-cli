@@ -12,8 +12,12 @@
 export const TaskTypes = {
   CURATE: 'curate',
   CURATE_FOLDER: 'curate-folder',
+  CURATE_TOOL_MODE: 'curate-tool-mode',
   DREAM: 'dream',
+  DREAM_FINALIZE: 'dream-finalize',
+  DREAM_SCAN: 'dream-scan',
   QUERY: 'query',
+  QUERY_TOOL_MODE: 'query-tool-mode',
   SEARCH: 'search',
 } as const
 
@@ -27,7 +31,11 @@ export type TaskType = (typeof TaskTypes)[keyof typeof TaskTypes]
 export const TASK_TYPE_VALUES = [
   TaskTypes.CURATE,
   TaskTypes.CURATE_FOLDER,
+  TaskTypes.CURATE_TOOL_MODE,
   TaskTypes.DREAM,
+  TaskTypes.DREAM_FINALIZE,
+  TaskTypes.DREAM_SCAN,
   TaskTypes.QUERY,
+  TaskTypes.QUERY_TOOL_MODE,
   TaskTypes.SEARCH,
 ] as const
