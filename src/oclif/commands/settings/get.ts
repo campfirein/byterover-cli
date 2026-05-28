@@ -1,12 +1,18 @@
 import {Args, Command, Flags} from '@oclif/core'
 
+import {SETTINGS_KEYS} from '../../../server/core/domain/entities/settings.js'
 import {
   SettingsEvents,
   type SettingsGetRequest,
   type SettingsGetResponse,
   type SettingsItemDTO,
 } from '../../../shared/transport/events/settings-events.js'
+// Side-effect import: registers the analytics.status formatter so
+// `formatReadonlyInfoValue('analytics.status', ...)` in `printTextBlock`
+// returns the legacy text shape for the direct `brv settings get` path.
+import {formatAnalyticsStatusJson} from '../../../shared/utils/format-analytics-status.js'
 import {formatCount, formatDuration} from '../../../shared/utils/format-duration.js'
+import {formatReadonlyInfoValue} from '../../../shared/utils/format-readonly-info.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
 
@@ -74,9 +80,21 @@ export default class SettingsGet extends Command {
   }
 
   private printTextBlock(item: SettingsItemDTO): void {
+    if (item.type === 'readonly-info') {
+      // Print the snapshot text verbatim so `brv settings get analytics.status`
+      // matches the deleted `brv analytics status` output character-for-character.
+      // No `<key>` header / `current:` prefix / `scope:` footer — the chrome
+      // is reserved for writable variants where it carries meaningful labels.
+      this.log(formatReadonlyInfoValue(item.key, item.current))
+      return
+    }
+
     this.log(item.key)
-    this.log(`  current: ${renderValue(item, item.current)}`)
-    this.log(`  default: ${renderValue(item, item.default)}`)
+    this.log(`  current: ${renderWritableValue(item, item.current)}`)
+    if (item.default !== undefined) {
+      this.log(`  default: ${renderWritableValue(item, item.default)}`)
+    }
+
     if (item.type === 'integer' && item.min !== undefined && item.max !== undefined) {
       const range = `${renderInteger(item, item.min)}-${renderInteger(item, item.max)}`
       this.log(`  range:   ${range}`)
@@ -86,16 +104,23 @@ export default class SettingsGet extends Command {
   }
 
   private toJsonPayload(item: SettingsItemDTO): Record<string, unknown> {
+    // M16.3: `analytics.status` keeps the legacy snake_case envelope of
+    // the deleted `brv analytics status --format json` so callers that
+    // already script against that wire shape are not broken.
+    if (item.key === SETTINGS_KEYS.ANALYTICS_STATUS) {
+      return {...formatAnalyticsStatusJson(item.current)}
+    }
+
     const payload: Record<string, unknown> = {
       current: item.current,
-      default: item.default,
       description: item.description,
       key: item.key,
-      max: item.max,
-      min: item.min,
       restartRequired: item.restartRequired,
       type: item.type,
     }
+    if (item.default !== undefined) payload.default = item.default
+    if (item.min !== undefined) payload.min = item.min
+    if (item.max !== undefined) payload.max = item.max
     if (item.category !== undefined) payload.category = item.category
     if (item.unit !== undefined) payload.unit = item.unit
     if (item.scope !== undefined) payload.scope = item.scope
@@ -103,9 +128,14 @@ export default class SettingsGet extends Command {
   }
 }
 
-function renderValue(item: SettingsItemDTO, value: boolean | number): string {
+function renderWritableValue(
+  item: SettingsItemDTO,
+  value: boolean | number | Readonly<Record<string, unknown>> | undefined,
+): string {
+  if (value === undefined) return ''
   if (typeof value === 'boolean') return value ? 'true' : 'false'
-  return renderInteger(item, value)
+  if (typeof value === 'number') return renderInteger(item, value)
+  return JSON.stringify(value)
 }
 
 function renderInteger(item: SettingsItemDTO, value: number): string {

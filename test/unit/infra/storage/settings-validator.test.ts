@@ -1,7 +1,10 @@
 import {expect} from 'chai'
 
+import type {SettingDescriptor} from '../../../../src/server/core/domain/entities/settings.js'
+
 import {
   InvalidSettingValueError,
+  ReadonlySettingKeyError,
   SettingsValidator,
   UnknownSettingKeyError,
 } from '../../../../src/server/infra/storage/settings-validator.js'
@@ -293,6 +296,89 @@ describe('SettingsValidator', () => {
       expect(result.invalid).to.have.lengthOf(1)
       expect(result.invalid[0].key).to.equal('update.checkForUpdates')
       expect(result.invalid[0].value).to.equal('yes')
+    })
+  })
+
+  describe('readonly-info variant (M16.1)', () => {
+    const readonlyInfoRegistry: readonly SettingDescriptor[] = [
+      {
+        category: 'updates',
+        description: 'live operational snapshot for tests',
+        key: '_test.snapshot',
+        restartRequired: false,
+        type: 'readonly-info',
+      },
+    ]
+
+    describe('constructor accepts an injected registry override', () => {
+      it('validateKey resolves keys from the injected registry only', () => {
+        const isolated = new SettingsValidator({registry: readonlyInfoRegistry})
+        expect(isolated.validateKey('_test.snapshot').type).to.equal('readonly-info')
+        expect(() => isolated.validateKey('agentPool.maxSize')).to.throw(UnknownSettingKeyError)
+      })
+    })
+
+    describe('validate', () => {
+      it('throws ReadonlySettingKeyError when called on a readonly-info key', () => {
+        const isolated = new SettingsValidator({registry: readonlyInfoRegistry})
+        expect(() => isolated.validate('_test.snapshot', {q: 1})).to.throw(ReadonlySettingKeyError)
+      })
+
+      it('names the offending key on ReadonlySettingKeyError', () => {
+        const isolated = new SettingsValidator({registry: readonlyInfoRegistry})
+        try {
+          isolated.validate('_test.snapshot', 1)
+          expect.fail('expected throw')
+        } catch (error) {
+          expect(error).to.be.instanceOf(ReadonlySettingKeyError)
+          if (error instanceof ReadonlySettingKeyError) {
+            expect(error.key).to.equal('_test.snapshot')
+            expect(error.message).to.match(/read-only|readonly/i)
+          }
+        }
+      })
+    })
+
+    describe('partition', () => {
+      it('pushes a readonly-info key found on disk into invalid with a readonly reason', () => {
+        const isolated = new SettingsValidator({registry: readonlyInfoRegistry})
+        const result = isolated.partition({'_test.snapshot': {q: 1}})
+        expect(result.valid).to.deep.equal({})
+        expect(result.invalid).to.have.lengthOf(1)
+        expect(result.invalid[0].key).to.equal('_test.snapshot')
+        expect(result.invalid[0].reason.toLowerCase()).to.include('read')
+      })
+
+      it('omits readonly-info keys from the valid record when the file does NOT mention them', () => {
+        const isolated = new SettingsValidator({registry: readonlyInfoRegistry})
+        const result = isolated.partition({})
+        expect(result.valid).to.deep.equal({})
+        expect(result.invalid).to.deep.equal([])
+      })
+
+      it('still partitions writable keys correctly when mixed with readonly-info entries', () => {
+        const mixedRegistry: readonly SettingDescriptor[] = [
+          ...readonlyInfoRegistry,
+          {
+            category: 'concurrency',
+            default: 10,
+            description: 'test writable',
+            key: '_test.writable',
+            max: 100,
+            min: 1,
+            restartRequired: true,
+            type: 'integer',
+          },
+        ]
+        const isolated = new SettingsValidator({registry: mixedRegistry})
+        const result = isolated.partition({
+          '_test.snapshot': {q: 1},
+          '_test.writable': 25,
+        })
+        expect(result.valid).to.deep.equal({'_test.writable': 25})
+        expect(result.invalid).to.have.lengthOf(1)
+        expect(result.invalid[0].key).to.equal('_test.snapshot')
+      })
     })
   })
 })

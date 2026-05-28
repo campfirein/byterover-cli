@@ -68,6 +68,22 @@ export default class SettingsSet extends Command {
         return
       }
 
+      if (descriptor.type === 'readonly-info') {
+        process.exitCode = 1
+        const message = `Setting '${args.key}' is read-only and cannot be written.`
+        if (format === 'json') {
+          writeJsonResponse({
+            command: 'settings set',
+            data: {error: {code: 'read_only', key: args.key, message}},
+            success: false,
+          })
+        } else {
+          this.log(message)
+        }
+
+        return
+      }
+
       const parsed = parseValue(descriptor, args.value)
       if (parsed.kind === 'error') {
         process.exitCode = 1
