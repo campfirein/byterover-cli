@@ -2,6 +2,11 @@ import type {SettingsItemDTO} from '../transport/events/settings-events.js'
 import type {RowParseResult, SettingsRow, SettingsRowCategory, SettingsRowUnit} from '../types/settings-row.js'
 
 import {CATEGORY_ORDER} from '../types/settings-row.js'
+// Side-effect import: registers the analytics.status readonly-info text
+// formatter so `formatReadonlyInfoValue('analytics.status', ...)` returns
+// the legacy text shape regardless of which surface (CLI / TUI / WebUI)
+// triggers the first read.
+import './format-analytics-status.js'
 import {formatCount, formatDuration, parseDuration} from './format-duration.js'
 import {formatReadonlyInfoValue} from './format-readonly-info.js'
 
@@ -131,11 +136,16 @@ function toBooleanRow(item: SettingsItemDTO, current: boolean, defaultValue: boo
 }
 
 function toReadonlyInfoRow(item: SettingsItemDTO): SettingsRow {
+  // Row views (CLI list, TUI page) are single-line per row. If the per-key
+  // formatter returns a multi-line snapshot (e.g. `analytics.status`),
+  // surface only the headline so the table stays aligned; users see the
+  // full block via `brv settings get <key>`.
+  const fullText = formatReadonlyInfoValue(item.key, item.current)
   return {
     category: toRowCategory(item.category),
     current: item.current,
     description: item.description,
-    displayCurrent: formatReadonlyInfoValue(item.key, item.current),
+    displayCurrent: fullText.split('\n')[0],
     displayRange: '',
     key: item.key,
     label: item.key,

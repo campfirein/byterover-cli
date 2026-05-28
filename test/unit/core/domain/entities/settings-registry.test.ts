@@ -26,6 +26,7 @@ describe('settings registry — M7 T2 shape', () => {
   it('declares category on every descriptor', () => {
     for (const descriptor of SETTINGS_REGISTRY) {
       expect(descriptor.category, `key ${descriptor.key} missing category`).to.be.oneOf([
+        'analytics',
         'concurrency',
         'llm',
         'task-history',
@@ -137,6 +138,31 @@ describe('settings registry — M7 T2 shape', () => {
     })
   })
 
+  describe('analytics category (M16.3)', () => {
+    it('accepts category=analytics on a readonly-info descriptor', () => {
+      const descriptor: ReadonlyInfoSettingDescriptor = {
+        category: 'analytics',
+        description: 'live analytics shipping snapshot',
+        key: '_test.analytics',
+        restartRequired: false,
+        type: 'readonly-info',
+      }
+      expect(descriptor.category).to.equal('analytics')
+    })
+
+    it('accepts category=analytics on a boolean descriptor (M16.2 will use this)', () => {
+      const descriptor: SettingDescriptor = {
+        category: 'analytics',
+        default: false,
+        description: 'analytics opt-in',
+        key: '_test.analytics.enabled',
+        restartRequired: false,
+        type: 'boolean',
+      }
+      expect(descriptor.category).to.equal('analytics')
+    })
+  })
+
   describe('readonly-info variant (M16.1)', () => {
     it('accepts a readonly-info literal that narrows on type without a cast', () => {
       const descriptor: ReadonlyInfoSettingDescriptor = {
@@ -178,12 +204,40 @@ describe('settings registry — M7 T2 shape', () => {
       expect(descriptor.restartRequired).to.equal(false)
     })
 
-    it('SETTINGS_REGISTRY still contains only boolean and integer descriptors in t1', () => {
-      // t1 (ENG-3003) adds the framework variant. The first real
-      // readonly-info entry (`analytics.status`) lands in t3, not here.
-      for (const descriptor of SETTINGS_REGISTRY) {
-        expect(descriptor.type, `${descriptor.key} unexpected type`).to.be.oneOf(['boolean', 'integer'])
-      }
+    it('SETTINGS_REGISTRY now includes analytics.status as the first readonly-info entry (M16.3)', () => {
+      // M16.3 lands the first real readonly-info descriptor in the
+      // production registry: `analytics.status` (the live shipping
+      // snapshot consumed by the legacy `brv analytics status`).
+      const readonlyInfoEntries = SETTINGS_REGISTRY.filter((d) => d.type === 'readonly-info')
+      expect(readonlyInfoEntries).to.have.lengthOf(1)
+      expect(readonlyInfoEntries[0].key).to.equal('analytics.status')
+    })
+  })
+
+  describe('analytics.status descriptor (M16.3)', () => {
+    it('exposes ANALYTICS_STATUS on SETTINGS_KEYS', () => {
+      expect(SETTINGS_KEYS.ANALYTICS_STATUS).to.equal('analytics.status')
+    })
+
+    it('registers a descriptor for analytics.status', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.ANALYTICS_STATUS)
+      expect(descriptor, 'descriptor must exist in SETTINGS_REGISTRY').to.exist
+    })
+
+    it('declares the descriptor as type=readonly-info under category=analytics', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.ANALYTICS_STATUS)
+      expect(descriptor?.type).to.equal('readonly-info')
+      expect(descriptor?.category).to.equal('analytics')
+    })
+
+    it('marks the descriptor as not requiring a daemon restart', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.ANALYTICS_STATUS)
+      expect(descriptor?.restartRequired).to.equal(false)
+    })
+
+    it('description fits the 80-char tooltip budget', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.ANALYTICS_STATUS)
+      expect(descriptor?.description.length).to.be.at.most(80)
     })
   })
 })

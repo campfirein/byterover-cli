@@ -12,7 +12,7 @@ import {
  * and TUI render output (uppercased). Web docs / WebUI consume this
  * field to render the same groupings independently of key naming.
  */
-export type SettingCategory = 'concurrency' | 'llm' | 'task-history' | 'updates'
+export type SettingCategory = 'analytics' | 'concurrency' | 'llm' | 'task-history' | 'updates'
 
 /**
  * Value-kind for dispatch between the duration formatter / parser
@@ -100,6 +100,7 @@ export type SettingItem = {
 export const SETTINGS_KEYS = {
   AGENT_POOL_MAX_CONCURRENT_TASKS: 'agentPool.maxConcurrentTasksPerProject',
   AGENT_POOL_MAX_SIZE: 'agentPool.maxSize',
+  ANALYTICS_STATUS: 'analytics.status',
   LLM_ITERATION_BUDGET_MS: 'llm.iterationBudgetMs',
   LLM_REQUEST_TIMEOUT_MS: 'llm.requestTimeoutMs',
   TASK_HISTORY_MAX_ENTRIES: 'taskHistory.maxEntries',
@@ -166,6 +167,13 @@ export const SETTINGS_REGISTRY: readonly SettingDescriptor[] = [
     key: SETTINGS_KEYS.UPDATE_CHECK_FOR_UPDATES,
     restartRequired: false,
     type: 'boolean',
+  },
+  {
+    category: 'analytics',
+    description: 'Live analytics shipping snapshot (queue, last flush, backoff, endpoint)',
+    key: SETTINGS_KEYS.ANALYTICS_STATUS,
+    restartRequired: false,
+    type: 'readonly-info',
   },
 ]
 

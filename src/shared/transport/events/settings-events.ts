@@ -22,7 +22,7 @@ export const SettingsEvents = {
  * parse the wire format.
  */
 export interface SettingsItemDTO {
-  category?: 'concurrency' | 'llm' | 'task-history' | 'updates'
+  category?: 'analytics' | 'concurrency' | 'llm' | 'task-history' | 'updates'
   current: boolean | number | Readonly<Record<string, unknown>> | undefined
   default?: boolean | number
   description: string

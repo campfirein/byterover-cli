@@ -54,13 +54,21 @@ describe('FileSettingsStore', () => {
       expect(keys).to.deep.equal([
         'agentPool.maxConcurrentTasksPerProject',
         'agentPool.maxSize',
+        'analytics.status',
         'llm.iterationBudgetMs',
         'llm.requestTimeoutMs',
         'taskHistory.maxEntries',
         'update.checkForUpdates',
       ])
       for (const item of items) {
-        expect(item.current).to.equal(item.default)
+        // readonly-info rows carry current/default both undefined; writable
+        // rows have current === default when no override is present.
+        if (item.key === 'analytics.status') {
+          expect(item.current).to.equal(undefined)
+          expect(item.default).to.equal(undefined)
+        } else {
+          expect(item.current).to.equal(item.default)
+        }
       }
     })
 

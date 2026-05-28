@@ -1,11 +1,16 @@
 import {Args, Command, Flags} from '@oclif/core'
 
+import {SETTINGS_KEYS} from '../../../server/core/domain/entities/settings.js'
 import {
   SettingsEvents,
   type SettingsGetRequest,
   type SettingsGetResponse,
   type SettingsItemDTO,
 } from '../../../shared/transport/events/settings-events.js'
+// Side-effect import: registers the analytics.status formatter so
+// `formatReadonlyInfoValue('analytics.status', ...)` in `printTextBlock`
+// returns the legacy text shape for the direct `brv settings get` path.
+import {formatAnalyticsStatusJson} from '../../../shared/utils/format-analytics-status.js'
 import {formatCount, formatDuration} from '../../../shared/utils/format-duration.js'
 import {formatReadonlyInfoValue} from '../../../shared/utils/format-readonly-info.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
@@ -75,13 +80,16 @@ export default class SettingsGet extends Command {
   }
 
   private printTextBlock(item: SettingsItemDTO): void {
-    this.log(item.key)
     if (item.type === 'readonly-info') {
-      this.log(`  current: ${formatReadonlyInfoValue(item.key, item.current)}`)
-      this.log(`  scope:   ${item.scope ?? 'global'}`)
+      // Print the snapshot text verbatim so `brv settings get analytics.status`
+      // matches the deleted `brv analytics status` output character-for-character.
+      // No `<key>` header / `current:` prefix / `scope:` footer — the chrome
+      // is reserved for writable variants where it carries meaningful labels.
+      this.log(formatReadonlyInfoValue(item.key, item.current))
       return
     }
 
+    this.log(item.key)
     this.log(`  current: ${renderWritableValue(item, item.current)}`)
     if (item.default !== undefined) {
       this.log(`  default: ${renderWritableValue(item, item.default)}`)
@@ -96,6 +104,13 @@ export default class SettingsGet extends Command {
   }
 
   private toJsonPayload(item: SettingsItemDTO): Record<string, unknown> {
+    // M16.3: `analytics.status` keeps the legacy snake_case envelope of
+    // the deleted `brv analytics status --format json` so callers that
+    // already script against that wire shape are not broken.
+    if (item.key === SETTINGS_KEYS.ANALYTICS_STATUS) {
+      return {...formatAnalyticsStatusJson(item.current)}
+    }
+
     const payload: Record<string, unknown> = {
       current: item.current,
       description: item.description,

@@ -1,4 +1,4 @@
-export type SettingsRowCategory = 'concurrency' | 'llm' | 'other' | 'task-history' | 'updates'
+export type SettingsRowCategory = 'analytics' | 'concurrency' | 'llm' | 'other' | 'task-history' | 'updates'
 export type SettingsRowUnit = 'count' | 'ms'
 
 /**
@@ -41,5 +41,6 @@ export const CATEGORY_ORDER: readonly SettingsRowCategory[] = [
   'llm',
   'task-history',
   'updates',
+  'analytics',
   'other',
 ]

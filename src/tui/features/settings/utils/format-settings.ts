@@ -2,6 +2,7 @@ import {CATEGORY_ORDER, type SettingsRow, type SettingsRowCategory} from '../../
 import {formatDuration} from '../../../../shared/utils/format-duration.js'
 
 const CATEGORY_HEADERS: Readonly<Record<SettingsRowCategory, string>> = {
+  analytics: 'ANALYTICS',
   concurrency: 'CONCURRENCY',
   llm: 'LLM',
   other: 'OTHER',
