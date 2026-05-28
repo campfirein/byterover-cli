@@ -220,6 +220,8 @@
     "prepare": "husky",
     "test": "mocha --forbid-only \"test/**/*.test.ts\"",
     "test:e2e:analytics": "npm run build && mocha --forbid-only --timeout 600000 \"test/e2e/analytics/dev-beta.e2e.ts\"",
+    "test:e2e:lifecycle": "npm run build && mocha --forbid-only --timeout 180000 \"test/e2e/analytics/lifecycle-wire.e2e.ts\"",
+    "test:e2e:db": "npm run build && mocha --forbid-only --timeout 300000 \"test/e2e/analytics/lifecycle-db.e2e.ts\"",
     "typecheck": "tsc --noEmit && tsc --noEmit -p src/webui/tsconfig.json",
     "version": "git add README.md"
   },

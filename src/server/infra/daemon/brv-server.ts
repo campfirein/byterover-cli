@@ -508,10 +508,21 @@ async function main(): Promise<void> {
       },
     })
 
+    // M4.3: the analytics flush scheduler is constructed inside
+    // setupFeatureHandlers (later), so the final-flush closure resolves
+    // through a mutable holder. The shutdown sequence calls this hook
+    // after the agent pool stops; if setupFeatureHandlers never ran
+    // (e.g. startup crashed early) the holder stays undefined and the
+    // hook is skipped. Restored by M15.6 follow-up — the original M4.3
+    // wiring got dropped when the late-bind for AnalyticsHook landed.
+    // eslint-disable-next-line prefer-const
+    let analyticsFinalFlush: (() => Promise<void>) | undefined
+
     // 9. Create shutdown handler (agent pool shut down before transport)
     shutdownHandler = new ShutdownHandler({
       agentIdleTimeoutPolicy,
       agentPool,
+      analyticsFinalFlush: () => analyticsFinalFlush?.() ?? Promise.resolve(),
       daemonResilience,
       heartbeatWriter,
       idleTimeoutPolicy,
@@ -689,6 +700,17 @@ async function main(): Promise<void> {
     }
 
     analyticsHook.setAnalyticsClient(featureHandlers.analyticsClient)
+
+    // M4.3: start the flush scheduler AFTER the first track lands so the
+    // initial 30s window aligns with real traffic, and wire the shutdown
+    // hook now that the scheduler exists. Hook stops the scheduler first
+    // (no new ticks mid-shutdown) before awaiting the best-effort final
+    // flush against a 3s budget.
+    featureHandlers.analyticsFlushScheduler.start()
+    analyticsFinalFlush = async () => {
+      featureHandlers.analyticsFlushScheduler.stop()
+      await featureHandlers.analyticsFlushScheduler.flushFinal({timeoutMs: 3000})
+    }
 
     // Load auth token AFTER feature handlers are registered.
     // AuthHandler's onAuthChanged/onAuthExpired callbacks must be wired first
