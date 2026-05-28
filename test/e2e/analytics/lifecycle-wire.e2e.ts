@@ -286,14 +286,14 @@ describe('analytics lifecycle wire e2e (M14 / M15.6)', function () {
     }
   }
 
-  describe('P0 — curate-tool-mode (alias-translated from curate-html-direct)', () => {
+  describe('P0 — curate-tool-mode', () => {
     it('cancel: task_created → task_failed{failure_kind=cancelled, task_type=curate-tool-mode}', async function () {
       this.timeout(90_000)
       const taskId = `e2e-curate-tm-${Date.now()}`
       await fireCreateAndCancel(scenario!.env, {
         content: 'demo curate tool-mode',
         taskId,
-        type: 'curate-html-direct',
+        type: 'curate-tool-mode',
       })
 
       // Wait for the natural 30s flush tick to ship the JSONL rows over
@@ -308,7 +308,9 @@ describe('analytics lifecycle wire e2e (M14 / M15.6)', function () {
 
       const created = events.find((e) => e.name === 'task_created')!
       const failed = events.find((e) => e.name === 'task_failed')!
-      // Alias check: daemon dispatched 'curate-html-direct', wire carries 'curate-tool-mode'.
+      // TaskTypeSchema only accepts the canonical 'curate-tool-mode' over the
+      // wire after ENG-2925 — the legacy 'curate-html-direct' alias path is
+      // exercised by the AnalyticsHook unit tests, not through the transport.
       expect(created.properties.task_type).to.equal('curate-tool-mode')
       expect(failed.properties.task_type).to.equal('curate-tool-mode')
       // failure_kind classifier (M15.6).
