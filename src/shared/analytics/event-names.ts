@@ -31,6 +31,7 @@ export const AnalyticsEventNames = {
   MCP_SESSION_ENDED: 'mcp_session_ended',
   MCP_SESSION_START: 'mcp_session_start',
   MCP_TOOL_CALLED: 'mcp_tool_called',
+  MIGRATE_RUN: 'migrate_run',
   ONBOARDING_AUTO_SETUP_STARTED: 'onboarding_auto_setup_started',
   ONBOARDING_COMPLETED: 'onboarding_completed',
   QUERY_COMPLETED: 'query_completed',
