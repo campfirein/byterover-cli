@@ -9,6 +9,7 @@ import {AuthLogoutSchema} from '../../../../shared/analytics/events/auth-logout.
 import {BrvInitSchema} from '../../../../shared/analytics/events/brv-init.js'
 import {CliInvocationSchema} from '../../../../shared/analytics/events/cli-invocation.js'
 import {ConnectorInstalledSchema} from '../../../../shared/analytics/events/connector-installed.js'
+import {ContentMigratedSchema} from '../../../../shared/analytics/events/content-migrated.js'
 import {ContextTreeFileEditedSchema} from '../../../../shared/analytics/events/context-tree-file-edited.js'
 import {CurateOperationAppliedSchema} from '../../../../shared/analytics/events/curate-operation-applied.js'
 import {CurateRunCompletedSchema} from '../../../../shared/analytics/events/curate-run-completed.js'
@@ -155,6 +156,13 @@ export class AnalyticsHandler {
         const props = ConnectorInstalledSchema.safeParse(rawProperties ?? {})
         if (!props.success) return
         this.analyticsClient.track(AnalyticsEventNames.CONNECTOR_INSTALLED, props.data)
+        break
+      }
+
+      case AnalyticsEventNames.CONTENT_MIGRATED: {
+        const props = ContentMigratedSchema.safeParse(rawProperties ?? {})
+        if (!props.success) return
+        this.analyticsClient.track(AnalyticsEventNames.CONTENT_MIGRATED, props.data)
         break
       }
 

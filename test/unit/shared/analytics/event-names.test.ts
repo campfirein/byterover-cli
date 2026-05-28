@@ -3,7 +3,7 @@ import {expect} from 'chai'
 import {type AnalyticsEventName, AnalyticsEventNames} from '../../../../src/shared/analytics/event-names.js'
 
 describe('AnalyticsEventNames', () => {
-  it('should expose exactly the forty-seven shipped event names', () => {
+  it('should expose exactly the fifty-one shipped event names', () => {
     expect(Object.keys(AnalyticsEventNames).sort()).to.deep.equal([
       'ANALYTICS_DISABLED',
       'AUTH_LOGIN',
@@ -11,6 +11,7 @@ describe('AnalyticsEventNames', () => {
       'BRV_INIT',
       'CLI_INVOCATION',
       'CONNECTOR_INSTALLED',
+      'CONTENT_MIGRATED',
       'CONTEXT_TREE_FILE_EDITED',
       'CURATE_OPERATION_APPLIED',
       'CURATE_RUN_COMPLETED',
@@ -34,6 +35,9 @@ describe('AnalyticsEventNames', () => {
       'SOURCE_ADDED',
       'SOURCE_REMOVED',
       'SPACE_SWITCHED',
+      'SWARM_ONBOARDED',
+      'SWARM_QUERY_COMPLETED',
+      'SWARM_STORE_COMPLETED',
       'TASK_COMPLETED',
       'TASK_CREATED',
       'TASK_FAILED',
