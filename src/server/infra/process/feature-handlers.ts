@@ -89,6 +89,7 @@ import {
   SourceHandler,
   SpaceHandler,
   StatusHandler,
+  SwarmHandler,
   TeamHandler,
   VcHandler,
   WorktreeHandler,
@@ -550,6 +551,13 @@ export async function setupFeatureHandlers({
   // Worktree & source handlers
   new WorktreeHandler({analyticsClient, resolveProjectPath, transport}).setup()
   new SourceHandler({analyticsClient, resolveProjectPath, transport}).setup()
+
+  // Swarm handler — thin emit surface for federated memory-provider events
+  // (M16.9 / M16.10 / M16.11). The CLI swarm commands and LLM swarm_* tools
+  // run their coordinator client-side and dispatch terminal-state events
+  // through this handler. See `swarm-handler.ts` docblock for the forward
+  // direction (moving the coordinator into the daemon process).
+  new SwarmHandler({analyticsClient, transport}).setup()
 
   log('Feature handlers registered')
 
