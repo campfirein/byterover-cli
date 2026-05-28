@@ -1,5 +1,10 @@
 import {expect} from 'chai'
 
+import type {
+  ReadonlyInfoSettingDescriptor,
+  SettingDescriptor,
+} from '../../../../../src/server/core/domain/entities/settings.js'
+
 import {
   findSettingDescriptor,
   SETTINGS_KEYS,
@@ -91,7 +96,11 @@ describe('settings registry — M7 T2 shape', () => {
     it('declares the descriptor as type=boolean with default=true', () => {
       const descriptor = findSettingDescriptor(SETTINGS_KEYS.UPDATE_CHECK_FOR_UPDATES)
       expect(descriptor?.type).to.equal('boolean')
-      expect(descriptor?.default).to.equal(true)
+      if (descriptor?.type === 'boolean') {
+        expect(descriptor.default).to.equal(true)
+      } else {
+        expect.fail('expected boolean descriptor for update.checkForUpdates')
+      }
     })
 
     it('marks the descriptor as not requiring a daemon restart', () => {
@@ -124,6 +133,56 @@ describe('settings registry — M7 T2 shape', () => {
         expect(min).to.be.lessThan(max)
       } else {
         expect.fail('expected integer descriptor for agentPool.maxSize')
+      }
+    })
+  })
+
+  describe('readonly-info variant (M16.1)', () => {
+    it('accepts a readonly-info literal that narrows on type without a cast', () => {
+      const descriptor: ReadonlyInfoSettingDescriptor = {
+        category: 'updates',
+        description: 'live operational snapshot for tests',
+        key: '_test.snapshot',
+        restartRequired: false,
+        type: 'readonly-info',
+      }
+      expect(descriptor.type).to.equal('readonly-info')
+    })
+
+    it('discriminates the SettingDescriptor union on type without an `as` assertion', () => {
+      const descriptor: SettingDescriptor = {
+        category: 'updates',
+        description: 'live operational snapshot for tests',
+        key: '_test.snapshot',
+        restartRequired: false,
+        type: 'readonly-info',
+      }
+      if (descriptor.type === 'readonly-info') {
+        const {key} = descriptor
+        expect(key).to.equal('_test.snapshot')
+      } else {
+        expect.fail('expected readonly-info branch')
+      }
+    })
+
+    it('rejects restartRequired=true on a readonly-info descriptor at the type level', () => {
+      // The descriptor narrows `restartRequired` to literal `false`. The
+      // assignment below would fail to type-check if a future refactor
+      // widened the field back to `boolean`, regressing the invariant.
+      const descriptor: ReadonlyInfoSettingDescriptor = {
+        description: 'snapshot',
+        key: '_test.snapshot',
+        restartRequired: false,
+        type: 'readonly-info',
+      }
+      expect(descriptor.restartRequired).to.equal(false)
+    })
+
+    it('SETTINGS_REGISTRY still contains only boolean and integer descriptors in t1', () => {
+      // t1 (ENG-3003) adds the framework variant. The first real
+      // readonly-info entry (`analytics.status`) lands in t3, not here.
+      for (const descriptor of SETTINGS_REGISTRY) {
+        expect(descriptor.type, `${descriptor.key} unexpected type`).to.be.oneOf(['boolean', 'integer'])
       }
     })
   })

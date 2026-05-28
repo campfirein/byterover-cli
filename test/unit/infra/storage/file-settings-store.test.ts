@@ -1,11 +1,16 @@
 import {expect} from 'chai'
+import {existsSync} from 'node:fs'
 import {mkdir, readdir, readFile, rm, writeFile} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 
+import type {SettingDescriptor} from '../../../../src/server/core/domain/entities/settings.js'
+
 import {FileSettingsStore} from '../../../../src/server/infra/storage/file-settings-store.js'
 import {
   InvalidSettingValueError,
+  ReadonlySettingKeyError,
+  SettingsValidator,
   UnknownSettingKeyError,
 } from '../../../../src/server/infra/storage/settings-validator.js'
 
@@ -483,6 +488,140 @@ describe('FileSettingsStore', () => {
       const file = asSettingsFile(JSON.parse(await readFile(join(tempDir, SETTINGS_FILENAME), 'utf8')))
       expect(file.version).to.equal(CURRENT_SCHEMA_VERSION)
       expect(file.values).to.deep.equal(v1Payload.values)
+    })
+  })
+
+  describe('readonly-info variant (M16.1)', () => {
+    const readonlyInfoRegistry: readonly SettingDescriptor[] = [
+      {
+        category: 'updates',
+        description: 'live operational snapshot for tests',
+        key: '_test.snapshot',
+        restartRequired: false,
+        type: 'readonly-info',
+      },
+      {
+        category: 'concurrency',
+        default: 10,
+        description: 'test writable',
+        key: '_test.writable',
+        max: 100,
+        min: 1,
+        restartRequired: true,
+        type: 'integer',
+      },
+    ]
+
+    let isolatedStore: FileSettingsStore
+    let isolatedDir: string
+
+    beforeEach(async () => {
+      isolatedDir = join(tmpdir(), `brv-settings-roi-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+      await mkdir(isolatedDir, {recursive: true})
+      isolatedStore = new FileSettingsStore({
+        baseDir: isolatedDir,
+        registry: readonlyInfoRegistry,
+        validator: new SettingsValidator({registry: readonlyInfoRegistry}),
+      })
+    })
+
+    afterEach(async () => {
+      await rm(isolatedDir, {force: true, recursive: true})
+    })
+
+    describe('set', () => {
+      it('throws ReadonlySettingKeyError on a readonly-info key', async () => {
+        try {
+          await isolatedStore.set('_test.snapshot', 'whatever')
+          expect.fail('expected throw')
+        } catch (error) {
+          expect(error).to.be.instanceOf(ReadonlySettingKeyError)
+        }
+      })
+
+      it('does NOT create the settings file when refusing a readonly-info write', async () => {
+        try {
+          await isolatedStore.set('_test.snapshot', 'whatever')
+        } catch {
+          // expected
+        }
+
+        expect(existsSync(join(isolatedDir, SETTINGS_FILENAME))).to.equal(false)
+      })
+
+      it('does NOT mutate an existing settings file when refusing a readonly-info write', async () => {
+        await isolatedStore.set('_test.writable', 25)
+        const before = await readFile(join(isolatedDir, SETTINGS_FILENAME), 'utf8')
+
+        try {
+          await isolatedStore.set('_test.snapshot', 'whatever')
+        } catch {
+          // expected
+        }
+
+        const after = await readFile(join(isolatedDir, SETTINGS_FILENAME), 'utf8')
+        expect(after).to.equal(before)
+      })
+    })
+
+    describe('reset', () => {
+      it('throws ReadonlySettingKeyError on a readonly-info key', async () => {
+        try {
+          await isolatedStore.reset('_test.snapshot')
+          expect.fail('expected throw')
+        } catch (error) {
+          expect(error).to.be.instanceOf(ReadonlySettingKeyError)
+        }
+      })
+
+      it('does NOT mutate the settings file when refusing a readonly-info reset', async () => {
+        await isolatedStore.set('_test.writable', 25)
+        const before = await readFile(join(isolatedDir, SETTINGS_FILENAME), 'utf8')
+
+        try {
+          await isolatedStore.reset('_test.snapshot')
+        } catch {
+          // expected
+        }
+
+        const after = await readFile(join(isolatedDir, SETTINGS_FILENAME), 'utf8')
+        expect(after).to.equal(before)
+      })
+    })
+
+    describe('get', () => {
+      it('returns current=undefined and omits default for a readonly-info key', async () => {
+        const item = await isolatedStore.get('_test.snapshot')
+        expect(item.key).to.equal('_test.snapshot')
+        expect(item.current).to.equal(undefined)
+        expect(item.default).to.equal(undefined)
+        expect(item.restartRequired).to.equal(false)
+      })
+
+      it('still returns descriptor defaults for writable keys alongside readonly-info', async () => {
+        const item = await isolatedStore.get('_test.writable')
+        expect(item.key).to.equal('_test.writable')
+        expect(item.current).to.equal(10)
+        expect(item.default).to.equal(10)
+      })
+    })
+
+    describe('list', () => {
+      it('includes the readonly-info row with current=undefined and default omitted', async () => {
+        const items = await isolatedStore.list()
+        const snapshot = items.find((i) => i.key === '_test.snapshot')
+        expect(snapshot, 'readonly-info row must be present').to.exist
+        expect(snapshot?.current).to.equal(undefined)
+        expect(snapshot?.default).to.equal(undefined)
+        expect(snapshot?.restartRequired).to.equal(false)
+      })
+
+      it('keeps writable rows unaffected by the readonly-info branch', async () => {
+        const items = await isolatedStore.list()
+        const writable = items.find((i) => i.key === '_test.writable')
+        expect(writable?.current).to.equal(10)
+        expect(writable?.default).to.equal(10)
+      })
     })
   })
 })

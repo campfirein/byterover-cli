@@ -3,10 +3,16 @@ import type {RowParseResult, SettingsRow, SettingsRowCategory, SettingsRowUnit} 
 
 import {CATEGORY_ORDER} from '../types/settings-row.js'
 import {formatCount, formatDuration, parseDuration} from './format-duration.js'
+import {formatReadonlyInfoValue} from './format-readonly-info.js'
 
 export function buildSettingsRows(items: readonly SettingsItemDTO[]): SettingsRow[] {
   const rows: SettingsRow[] = []
   for (const item of items) {
+    if (item.type === 'readonly-info') {
+      rows.push(toReadonlyInfoRow(item))
+      continue
+    }
+
     if (item.type === 'boolean' && typeof item.current === 'boolean' && typeof item.default === 'boolean') {
       rows.push(toBooleanRow(item, item.current, item.default))
       continue
@@ -121,6 +127,21 @@ function toBooleanRow(item: SettingsItemDTO, current: boolean, defaultValue: boo
     modified: current !== defaultValue,
     restartRequired: item.restartRequired,
     type: 'boolean',
+  }
+}
+
+function toReadonlyInfoRow(item: SettingsItemDTO): SettingsRow {
+  return {
+    category: toRowCategory(item.category),
+    current: item.current,
+    description: item.description,
+    displayCurrent: formatReadonlyInfoValue(item.key, item.current),
+    displayRange: '',
+    key: item.key,
+    label: item.key,
+    modified: false,
+    restartRequired: item.restartRequired,
+    type: 'readonly-info',
   }
 }
 

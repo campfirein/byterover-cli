@@ -102,6 +102,22 @@ describe('format-settings (tui)', () => {
       expect(hint).to.include('Saving')
       expect(hint).to.include('background')
     })
+
+    it('returns a read-only hint in browse mode when the focused row is readonly-info (M16.1)', () => {
+      const hint = bottomHintFor('browse', '_test.snapshot', 'readonly-info')
+      expect(hint).to.include('read-only')
+      expect(hint).to.not.include('Enter edit')
+      expect(hint).to.not.include('R reset')
+    })
+
+    it('keeps the writable browse hint for boolean/integer rows even when focusedRowType is passed', () => {
+      expect(bottomHintFor('browse', 'agentPool.maxSize', 'integer')).to.equal(
+        'Up/Down move | Enter edit | R reset | Esc exit',
+      )
+      expect(bottomHintFor('browse', 'update.checkForUpdates', 'boolean')).to.equal(
+        'Up/Down move | Enter edit | R reset | Esc exit',
+      )
+    })
   })
 
   describe('preFillBufferFor', () => {

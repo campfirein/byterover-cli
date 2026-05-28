@@ -4,7 +4,7 @@ import type {
   SettingDescriptor,
 } from '../../core/domain/entities/settings.js'
 
-import {findSettingDescriptor, SETTINGS_KEYS} from '../../core/domain/entities/settings.js'
+import {SETTINGS_KEYS, SETTINGS_REGISTRY} from '../../core/domain/entities/settings.js'
 
 export class UnknownSettingKeyError extends Error {
   public readonly key: string
@@ -28,6 +28,23 @@ export class InvalidSettingValueError extends Error {
   }
 }
 
+/**
+ * Raised when a caller tries to mutate a `readonly-info` descriptor via
+ * `validate`, the store's `set` / `reset`, or any future write surface.
+ * Distinct from `InvalidSettingValueError` so the transport handler can
+ * surface a typed `code: 'read_only'` response without string-matching
+ * the message.
+ */
+export class ReadonlySettingKeyError extends Error {
+  public readonly key: string
+
+  public constructor(key: string) {
+    super(`Setting '${key}' is read-only and cannot be written or reset.`)
+    this.name = 'ReadonlySettingKeyError'
+    this.key = key
+  }
+}
+
 export type PartitionedSettings = {
   readonly invalid: ReadonlyArray<{readonly key: string; readonly reason: string; readonly value: unknown}>
   readonly valid: Readonly<Record<string, boolean | number>>
@@ -36,6 +53,17 @@ export type PartitionedSettings = {
 export type CouplingViolation = {
   readonly keys: readonly string[]
   readonly reason: string
+}
+
+export type SettingsValidatorOptions = {
+  /**
+   * Override the descriptor registry. Defaults to the production
+   * `SETTINGS_REGISTRY`. Tests inject a small registry containing the
+   * variant under test (e.g. a single `readonly-info` descriptor) so
+   * partition + validate behaviour can be exercised without polluting
+   * the production registry.
+   */
+  readonly registry?: readonly SettingDescriptor[]
 }
 
 const COUPLING_REQUEST_TIMEOUT = SETTINGS_KEYS.LLM_REQUEST_TIMEOUT_MS
@@ -50,6 +78,12 @@ const COUPLING_ITERATION_BUDGET = SETTINGS_KEYS.LLM_ITERATION_BUDGET_MS
  * when M3 lands; the store and the transport handler do not need to change.
  */
 export class SettingsValidator {
+  private readonly registry: readonly SettingDescriptor[]
+
+  public constructor(options: SettingsValidatorOptions = {}) {
+    this.registry = options.registry ?? SETTINGS_REGISTRY
+  }
+
   /**
    * Splits a raw record (e.g. parsed from `settings.json`) into the valid
    * entries the daemon should apply and the invalid entries the daemon should
@@ -60,14 +94,19 @@ export class SettingsValidator {
     const invalid: Array<{key: string; reason: string; value: unknown}> = []
 
     for (const [key, value] of Object.entries(record)) {
-      const descriptor = findSettingDescriptor(key)
+      const descriptor = this.findDescriptor(key)
       if (descriptor === undefined) {
         invalid.push({key, reason: 'unknown settings key', value})
         continue
       }
 
+      if (descriptor.type === 'readonly-info') {
+        invalid.push({key, reason: 'readonly-info key cannot be persisted', value})
+        continue
+      }
+
       try {
-        valid[key] = this.validateAgainst(descriptor, value)
+        valid[key] = validateWritableAgainst(descriptor, value)
       } catch (error) {
         if (error instanceof InvalidSettingValueError) {
           invalid.push({key, reason: error.message, value: error.value})
@@ -95,13 +134,17 @@ export class SettingsValidator {
   }
 
   /**
-   * Validates a single key/value pair. Throws on unknown key or invalid value.
-   * Returns the coerced value on success (integer for integer descriptors,
-   * boolean for boolean descriptors).
+   * Validates a single key/value pair. Throws on unknown key, read-only key,
+   * or invalid value. Returns the coerced value on success (integer for
+   * integer descriptors, boolean for boolean descriptors).
    */
   public validate(key: string, value: unknown): boolean | number {
     const descriptor = this.validateKey(key)
-    return this.validateAgainst(descriptor, value)
+    if (descriptor.type === 'readonly-info') {
+      throw new ReadonlySettingKeyError(key)
+    }
+
+    return validateWritableAgainst(descriptor, value)
   }
 
   /**
@@ -113,8 +156,15 @@ export class SettingsValidator {
   public validateCoupling(values: Readonly<Record<string, number>>): readonly CouplingViolation[] {
     const violations: CouplingViolation[] = []
 
-    const requestTimeout = values[COUPLING_REQUEST_TIMEOUT] ?? findSettingDescriptor(COUPLING_REQUEST_TIMEOUT)?.default
-    const iterationBudget = values[COUPLING_ITERATION_BUDGET] ?? findSettingDescriptor(COUPLING_ITERATION_BUDGET)?.default
+    const requestTimeoutDescriptor = this.findDescriptor(COUPLING_REQUEST_TIMEOUT)
+    const iterationBudgetDescriptor = this.findDescriptor(COUPLING_ITERATION_BUDGET)
+    const requestTimeoutDefault =
+      requestTimeoutDescriptor?.type === 'integer' ? requestTimeoutDescriptor.default : undefined
+    const iterationBudgetDefault =
+      iterationBudgetDescriptor?.type === 'integer' ? iterationBudgetDescriptor.default : undefined
+
+    const requestTimeout = values[COUPLING_REQUEST_TIMEOUT] ?? requestTimeoutDefault
+    const iterationBudget = values[COUPLING_ITERATION_BUDGET] ?? iterationBudgetDefault
 
     if (requestTimeout !== undefined && iterationBudget !== undefined && requestTimeout > iterationBudget) {
       violations.push({
@@ -131,15 +181,22 @@ export class SettingsValidator {
    * key is not registered.
    */
   public validateKey(key: string): SettingDescriptor {
-    const descriptor = findSettingDescriptor(key)
+    const descriptor = this.findDescriptor(key)
     if (descriptor === undefined) throw new UnknownSettingKeyError(key)
     return descriptor
   }
 
-  private validateAgainst(descriptor: SettingDescriptor, value: unknown): boolean | number {
-    if (descriptor.type === 'boolean') return validateBoolean(descriptor, value)
-    return validateInteger(descriptor, value)
+  private findDescriptor(key: string): SettingDescriptor | undefined {
+    return this.registry.find((d) => d.key === key)
   }
+}
+
+function validateWritableAgainst(
+  descriptor: BooleanSettingDescriptor | IntegerSettingDescriptor,
+  value: unknown,
+): boolean | number {
+  if (descriptor.type === 'boolean') return validateBoolean(descriptor, value)
+  return validateInteger(descriptor, value)
 }
 
 function validateInteger(descriptor: IntegerSettingDescriptor, value: unknown): number {

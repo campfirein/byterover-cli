@@ -14,26 +14,29 @@ export const SettingsEvents = {
  * M7 T2 added three optional fields (`category`, `unit`, `scope`); T1 of
  * the Update-check toggle project widened `type`, `current`, `default`,
  * and `restartRequired` to also cover boolean descriptors, and made
- * `min` / `max` optional (only integer descriptors carry them). All
- * widenings are additive at the JSON layer, so consumers that read
- * existing integer fields continue to parse the wire format.
+ * `min` / `max` optional (only integer descriptors carry them). M16.1
+ * added the `'readonly-info'` variant: a snapshot has no `default` and
+ * `current` may be a structured object or `undefined` (when no info
+ * provider is registered). All widenings are additive at the JSON
+ * layer, so consumers that read existing integer fields continue to
+ * parse the wire format.
  */
 export interface SettingsItemDTO {
   category?: 'concurrency' | 'llm' | 'task-history' | 'updates'
-  current: boolean | number
-  default: boolean | number
+  current: boolean | number | Readonly<Record<string, unknown>> | undefined
+  default?: boolean | number
   description: string
   key: string
   max?: number
   min?: number
   restartRequired: boolean
   scope?: 'global' | 'project'
-  type: 'boolean' | 'integer'
+  type: 'boolean' | 'integer' | 'readonly-info'
   unit?: 'count' | 'ms'
 }
 
 export interface SettingsErrorDTO {
-  code: 'invalid_value' | 'invalid_value_type' | 'unknown_key'
+  code: 'invalid_value' | 'invalid_value_type' | 'read_only' | 'unknown_key'
   /** Expected runtime kind, only set when `code === 'invalid_value_type'`. */
   expected?: 'boolean' | 'integer'
   /** `typeof` of the offending value, only set when `code === 'invalid_value_type'`. */

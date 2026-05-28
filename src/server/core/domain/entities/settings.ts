@@ -49,23 +49,44 @@ export type BooleanSettingDescriptor = BaseSettingDescriptor & {
 }
 
 /**
- * Descriptor for a single user-configurable setting. Discriminated on
- * `type` so consumers narrow with a single check before reading
- * type-specific fields (`min`/`max` on integers, etc).
+ * Descriptor for a read-only operational snapshot key (e.g. `analytics.status`).
+ * Carries no default, refuses `set` / `reset`, and is never persisted to
+ * `settings.json`. The live value is supplied by an info provider injected
+ * into `SettingsHandler` at construction time — descriptors stay pure data
+ * so the registry never crosses the `core/domain -> infra` import boundary.
  *
- * Defaults reference the existing constants module so a constant change
- * automatically updates the setting's default.
+ * `restartRequired` is pinned to literal `false` because a snapshot can
+ * never demand a daemon restart: there is no override to apply.
  */
-export type SettingDescriptor = BooleanSettingDescriptor | IntegerSettingDescriptor
+export type ReadonlyInfoSettingDescriptor = BaseSettingDescriptor & {
+  readonly restartRequired: false
+  readonly type: 'readonly-info'
+}
+
+/**
+ * Descriptor for a single registered setting. Discriminated on `type` so
+ * consumers narrow with a single check before reading type-specific
+ * fields (`min`/`max` on integers, `default` on writable variants, etc).
+ *
+ * Defaults on writable variants reference the existing constants module
+ * so a constant change automatically updates the setting's default.
+ */
+export type SettingDescriptor =
+  | BooleanSettingDescriptor
+  | IntegerSettingDescriptor
+  | ReadonlyInfoSettingDescriptor
 
 /**
  * View of one setting: the key, the user's current override (or the default
  * if none is set), and the registered default. Carries the union of value
  * shapes; consumers narrow on the corresponding descriptor's `type`.
+ *
+ * Readonly-info keys carry no `default` (snapshots have no default state)
+ * and may carry a structured `current` payload supplied by the provider.
  */
 export type SettingItem = {
-  readonly current: boolean | number
-  readonly default: boolean | number
+  readonly current: boolean | number | Readonly<Record<string, unknown>> | undefined
+  readonly default?: boolean | number
   readonly key: string
   readonly restartRequired: boolean
 }

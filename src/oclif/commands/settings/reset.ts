@@ -63,6 +63,22 @@ export default class SettingsReset extends Command {
         return
       }
 
+      if (descriptor.type === 'readonly-info') {
+        process.exitCode = 1
+        const message = `Setting '${args.key}' is read-only and cannot be reset.`
+        if (format === 'json') {
+          writeJsonResponse({
+            command: 'settings reset',
+            data: {error: {code: 'read_only', key: args.key, message}},
+            success: false,
+          })
+        } else {
+          this.log(message)
+        }
+
+        return
+      }
+
       const response = await this.resetSetting(args.key)
 
       if (response.ok) {
@@ -73,7 +89,8 @@ export default class SettingsReset extends Command {
             success: true,
           })
         } else {
-          const base = `Setting reset: ${args.key} back to default (${renderValue(descriptor, descriptor.default)}).`
+          const defaultDisplay = descriptor.default === undefined ? '(none)' : renderValue(descriptor, descriptor.default)
+          const base = `Setting reset: ${args.key} back to default (${defaultDisplay}).`
           this.log(descriptor.restartRequired ? `${base} Run \`brv restart\` to apply.` : base)
         }
 

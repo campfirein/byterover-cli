@@ -32,9 +32,17 @@ export function groupRowsByCategory(rows: readonly SettingsRow[]): ReadonlyArray
   return result
 }
 
-export function bottomHintFor(mode: 'browse' | 'edit' | 'edit-error' | 'saving', focusedKey?: string): string {
+export function bottomHintFor(
+  mode: 'browse' | 'edit' | 'edit-error' | 'saving',
+  focusedKey?: string,
+  focusedRowType?: 'boolean' | 'integer' | 'readonly-info',
+): string {
   switch (mode) {
     case 'browse': {
+      if (focusedRowType === 'readonly-info') {
+        return 'Up/Down move | Esc exit | (read-only)'
+      }
+
       return 'Up/Down move | Enter edit | R reset | Esc exit'
     }
 
