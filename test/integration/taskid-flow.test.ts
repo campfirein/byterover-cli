@@ -52,6 +52,9 @@ describe('TaskId Integration Flow', () => {
 
     // Stub agentPool that forwards tasks to the mock agent via the real transport server
     const stubAgentPool: IAgentPool = {
+      cancelQueuedTask() {
+        return false
+      },
       getEntries() {
         return []
       },

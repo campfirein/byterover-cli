@@ -1,88 +1,271 @@
-Curate knowledge topics with atomic operations. This tool manages the knowledge structure using four operation types and supports a two-part context model: Raw Concept + Narrative.
+Curate knowledge topics by emitting a single HTML topic document using the
+closed `<bv-*>` vocabulary defined below. Each curate operation produces one
+HTML document scoped to one topic file (identified by the `path` attribute on
+`<bv-topic>`). The rendered output preserves the same structure as the
+existing markdown topic files: frontmatter (title, summary, tags, keywords,
+related) on `<bv-topic>` attributes; body sections (Reason, Raw Concept,
+Narrative, Facts) on dedicated `<bv-*>` elements.
 
-**Content Structure (Two-Part Model):**
-- **tags**: Tags for categorization and filtering (e.g., ["authentication", "security", "jwt"])
-- **keywords**: Keywords for search and discovery (e.g., ["jwt", "refresh_token", "rotation"])
-- **rawConcept**: Captures essential metadata and context footprint
-  - task: What is the task or subject related to this concept
-  - changes: Array of changes or updates (code changes, process updates, decisions, etc.)
-  - files: Related resources: source files, documents, URLs, data sources, or references
-  - flow: Process flow, workflow, or sequence of steps
-  - timestamp: When created/modified (ISO 8601 format, e.g., 2025-03-18)
-- **narrative**: Captures descriptive and structural context
-  - structure: Structural or organizational documentation (e.g., file layout, process hierarchy, timeline)
-  - dependencies: Dependencies, prerequisites, blockers, or relationship information
-  - highlights: Key highlights, capabilities, deliverables, or notable outcomes
-- **facts**: Array of factual statements extracted from content
-  - statement: The full factual text (e.g., "My name is Andy", "We use PostgreSQL 15")
-  - category: Optional categorization - "personal", "project", "preference", "convention", "team", "environment", "other"
-  - subject: Optional subject key in snake_case (e.g., "user_name", "database", "sprint_duration")
-  - value: Optional extracted value (e.g., "Andy", "PostgreSQL 15", "2 weeks")
-- **snippets**: Code/text snippets (legacy support, optional)
-- **relations**: Related topics using @domain/topic notation
+**Output contract**
 
-**Per-Operation Metadata (required for all operations):**
-- **reason**: WHY this knowledge is being curated — the motivation for a human reviewer
-- **summary**: One-line semantic summary of what the knowledge file contains after this operation. Written for a human reviewer to quickly grasp the content. Example: "Caching strategy using Redis with 5-min TTL and write-through invalidation". Required for ADD/UPDATE/UPSERT/MERGE, not needed for DELETE.
-- **confidence**: "high" or "low" — your confidence in accuracy/completeness
-- **impact**: "high" or "low" — scope of change (see tool schema for details)
+- Output is HTML, and only HTML.
+- The FIRST character of your response must be `<` (the opening of
+  `<bv-topic>`). The LAST characters must be `</bv-topic>`.
+- DO NOT wrap the response in a code fence. No ` ``` `, no ` ```html `,
+  no markdown formatting around the HTML. Emit the HTML as a bare string.
+- No prose preamble before `<bv-topic>`. No commentary after `</bv-topic>`.
+- No HTML5 document preamble (no `<!doctype>`, no `<html>`, `<head>`, or
+  `<body>` wrapper).
+- Exactly one `<bv-topic>` per output. It is the root container.
+- All attribute names are lowercase (HTML5 normalizes attribute names at
+  parse time; emitting lowercase keeps source diffs clean).
+- All attribute values are double-quoted strings.
+- Do not invent custom elements outside the `<bv-*>` vocabulary.
+- Do not invent attributes outside the per-element schema.
+- Do not ask clarifying questions. Make a best-effort interpretation and
+  emit.
 
-**Operations:**
-1. **ADD** - Create new titled context file in domain/topic/subtopic
-   - Requires: path, title, content, reason, summary
-   - Example with Raw Concept + Narrative:
-     {
-       type: "ADD",
-       path: "structure/caching",
-       title: "Redis User Permissions",
-       content: {
-         tags: ["caching", "redis", "performance"],
-         keywords: ["redis", "user_permissions", "cache_ttl", "singleton"],
-         rawConcept: {
-           task: "Introduce Redis cache for getUserPermissions(userId)",
-           changes: ["Cached result using remote Redis", "Redis client: singleton"],
-           files: ["services/permission_service.go", "clients/redis_client.go"],
-           flow: "getUserPermissions -> check Redis -> on miss query DB -> store result -> return",
-           timestamp: "2025-03-18"
-         },
-         narrative: {
-           structure: "# Redis client\n- clients/redis_client.go",
-           dependencies: "# Redis client\n- Singleton, init when service starts",
-           highlights: "# Authorization\n- User permission can be stale for up to 300 seconds"
-         },
-         relations: ["@structure/database"]
-       },
-       reason: "New caching pattern",
-       summary: "Redis caching layer for getUserPermissions with 300s TTL and singleton client pattern",
-       confidence: "high",
-       impact: "low"
-     }
-   - Creates: structure/caching/redis_user_permissions.md
+**Path format**
 
-2. **UPDATE** - Modify existing titled context file (full replacement)
-   - Requires: path, title, content, reason, summary
-   - Supports same content structure as ADD
+The `path` attribute on `<bv-topic>` is a slash-separated topic path:
+`<domain>/<topic>` or `<domain>/<topic>/<subtopic>`. Use snake_case for each
+segment (e.g., `security/auth`, `payments/refunds`, `infra/postgres_upgrade`).
 
-3. **MERGE** - Combine source file into target file, delete source
-   - Requires: path (source), title (source file), mergeTarget (destination path), mergeTargetTitle (destination file), reason
-   - Example: { type: "MERGE", path: "code_style/old_topic", title: "Old Guide", mergeTarget: "code_style/new_topic", mergeTargetTitle: "New Guide", reason: "Consolidating" }
-   - Raw concepts and narratives are intelligently merged
+**Domain guidelines**
 
-4. **DELETE** - Remove specific file or entire folder
-   - Requires: path, title (optional), reason
-   - With title: deletes specific file; without title: deletes entire folder
+- Choose domain names that represent broad knowledge categories relevant to
+  the content (1–3 words, snake_case).
+- Consolidate related concepts under the same domain.
+- Reuse existing domains where they fit; avoid generic names like `misc`,
+  `other`, `general`.
 
-**Path format:** domain/topic or domain/topic/subtopic (uses snake_case automatically)
-**File naming:** Titles are converted to snake_case (e.g., "Best Practices" -> "best_practices.md")
+**Frontmatter (attributes on `<bv-topic>`)**
 
-**Domain creation guidelines:**
-- Domains are created dynamically based on the content being curated
-- Choose domain names that represent broad knowledge categories relevant to the content
-- Domain names should be concise (1-3 words), use snake_case format
-- Consolidate related concepts under the same domain for better organization
-- Before creating a new domain, check if existing domains could accommodate the content
-- Avoid generic names like `misc`, `other`, `general`
+- `path` — REQUIRED. Slash-separated snake_case topic path.
+- `title` — REQUIRED. Human-readable short title for the topic.
+- `summary` — RECOMMENDED. One-line semantic summary, written for a human
+  reviewer to grasp the content quickly.
+- `tags` — optional. Comma-separated category tags (e.g.,
+  `"security,authentication,jwt"`).
+- `keywords` — optional. Comma-separated retrieval keywords (e.g.,
+  `"jwt,refresh_token,rs256"`).
+- `related` — optional. Comma-separated cross-references. File targets
+  end in `.html` (e.g. `"@security/cookies.html,@security/oauth.html"`);
+  folder/domain targets stay bare (e.g. `"@ops"`). The FE routes by
+  suffix — a missing or wrong extension produces a dead pill.
 
-**Backward Compatibility:** Existing context entries using only snippets and relations continue to work.
+**NOT bv-topic attributes** — do not emit `importance`, `maturity`,
+`recency`, `updatedat`, or `createdAt`. These are runtime signals tracked
+by the system in a sidecar store; the LLM does not author them.
 
-**Output:** Returns applied operations with status (success/failed), filePath (for created/modified files), and a summary of counts.
+**Element vocabulary (closed — do not extend)**
+
+`<bv-topic>` — root container per topic file (see Frontmatter above).
+
+`<bv-reason>` — RECOMMENDED. Renders as `## Reason`. The "why" of this
+  curate operation, stated for a human reviewer (one or two sentences).
+
+The following four elements form the `## Raw Concept` block (concept
+metadata):
+
+`<bv-task>` — `## Raw Concept > Task:`. The subject or task this concept
+  relates to, in one sentence.
+
+`<bv-changes>` — `## Raw Concept > Changes:`. A list of changes (code
+  changes, process updates, decisions). Use child `<li>` items.
+
+`<bv-files>` — `## Raw Concept > Files:`. A list of related files,
+  documents, URLs, or references. Use child `<li>` items.
+
+`<bv-flow>` — `## Raw Concept > Flow:`. The process flow, workflow, or
+  step sequence (one paragraph or arrow-style).
+
+`<bv-timestamp>` — `## Raw Concept > Timestamp:`. The date the concept's
+  data represents (distinct from frontmatter `createdAt`/`updatedAt`,
+  which are system-set). Use ISO-8601 (e.g., `2026-04-19`) when known.
+
+`<bv-author>` — `## Raw Concept > Author:`. The person or system
+  identifier responsible for the concept (when knowable from context).
+
+`<bv-pattern>` — bullet entry under `## Raw Concept > Patterns:`.
+  The pattern itself is the element's text content; structured fields
+  are attributes. Multiple `<bv-pattern>` siblings inside `<bv-topic>`
+  are collected into a single bullet list.
+  - optional `flags` — regex-style flag string (e.g., `"g"`, `"im"`).
+  - optional `description` — what the pattern matches.
+
+The following six elements form the `## Narrative` block (descriptive
+context):
+
+`<bv-structure>` — `## Narrative > Structure`. Structural or organizational
+  documentation (file layout, hierarchy, timeline).
+
+`<bv-dependencies>` — `## Narrative > Dependencies`. Dependencies,
+  prerequisites, blockers, relationship information.
+
+`<bv-highlights>` — `## Narrative > Highlights`. Key highlights,
+  capabilities, deliverables, notable outcomes.
+
+`<bv-rule>` — `## Narrative > Rules`. A rule the agent should follow.
+  - optional `severity` — one of `"info"`, `"should"`, `"must"`.
+  - optional `id` — non-empty string for cross-referencing.
+  Inline content.
+
+`<bv-examples>` — `## Narrative > Examples`. Worked examples, sample
+  code, or scenario walkthroughs.
+
+`<bv-diagram>` — `## Narrative > Diagrams`. Preserves a diagram VERBATIM
+  (mermaid / plantuml / ascii / dot / graphviz). Emit the diagram body
+  DIRECTLY inside the element, using HTML entities for `<`, `>`, `&`
+  (e.g. mermaid arrows become `--&gt;`). Do NOT wrap the body in
+  `<![CDATA[…]]>` — HTML5 parses CDATA as a bogus comment that the
+  first `-->` closes, mangling the diagram source.
+  - optional `type` — one of `"mermaid"`, `"plantuml"`, `"ascii"`,
+    `"dot"`, `"graphviz"`, `"other"`.
+  - optional `title` — caption for the diagram.
+
+`<bv-fact>` — `## Facts`. A structured fact extracted from the input.
+  The element's text content is the canonical statement; attributes
+  carry the structured extraction.
+  - optional `subject` — snake_case key (e.g., `"user_name"`,
+    `"database_version"`).
+  - optional `category` — one of `"personal"`, `"project"`,
+    `"preference"`, `"convention"`, `"team"`, `"environment"`, `"other"`.
+  - optional `value` — the extracted value (e.g., `"Andy"`,
+    `"PostgreSQL 15"`).
+
+`<bv-decision>` — a decision record (with rationale and evidence).
+  - optional `id` — non-empty string for cross-referencing.
+  Block content.
+
+`<bv-bug>` — a bug runbook entry (symptom, root cause).
+  - optional `severity` — one of `"low"`, `"medium"`, `"high"`,
+    `"critical"`.
+  - optional `id` — non-empty string for cross-referencing.
+  Block content. Typically paired with a sibling `<bv-fix>`.
+
+`<bv-fix>` — a fix runbook entry (steps to resolve a bug).
+  - optional `id` — non-empty string for cross-referencing.
+  Block content. Typically follows a `<bv-bug>` as a sibling.
+
+**Standard HTML inside `<bv-*>` elements**
+
+Each `<bv-*>` element is either *inline-content* or *block-content*; the
+allowed standard HTML differs between the two.
+
+*Inline-content elements:* `<bv-rule>`, `<bv-task>`, `<bv-flow>`,
+`<bv-fact>`, `<bv-pattern>`, `<bv-timestamp>`, `<bv-author>`. Inside
+these, you MAY use only inline HTML: `code`, `strong`, `em`. Do NOT
+nest `<p>`, `<ul>`, `<ol>`, `<h1>`–`<h6>`, or `<pre>` inside an
+inline-content element — write the prose directly.
+
+*Block-content elements:* `<bv-topic>`, `<bv-reason>`, `<bv-changes>`,
+`<bv-files>`, `<bv-structure>`, `<bv-dependencies>`, `<bv-highlights>`,
+`<bv-examples>`, `<bv-diagram>`, `<bv-decision>`, `<bv-bug>`,
+`<bv-fix>`. Inside these, you MAY use both block and inline HTML:
+`h1`–`h6`, `p`, `ul`, `ol`, `li`, `code`, `pre`, `strong`, `em`.
+
+Do not introduce custom elements outside the closed `<bv-*>` vocabulary.
+
+Inside `<li>`, write plain text only — no leading `-`, `*`, `•`,
+`1.`/`2.` markers. The renderer adds list markers via CSS, so a literal
+prefix produces a double bullet.
+
+**Detail-preservation**
+
+When the input contains diagrams, tables, code examples, factual
+statements, or numbered procedures, preserve them faithfully:
+
+- Diagrams (mermaid, plantuml, ascii, dot) — preserve VERBATIM in
+  `<bv-diagram>`. Never paraphrase.
+- Tables — preserve every row and column.
+- Step-by-step procedures — preserve original numbering in `<ol>`
+  inside `<bv-flow>` or `<bv-rule>`.
+- Code snippets — preserve exact syntax and values inside `<pre><code>`
+  blocks (inside `<bv-examples>` if illustrative).
+- Factual statements — extract each as a separate `<bv-fact>` with
+  `subject` / `category` / `value` attributes filled where derivable.
+
+**Element pairing**
+
+When notes describe a bug and its fix, emit the pair as siblings inside
+`<bv-topic>`:
+
+```
+<bv-topic path="payments/refunds" title="Refund double-charge runbook">
+  <bv-bug severity="high" id="bug-refund-double-charge">
+    <p>Symptom: ...</p>
+  </bv-bug>
+  <bv-fix id="fix-refund-double-charge">
+    <p>Steps: ...</p>
+  </bv-fix>
+</bv-topic>
+```
+
+**Examples**
+
+The examples below are shown in fenced blocks for readability only. Your
+actual output must be the bare HTML — no surrounding ` ``` ` fence, no
+`html` language tag, no leading or trailing prose. The first character
+of your response is `<`; the last characters are `</bv-topic>`.
+
+A bug + fix runbook with full structure:
+
+```
+<bv-topic path="security/auth" title="JWT refresh under clock skew" summary="JWT refresh fails on clients with skewed clocks; resolved by adding leeway and a metric." tags="security,authentication" keywords="jwt,refresh,clock-skew,401" related="@security/oauth.html">
+  <bv-reason>Capture the clock-skew bug + leeway fix so the next on-call has the runbook.</bv-reason>
+  <bv-task>Diagnose JWT refresh failures under client clock skew.</bv-task>
+  <bv-changes>
+    <li>Added 90s leeway to RefreshTokenValidator.</li>
+    <li>Emit auth.refresh.clock_skew_seconds metric on every refresh that exceeds the leeway.</li>
+  </bv-changes>
+  <bv-files>
+    <li>src/auth/refresh-token-validator.ts</li>
+  </bv-files>
+  <bv-bug severity="high" id="bug-jwt-clock-skew">
+    <p>Symptom: clients with clocks &gt; 60s ahead receive 401 on refresh.</p>
+    <p>Root cause: strict expiry check, no leeway.</p>
+  </bv-bug>
+  <bv-fix id="fix-jwt-clock-skew">
+    <ol>
+      <li>Add 90s leeway to refresh validator.</li>
+      <li>Emit a clock-skew metric.</li>
+    </ol>
+  </bv-fix>
+  <bv-fact subject="refresh_validator_leeway" category="convention" value="90 seconds">RefreshTokenValidator allows a 90-second leeway against client clock skew.</bv-fact>
+</bv-topic>
+```
+
+A rule + decision pair:
+
+```
+<bv-topic path="security/auth" title="Service-to-service JWT signing" summary="RS256 over HS256 for service-to-service tokens; rules for token logging and expiry." tags="security,authentication">
+  <bv-decision id="dec-rs256-over-hs256">
+    <p>Use RS256 over HS256 for service-to-service tokens. Asymmetric keys eliminate the need to share secrets across service boundaries.</p>
+  </bv-decision>
+  <bv-rule severity="must" id="rule-no-jwt-logging">Never log full JWTs at any level.</bv-rule>
+  <bv-rule severity="must" id="rule-service-token-expiry">Service tokens MUST expire within 1 hour.</bv-rule>
+  <bv-fact subject="service_token_signing_algorithm" category="convention" value="RS256">Service-to-service JWTs use RS256.</bv-fact>
+</bv-topic>
+```
+
+A general project-context topic with a diagram:
+
+```
+<bv-topic path="infra/postgres_upgrade" title="Postgres 14 -&gt; 16 upgrade plan" summary="Two-phase upgrade via logical replication; replica first, then failover." tags="infra,postgres,upgrade" keywords="postgres,upgrade,logical-replication">
+  <bv-reason>Plan the 14 -&gt; 16 upgrade with minimal downtime; document the rollback path.</bv-reason>
+  <bv-structure>
+    <p>Two-phase upgrade: spin up a Postgres-16 replica using logical replication; failover during a 30-minute Sunday maintenance window.</p>
+  </bv-structure>
+  <bv-dependencies>
+    <p>pg_dump/pg_restore for initial seed; logical replication on the source. Some extensions (pg_stat_statements, postgis) need re-installation on the new instance.</p>
+  </bv-dependencies>
+  <bv-diagram type="ascii" title="Upgrade phases">
+[PG14 primary] --(logical replication)--&gt; [PG16 replica]
+                                                    |
+                                          (cutover window)
+                                                    v
+                                          [PG16 primary]
+  </bv-diagram>
+</bv-topic>
+```

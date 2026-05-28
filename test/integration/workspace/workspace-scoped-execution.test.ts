@@ -46,6 +46,7 @@ function makeStubAgent(sandbox: SinonSandbox): ICipherAgent & {
 } {
   return {
     cancel: sandbox.stub().resolves(false),
+    cancelTask: sandbox.stub().resolves(false),
     createTaskSession: sandbox.stub().resolves('task-session-1'),
     deleteSandboxVariable: sandbox.stub(),
     deleteSandboxVariableOnSession: sandbox.stub(),
@@ -74,6 +75,7 @@ function makeStubAgent(sandbox: SinonSandbox): ICipherAgent & {
 
 function makeStubSearchService(sandbox: SinonSandbox): ISearchKnowledgeService & {search: SinonStub} {
   return {
+    refreshIndex: sandbox.stub().resolves(),
     search: sandbox.stub().resolves({
       message: 'Found 0 results',
       results: [],

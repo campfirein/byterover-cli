@@ -17,6 +17,22 @@ describe('derived-artifact predicates', () => {
       expect(isDerivedArtifact('_manifest.json')).to.be.true
     })
 
+    it('should return true for index.html at the context-tree root', () => {
+      expect(isDerivedArtifact('index.html')).to.be.true
+    })
+
+    it('should return false for user-authored index.html nested under a domain', () => {
+      // The navigation index is the root file only. A topic at `<domain>/index.html`
+      // must remain searchable + syncable like any other topic.
+      expect(isDerivedArtifact('architecture/index.html')).to.be.false
+      expect(isDerivedArtifact('web/landing/index.html')).to.be.false
+    })
+
+    it('should return false for regular .html topic files', () => {
+      expect(isDerivedArtifact('features/auth.html')).to.be.false
+      expect(isDerivedArtifact('architecture/api/rest.html')).to.be.false
+    })
+
     it('should return true for .full.md inside _archived/', () => {
       expect(isDerivedArtifact('_archived/auth/tokens.full.md')).to.be.true
       expect(isDerivedArtifact('_archived/api/endpoints/legacy.full.md')).to.be.true
@@ -96,6 +112,18 @@ describe('derived-artifact predicates', () => {
     it('should return false for regular .md files', () => {
       expect(isExcludedFromSync('domain/context.md')).to.be.false
       expect(isExcludedFromSync('auth/jwt-tokens.md')).to.be.false
+    })
+
+    it('should return false for the navigation index.html (sync-tracked)', () => {
+      // Carve-out: index.html is derived (excluded from BM25 + query) but
+      // sync-tracked so peers consume the latest version without rebuild.
+      expect(isExcludedFromSync('index.html')).to.be.false
+    })
+
+    it('should return false for user-authored nested index.html (regular topic)', () => {
+      // A topic at `<domain>/index.html` is a regular topic — must sync.
+      expect(isExcludedFromSync('architecture/index.html')).to.be.false
+      expect(isExcludedFromSync('web/landing/index.html')).to.be.false
     })
   })
 })

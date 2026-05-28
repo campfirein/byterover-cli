@@ -9,9 +9,8 @@ const STATE_FILENAME = 'dream-state.json'
 
 // Module-level mutex registry keyed by absolute state file path.
 // The agent process can hold up to AGENT_MAX_CONCURRENT_TASKS concurrent curate tasks
-// AND a dream task running concurrently, so read-modify-write on dream-state.json must
-// be serialized across all writers — incrementCurationCount, dream-executor's step 7
-// reset, and consolidate's pendingMerges clear all share this mutex via update().
+// and a dream-finalize task running concurrently, so read-modify-write on dream-state.json
+// must be serialized across all writers via update().
 // Independent DreamStateService instances pointing at the same file share a mutex.
 //
 // Note: this Map grows monotonically — one entry per unique absolute state-file
@@ -121,8 +120,7 @@ export class DreamStateService {
   /**
    * Generic read-modify-write under the same per-file mutex used by
    * incrementCurationCount. All writers that mutate dream-state.json based on
-   * its current contents (e.g. dream-executor step 7's reset, consolidate's
-   * pendingMerges clear) MUST go through this method, otherwise concurrent
+   * its current contents MUST go through this method, otherwise concurrent
    * increments can be silently overwritten.
    */
   async update(updater: (state: DreamState) => DreamState): Promise<DreamState> {

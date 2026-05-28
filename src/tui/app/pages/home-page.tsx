@@ -59,8 +59,8 @@ export function HomePage(): React.ReactNode {
     }))
 
     const sorted: ActivityFeedItem[] = [...logItems, ...commandItems].sort((a, b) => {
-      if (!('timestamp' in a) || !a.timestamp) return 1
-      if (!('timestamp' in b) || !b.timestamp) return -1
+      if (a.type === 'welcome' || !a.timestamp) return 1
+      if (b.type === 'welcome' || !b.timestamp) return -1
       return a.timestamp.getTime() - b.timestamp.getTime()
     })
 

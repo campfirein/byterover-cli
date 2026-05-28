@@ -74,15 +74,14 @@ export default class SettingsGet extends Command {
   }
 
   private printTextBlock(item: SettingsItemDTO): void {
-    const current = renderValue(item, item.current)
-    const defaultStr = renderValue(item, item.default)
-    const min = renderValue(item, item.min)
-    const max = renderValue(item, item.max)
-
     this.log(item.key)
-    this.log(`  current: ${current}`)
-    this.log(`  default: ${defaultStr}`)
-    this.log(`  range:   ${min}-${max}`)
+    this.log(`  current: ${renderValue(item, item.current)}`)
+    this.log(`  default: ${renderValue(item, item.default)}`)
+    if (item.type === 'integer' && item.min !== undefined && item.max !== undefined) {
+      const range = `${renderInteger(item, item.min)}-${renderInteger(item, item.max)}`
+      this.log(`  range:   ${range}`)
+    }
+
     this.log(`  scope:   ${item.scope ?? 'global'}`)
   }
 
@@ -104,7 +103,12 @@ export default class SettingsGet extends Command {
   }
 }
 
-function renderValue(item: SettingsItemDTO, value: number): string {
+function renderValue(item: SettingsItemDTO, value: boolean | number): string {
+  if (typeof value === 'boolean') return value ? 'true' : 'false'
+  return renderInteger(item, value)
+}
+
+function renderInteger(item: SettingsItemDTO, value: number): string {
   if (item.unit === 'ms') return formatDuration(value)
   return formatCount(value)
 }

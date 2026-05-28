@@ -2,8 +2,8 @@ import type {FlattenedTreeNode} from '@campfirein/byterover-packages/components/
 
 import type {ContextNode} from '../types'
 
-/** Returns `true` if the path points to a file (ends with `.md`). */
-export const isFilePath = (path: string): boolean => path.endsWith('.md')
+/** Returns `true` if the path points to a context-tree file (`.md` or `.html`). */
+export const isFilePath = (path: string): boolean => path.endsWith('.md') || path.endsWith('.html')
 
 /**
  * Returns all parent folder paths that need to be expanded to reveal a given path.

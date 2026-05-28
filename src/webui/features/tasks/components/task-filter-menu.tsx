@@ -10,10 +10,6 @@ import {
   DropdownMenuTrigger,
 } from '@campfirein/byterover-packages/components/dropdown-menu'
 import {SlidersHorizontal} from 'lucide-react'
-import {useMemo} from 'react'
-
-import type {TaskListAvailableModel} from '../../../../shared/transport/events/task-events'
-import type {ProviderDTO} from '../../../../shared/transport/types/dto'
 
 import {DURATION_PRESETS, type DurationPreset, isDurationPreset} from '../utils/duration-presets'
 import {TaskDateFilterPanel} from './task-date-filter-panel'
@@ -24,50 +20,26 @@ const TYPE_OPTIONS = [
 ] as const
 
 export interface TaskFilterMenuProps {
-  availableModels: TaskListAvailableModel[]
-  availableProviders: string[]
   createdAfter?: number
   createdBefore?: number
   durationPreset: DurationPreset
-  modelFilter: string[]
   onDurationChange: (preset: DurationPreset) => void
-  onModelChange: (next: string[]) => void
-  onProviderChange: (next: string[]) => void
   onTimeRangeChange: (range: {createdAfter?: number; createdBefore?: number}) => void
   onTypeChange: (next: string[]) => void
-  providerFilter: string[]
-  providers: ProviderDTO[]
   typeFilter: string[]
 }
 
 export function TaskFilterMenu({
-  availableModels,
-  availableProviders,
   createdAfter,
   createdBefore,
   durationPreset,
-  modelFilter,
   onDurationChange,
-  onModelChange,
-  onProviderChange,
   onTimeRangeChange,
   onTypeChange,
-  providerFilter,
-  providers,
   typeFilter,
 }: TaskFilterMenuProps) {
-  const providerNames = useMemo(() => new Map(providers.map((p) => [p.id, p.name])), [providers])
-  const modelOptions = useMemo(
-    () => filterModelOptions(availableModels, providerFilter),
-    [availableModels, providerFilter],
-  )
   const timeActive = createdAfter !== undefined || createdBefore !== undefined
-  const hasActive =
-    typeFilter.length > 0 ||
-    providerFilter.length > 0 ||
-    modelFilter.length > 0 ||
-    timeActive ||
-    durationPreset !== 'all'
+  const hasActive = typeFilter.length > 0 || timeActive || durationPreset !== 'all'
 
   return (
     <DropdownMenu>
@@ -98,56 +70,6 @@ export function TaskFilterMenu({
                 {option.label}
               </DropdownMenuCheckboxItem>
             ))}
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger className="cursor-pointer">
-            <span>
-              Provider
-              {providerFilter.length > 0 && <span className="ml-1">({providerFilter.length})</span>}
-            </span>
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="w-56" sideOffset={8}>
-            {availableProviders.length === 0 ? (
-              <div className="text-muted-foreground px-2 py-1.5 text-xs">No providers yet</div>
-            ) : (
-              availableProviders.map((provider) => (
-                <DropdownMenuCheckboxItem
-                  checked={providerFilter.includes(provider)}
-                  className="cursor-pointer"
-                  key={provider}
-                  onCheckedChange={() => toggleIn(providerFilter, provider, onProviderChange)}
-                >
-                  {providerNames.get(provider) ?? provider}
-                </DropdownMenuCheckboxItem>
-              ))
-            )}
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger className="cursor-pointer">
-            <span>
-              Model
-              {modelFilter.length > 0 && <span className="ml-1">({modelFilter.length})</span>}
-            </span>
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="w-56" sideOffset={8}>
-            {modelOptions.length === 0 ? (
-              <div className="text-muted-foreground px-2 py-1.5 text-xs">No models yet</div>
-            ) : (
-              modelOptions.map((modelId) => (
-                <DropdownMenuCheckboxItem
-                  checked={modelFilter.includes(modelId)}
-                  className="cursor-pointer"
-                  key={modelId}
-                  onCheckedChange={() => toggleIn(modelFilter, modelId, onModelChange)}
-                >
-                  {modelId}
-                </DropdownMenuCheckboxItem>
-              ))
-            )}
           </DropdownMenuSubContent>
         </DropdownMenuSub>
 
@@ -194,18 +116,4 @@ export function TaskFilterMenu({
 
 function toggleIn(current: string[], value: string, onChange: (next: string[]) => void) {
   onChange(current.includes(value) ? current.filter((v) => v !== value) : [...current, value])
-}
-
-function filterModelOptions(available: TaskListAvailableModel[], selectedProviders: string[]): string[] {
-  const filtered =
-    selectedProviders.length === 0 ? available : available.filter((entry) => selectedProviders.includes(entry.providerId))
-  const seen = new Set<string>()
-  const options: string[] = []
-  for (const entry of filtered) {
-    if (seen.has(entry.modelId)) continue
-    seen.add(entry.modelId)
-    options.push(entry.modelId)
-  }
-
-  return options
 }

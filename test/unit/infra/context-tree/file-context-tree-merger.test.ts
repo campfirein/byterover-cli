@@ -1026,4 +1026,52 @@ describe('FileContextTreeMerger', () => {
       expect(await readFile(join(contextTreeDir, 'arch/new.md'), 'utf8')).to.equal('arch-new')
     })
   })
+
+  describe('merge — index.html (derived navigation artifact)', () => {
+    // index.html is sync-tracked so peers receive the latest navigation without
+    // running rebuild, but the merger must never surface it as a conflict: the
+    // file is derived from the topic set, so any divergence is spurious and the
+    // caller regenerates it post-merge.
+    it('does not flag index.html as a conflict when local and remote diverge', async () => {
+      // Snapshot has the file at content X
+      await writeFile(join(contextTreeDir, 'index.html'), '<bv-index project="x">snapshot</bv-index>')
+      await snapshotService.saveSnapshot(testDir)
+
+      // Local modified it to Y
+      await writeFile(join(contextTreeDir, 'index.html'), '<bv-index project="x">local</bv-index>')
+
+      // Remote arrives with Z
+      const result = await merger.merge({
+        directory: testDir,
+        files: [makeFile('index.html', '<bv-index project="x">remote</bv-index>')],
+        localChanges: {added: [], deleted: [], modified: ['index.html']},
+      })
+
+      expect(result.conflicted).to.be.empty
+      expect(result.edited).to.not.include('index.html')
+      expect(result.added).to.not.include('index.html')
+
+      // Local content untouched — caller will regenerate from merged topics.
+      const onDisk = await readFile(join(contextTreeDir, 'index.html'), 'utf8')
+      expect(onDisk).to.equal('<bv-index project="x">local</bv-index>')
+    })
+
+    it('does not write a conflict-dir copy for index.html', async () => {
+      await writeFile(join(contextTreeDir, 'index.html'), '<bv-index project="x">snapshot</bv-index>')
+      await snapshotService.saveSnapshot(testDir)
+      await writeFile(join(contextTreeDir, 'index.html'), '<bv-index project="x">local</bv-index>')
+
+      await merger.merge({
+        directory: testDir,
+        files: [makeFile('index.html', '<bv-index project="x">remote</bv-index>')],
+        localChanges: {added: [], deleted: [], modified: ['index.html']},
+      })
+
+      const conflictDir = join(testDir, BRV_DIR, CONTEXT_TREE_CONFLICT_DIR)
+      const exists = await access(join(conflictDir, 'index.html'))
+        .then(() => true)
+        .catch(() => false)
+      expect(exists).to.equal(false)
+    })
+  })
 })

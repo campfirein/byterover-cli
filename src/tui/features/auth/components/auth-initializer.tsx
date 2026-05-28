@@ -10,8 +10,6 @@ import React, {useEffect} from 'react'
 
 import {AuthEvents, type AuthStateChangedEvent} from '../../../../shared/transport/events/index.js'
 import {useCommandsStore} from '../../../features/commands/stores/commands-store.js'
-import {useModelStore} from '../../../features/model/stores/model-store.js'
-import {useProviderStore} from '../../../features/provider/stores/provider-store.js'
 import {useTasksStore} from '../../../features/tasks/stores/tasks-store.js'
 import {useTransportStore} from '../../../stores/transport-store.js'
 import {getAuthStateQueryOptions, useGetAuthState} from '../api/get-auth-state.js'
@@ -67,8 +65,6 @@ export function AuthInitializer({children}: {children: React.ReactNode}): React.
       if (!data.isAuthorized) {
         useCommandsStore.getState().clearMessages()
         useTasksStore.getState().clearTasks()
-        useProviderStore.getState().reset()
-        useModelStore.getState().reset()
       }
 
       // Re-fetch complete auth state (including brvConfig) when auth is restored.

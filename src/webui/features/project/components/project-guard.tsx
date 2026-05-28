@@ -3,7 +3,6 @@ import {Navigate, Outlet, useLocation, useSearchParams} from 'react-router-dom'
 
 import {useTransportStore} from '../../../stores/transport-store'
 import {AuthInitializer} from '../../auth/components/auth-initializer'
-import {ProviderSubscriptionInitializer} from '../../provider/components/provider-subscription-initializer'
 import {TaskSubscriptionInitializer} from '../../tasks/components/task-subscription-initializer'
 import {useGetProjectList} from '../api/get-project-list'
 import {resolveAutoSelectProject} from '../utils/resolve-auto-select-project'
@@ -54,7 +53,6 @@ export function ProjectGuard() {
     return (
       <AuthInitializer>
         <ProjectAssociationInitializer />
-        <ProviderSubscriptionInitializer />
         <TaskSubscriptionInitializer />
         <Outlet />
       </AuthInitializer>

@@ -1,39 +1,22 @@
-import type {ConnectionResult, ITransportClient} from '@campfirein/brv-transport-client'
 import type {Config} from '@oclif/core'
 
 import {Config as OclifConfig} from '@oclif/core'
 import {expect} from 'chai'
-import sinon, {restore, stub} from 'sinon'
+import {restore, stub} from 'sinon'
 
 import Dream from '../../src/oclif/commands/dream.js'
+import DreamCancel from '../../src/oclif/commands/dream/cancel.js'
+import DreamSessions from '../../src/oclif/commands/dream/sessions.js'
 
-// ==================== TestableDreamCommand ====================
+// `brv dream` (no subcommand) is now a topic root — see ENG-2884.
+// The LLM-driven consolidate/synthesize/prune dispatch was removed;
+// users run `brv dream {scan,finalize,undo,sessions,cancel}` instead.
+// This file keeps a minimal smoke around the topic root so the command
+// continues to load and prints the migration hint.
 
-class TestableDreamCommand extends Dream {
-  private readonly mockConnector: () => Promise<ConnectionResult>
-
-  constructor(argv: string[], mockConnector: () => Promise<ConnectionResult>, config: Config) {
-    super(argv, config)
-    this.mockConnector = mockConnector
-  }
-
-  protected override getDaemonClientOptions() {
-    return {
-      maxRetries: 1,
-      retryDelayMs: 0,
-      transportConnector: this.mockConnector,
-    }
-  }
-}
-
-// ==================== Tests ====================
-
-describe('Dream Command', () => {
+describe('Dream Command (topic root)', () => {
   let config: Config
   let loggedMessages: string[]
-  let stdoutOutput: string[]
-  let mockClient: sinon.SinonStubbedInstance<ITransportClient>
-  let mockConnector: sinon.SinonStub<[], Promise<ConnectionResult>>
 
   before(async () => {
     config = await OclifConfig.load(import.meta.url)
@@ -41,121 +24,123 @@ describe('Dream Command', () => {
 
   beforeEach(() => {
     loggedMessages = []
-    stdoutOutput = []
-
-    mockClient = {
-      connect: stub().resolves(),
-      disconnect: stub().resolves(),
-      getClientId: stub().returns('test-client-id'),
-      getDaemonVersion: stub(),
-      getState: stub().returns('connected'),
-      isConnected: stub().resolves(true),
-      joinRoom: stub().resolves(),
-      leaveRoom: stub().resolves(),
-      on: stub().returns(() => {}),
-      once: stub(),
-      onStateChange: stub().returns(() => {}),
-      request: stub() as unknown as ITransportClient['request'],
-      requestWithAck: stub().resolves({activeProvider: 'anthropic'}),
-    } as unknown as sinon.SinonStubbedInstance<ITransportClient>
-
-    mockConnector = stub<[], Promise<ConnectionResult>>().resolves({
-      client: mockClient as unknown as ITransportClient,
-      projectRoot: '/test/project',
-    })
   })
 
   afterEach(() => {
     restore()
   })
 
-  function createCommand(...argv: string[]): TestableDreamCommand {
-    const command = new TestableDreamCommand(argv, mockConnector, config)
+  it('prints the subcommand migration hint and exits 0', async () => {
+    const command = new Dream([], config)
     stub(command, 'log').callsFake((msg?: string) => {
       if (msg) loggedMessages.push(msg)
     })
-    return command
-  }
 
-  function createJsonCommand(...argv: string[]): TestableDreamCommand {
-    const command = new TestableDreamCommand([...argv, '--format', 'json'], mockConnector, config)
+    await command.run()
+
+    expect(loggedMessages).to.have.lengthOf.at.least(1)
+    expect(loggedMessages.join('\n')).to.include('brv dream')
+    expect(loggedMessages.join('\n')).to.include('scan')
+    expect(loggedMessages.join('\n')).to.include('finalize')
+    expect(loggedMessages.join('\n')).to.include('undo')
+  })
+
+  it('rejects --timeout with a migration message before printing the hint', async () => {
+    // Pins the findRemovedFlagMessage(this.argv, DREAM_REMOVED_FLAGS)
+    // wire-up in dream.ts's run() body. The argv-scanner check fires
+    // BEFORE the topic-root listing line, so a future refactor that
+    // accidentally drops the call would silently regress to the
+    // pre-removal state — no test would catch it without this.
+    //
+    // text mode: this.error(..., {exit: 1}) throws synchronously; the
+    // log stub must never run.
+    const command = new Dream(['--timeout', '30'], config)
     stub(command, 'log').callsFake((msg?: string) => {
       if (msg) loggedMessages.push(msg)
     })
-    stub(process.stdout, 'write').callsFake((chunk: string | Uint8Array) => {
-      stdoutOutput.push(String(chunk))
+
+    let caught: unknown
+    try {
+      await command.run()
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught, 'this.error must throw on a removed-flag match').to.be.instanceOf(Error)
+    expect((caught as Error).message).to.include('--timeout')
+    expect(
+      loggedMessages,
+      'log must not run after this.error throws (early-exit ordering)',
+    ).to.have.lengthOf(0)
+  })
+
+  it('emits a JSON envelope migration error for --timeout when --format json is set', async () => {
+    // JSON-format path takes the writeJsonResponse branch (does NOT throw),
+    // so the run() body returns and the topic-root listing is suppressed.
+    // We assert the envelope hits stdout AND the log stub stays empty.
+    const command = new Dream(['--timeout', '30', '--format', 'json'], config)
+    stub(command, 'log').callsFake((msg?: string) => {
+      if (msg) loggedMessages.push(msg)
+    })
+    let writtenJson = ''
+    stub(process.stdout, 'write').callsFake((chunk: string | Uint8Array): boolean => {
+      writtenJson += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')
       return true
     })
-    return command
-  }
 
-  function parseJsonOutput(): {command: string; data: Record<string, unknown>; success: boolean} {
-    const output = stdoutOutput.join('')
-    return JSON.parse(output.trim())
-  }
+    await command.run()
 
-  // ==================== Detach Mode ====================
+    const parsed = JSON.parse(writtenJson.trim())
+    expect(parsed.success).to.equal(false)
+    expect(parsed.data.status).to.equal('error')
+    expect(parsed.data.error).to.include('--timeout')
+    expect(
+      loggedMessages,
+      'log must not run after writeJsonResponse on removed-flag match',
+    ).to.have.lengthOf(0)
+  })
 
-  describe('detach mode', () => {
-    it('should submit task and exit immediately with confirmation', async () => {
-      await createCommand('--detach').run()
-
-      const requestStub = mockClient.requestWithAck as sinon.SinonStub
-      expect(requestStub.callCount).to.equal(2)
-      expect(requestStub.firstCall.args[0]).to.equal('state:getProviderConfig')
-      const [event, payload] = requestStub.secondCall.args
-      expect(event).to.equal('task:create')
-      expect(payload).to.have.property('type', 'dream')
-      expect(payload).to.have.property('taskId').that.is.a('string')
-      expect(loggedMessages.some((m) => m.includes('Dream queued for processing'))).to.be.true
+  // Sessions and cancel are v1 stubs — the daemon has no session
+  // state to list or clean up. Their surface MUST disclose that
+  // honestly so machine-readable consumers don't act on success-looking
+  // JSON envelopes thinking real state was queried/mutated.
+  describe('v1-stub disclosure', () => {
+    it('exposes [v1 stub] in the static description of dream sessions', () => {
+      expect(DreamSessions.description.toLowerCase()).to.include('v1 stub')
     })
 
-    it('should include force in task payload when combined with --force', async () => {
-      await createCommand('--detach', '--force').run()
-
-      const requestStub = mockClient.requestWithAck as sinon.SinonStub
-      const [, payload] = requestStub.secondCall.args
-      expect(payload).to.have.property('force', true)
+    it('exposes [v1 stub] in the static description of dream cancel', () => {
+      expect(DreamCancel.description.toLowerCase()).to.include('v1 stub')
     })
 
-    it('warns once that --timeout is deprecated when the user passes a non-default value', async () => {
-      await createCommand('--detach', '--timeout', '600').run()
+    it('emits a `note` field disclosing stub status on dream sessions --format json', async () => {
+      const command = new DreamSessions(['--format', 'json'], config)
+      let writtenJson = ''
+      stub(process.stdout, 'write').callsFake((chunk: string | Uint8Array): boolean => {
+        writtenJson += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')
+        return true
+      })
 
-      const deprecationWarnings = loggedMessages.filter((m) => m.includes('--timeout is deprecated'))
-      expect(deprecationWarnings).to.have.lengthOf(1)
-      expect(deprecationWarnings[0]).to.include('has no effect')
-      expect(deprecationWarnings[0]).to.not.include('llm.iterationBudgetMs')
+      await command.run()
+
+      const parsed = JSON.parse(writtenJson.trim())
+      expect(parsed.data).to.have.property('note')
+      expect(parsed.data.note.toLowerCase()).to.match(/v1|stateless|no-op/)
     })
 
-    it('does not warn about deprecation when --timeout is omitted', async () => {
-      await createCommand('--detach').run()
+    it('emits a `note` field disclosing no-op status on dream cancel --format json', async () => {
+      const command = new DreamCancel(['--session', 'drm-test', '--format', 'json'], config)
+      let writtenJson = ''
+      stub(process.stdout, 'write').callsFake((chunk: string | Uint8Array): boolean => {
+        writtenJson += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')
+        return true
+      })
 
-      expect(loggedMessages.some((m) => m.includes('--timeout is deprecated'))).to.be.false
-    })
+      await command.run()
 
-    it('should output JSON on detach', async () => {
-      await createJsonCommand('--detach').run()
-
-      const json = parseJsonOutput()
-      expect(json.command).to.equal('dream')
-      expect(json.success).to.be.true
-      expect(json.data).to.have.property('status', 'queued')
-      expect(json.data).to.have.property('taskId').that.is.a('string')
-      expect(json.data).to.have.property('message', 'Dream queued for processing')
-    })
-
-    it('should output JSON on detach with --force', async () => {
-      await createJsonCommand('--detach', '--force').run()
-
-      const json = parseJsonOutput()
-      expect(json.success).to.be.true
-      expect(json.data).to.have.property('status', 'queued')
-    })
-
-    it('should disconnect client after detach', async () => {
-      await createCommand('--detach').run()
-
-      expect(mockClient.disconnect.calledOnce).to.be.true
+      const parsed = JSON.parse(writtenJson.trim())
+      expect(parsed.data).to.have.property('note')
+      expect(parsed.data.note.toLowerCase()).to.match(/v1|stateless|no-op/)
     })
   })
 })

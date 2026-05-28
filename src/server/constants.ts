@@ -127,7 +127,14 @@ export const REVIEW_BACKUPS_DIR = 'review-backups'
 
 // User-configurable operational settings (global, restart-required)
 export const SETTINGS_FILE = 'settings.json'
-export const SETTINGS_SCHEMA_VERSION = '1'
+// Bumped from '1' to '2' alongside the boolean-descriptor work: v2 files
+// persist `{[key]: number | boolean}`. v1 files are migrated forward on
+// first read by `FileSettingsStore`; the migration is idempotent.
+export const SETTINGS_SCHEMA_VERSION = '2'
+
+// Default for the boolean `update.checkForUpdates` setting. ON by default; users
+// flip to false to disable the startup update-notifier hook entirely.
+export const UPDATE_CHECK_FOR_UPDATES_DEFAULT = true
 
 // Default wall-clock budget for the agentic loop (`llm.iterationBudgetMs`).
 // Slow local-LLM users override via `brv settings set llm.iterationBudgetMs <ms>`.
@@ -151,6 +158,13 @@ export const FULL_ARCHIVE_EXTENSION = '.full.md'
 export const ABSTRACT_EXTENSION = '.abstract.md'
 export const OVERVIEW_EXTENSION = '.overview.md'
 export const MANIFEST_FILE = '_manifest.json'
+/**
+ * Tool-mode context-tree index. A single auto-generated HTML file at the
+ * context-tree root carrying the `<bv-index>` navigation document. Excluded
+ * from BM25/query results via `isDerivedArtifact`, but tracked by CoGit so
+ * peers consume the latest index without having to run `brv index rebuild`.
+ */
+export const INDEX_HTML_FILE = 'index.html'
 export const ARCHIVE_IMPORTANCE_THRESHOLD = 35
 export const DEFAULT_GHOST_CUE_MAX_TOKENS = 220
 

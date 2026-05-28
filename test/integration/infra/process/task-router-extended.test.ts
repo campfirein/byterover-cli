@@ -67,6 +67,7 @@ function makeStubTransportServer(sandbox: SinonSandbox) {
 
 function makeStubAgentPool(sandbox: SinonSandbox): IAgentPool {
   return {
+    cancelQueuedTask: sandbox.stub().returns(false),
     getEntries: sandbox.stub().returns([]),
     getSize: sandbox.stub().returns(0),
     handleAgentDisconnected: sandbox.stub(),

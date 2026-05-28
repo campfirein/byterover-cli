@@ -52,10 +52,10 @@ describe('FileSettingsStore', () => {
         'llm.iterationBudgetMs',
         'llm.requestTimeoutMs',
         'taskHistory.maxEntries',
+        'update.checkForUpdates',
       ])
       for (const item of items) {
         expect(item.current).to.equal(item.default)
-        expect(item.restartRequired).to.equal(true)
       }
     })
 
@@ -402,6 +402,87 @@ describe('FileSettingsStore', () => {
 
       const files = await readdir(tempDir)
       expect(files.filter((f) => f.endsWith('.tmp'))).to.have.lengthOf(0)
+    })
+  })
+
+  describe('schema migration (T2: v1 -> v2)', () => {
+    const CURRENT_SCHEMA_VERSION = '2'
+
+    it('writes the current schema version on a fresh set', async () => {
+      await store.set('agentPool.maxSize', 25)
+      const file = asSettingsFile(JSON.parse(await readFile(join(tempDir, SETTINGS_FILENAME), 'utf8')))
+      expect(file.version).to.equal(CURRENT_SCHEMA_VERSION)
+    })
+
+    it('round-trips a boolean value (true, not 1) for update.checkForUpdates', async () => {
+      await store.set('update.checkForUpdates', true)
+      const item = await store.get('update.checkForUpdates')
+      expect(item.current).to.equal(true)
+      const file = asSettingsFile(JSON.parse(await readFile(join(tempDir, SETTINGS_FILENAME), 'utf8')))
+      expect(file.values['update.checkForUpdates']).to.equal(true)
+    })
+
+    it('round-trips a boolean false value', async () => {
+      await store.set('update.checkForUpdates', false)
+      const item = await store.get('update.checkForUpdates')
+      expect(item.current).to.equal(false)
+    })
+
+    it('migrates a pre-existing v1 file to v2 on first read, preserving every value', async () => {
+      const v1Payload = {
+        values: {
+          'agentPool.maxConcurrentTasksPerProject': 4,
+          'agentPool.maxSize': 25,
+          'llm.iterationBudgetMs': 600_000,
+        },
+        version: '1',
+      }
+      await writeFile(join(tempDir, SETTINGS_FILENAME), JSON.stringify(v1Payload, null, 2), 'utf8')
+
+      await store.list()
+
+      const file = asSettingsFile(JSON.parse(await readFile(join(tempDir, SETTINGS_FILENAME), 'utf8')))
+      expect(file.version).to.equal(CURRENT_SCHEMA_VERSION)
+      expect(file.values).to.deep.equal(v1Payload.values)
+    })
+
+    it('does not rewrite the file on a second read once it is already v2 (idempotent)', async () => {
+      // Trigger an initial migration so the file is v2 on disk.
+      const v1Payload = {values: {'agentPool.maxSize': 25}, version: '1'}
+      const path = join(tempDir, SETTINGS_FILENAME)
+      await writeFile(path, JSON.stringify(v1Payload, null, 2), 'utf8')
+      await store.list()
+
+      // Snapshot mtime after migration, then read again and compare.
+      const {readFile: readFileFs, stat} = await import('node:fs/promises')
+      const afterMigration = await stat(path)
+      const contentBeforeRead = await readFileFs(path, 'utf8')
+
+      await store.list()
+
+      const afterSecondRead = await stat(path)
+      const contentAfterRead = await readFileFs(path, 'utf8')
+
+      expect(afterSecondRead.mtimeMs, 'mtime must not change on a re-read of a v2 file').to.equal(afterMigration.mtimeMs)
+      expect(contentAfterRead).to.equal(contentBeforeRead)
+    })
+
+    it('preserves pre-existing invalid entries through migration (does not collateral-damage)', async () => {
+      // v1 file with a mix of valid and invalid entries. Migration must not
+      // drop the invalid ones (per the existing reset() preservation rule).
+      const v1Payload = {
+        values: {
+          'agentPool.maxSize': 25,
+          'unknown.key': 'something',
+        },
+        version: '1',
+      }
+      await writeFile(join(tempDir, SETTINGS_FILENAME), JSON.stringify(v1Payload, null, 2), 'utf8')
+      await store.list()
+
+      const file = asSettingsFile(JSON.parse(await readFile(join(tempDir, SETTINGS_FILENAME), 'utf8')))
+      expect(file.version).to.equal(CURRENT_SCHEMA_VERSION)
+      expect(file.values).to.deep.equal(v1Payload.values)
     })
   })
 })

@@ -1,4 +1,3 @@
-import os from 'node:os'
 import path from 'node:path'
 
 import type {Agent} from '../../../core/domain/entities/agent.js'
@@ -14,26 +13,41 @@ import type {SkillConnectorConfig, SkillSupportedAgent} from './skill-connector-
 
 import {AGENT_CONNECTOR_CONFIG} from '../../../core/domain/entities/agent.js'
 import {
+  hasAutonomousAgentBlocks,
+  removeAutonomousAgentBlocks,
+  upsertAutonomousAgentBlocks,
+} from './autonomous-agent-attachments.js'
+import {
   BRV_SKILL_NAME,
   MAIN_SKILL_FILE_NAME,
   SKILL_CONNECTOR_CONFIGS,
   SKILL_FILE_NAMES,
 } from './skill-connector-config.js'
 import {SkillContentLoader} from './skill-content-loader.js'
+import {resolveSkillDisplayPath, resolveSkillGlobalBasePath} from './skill-path-resolver.js'
+
+const BYTEROVER_BLOCK_SECTION_NAME = 'byterover-rules-block'
 
 /**
  * Options for constructing SkillConnector.
  */
 type SkillConnectorOptions = {
+  env?: NodeJS.ProcessEnv
   fileService: IFileService
+  homeDir?: string
   projectRoot: string
 }
 
 /**
- * Options for writeSkillFiles, allowing scope override.
+ * Parameters for {@link SkillConnector.writeSkillFiles}.
  */
-export type WriteSkillFilesOptions = {
+export type WriteSkillFilesParams = {
+  agent: Agent
+  files: Array<{content: string; name: string}>
+  /** 'global' writes to home dir, 'project' (default) writes to project root. */
   scope?: 'global' | 'project'
+  /** Skill folder name to create under the connector path. */
+  skillName: string
 }
 
 /**
@@ -44,12 +58,16 @@ export type WriteSkillFilesOptions = {
 export class SkillConnector implements IConnector {
   readonly connectorType: ConnectorType = 'skill'
   private readonly contentLoader: SkillContentLoader
+  private readonly env: NodeJS.ProcessEnv
   private readonly fileService: IFileService
+  private readonly homeDir?: string
   private readonly projectRoot: string
   private readonly supportedAgents: Agent[]
 
   constructor(options: SkillConnectorOptions) {
+    this.env = options.env ?? process.env
     this.fileService = options.fileService
+    this.homeDir = options.homeDir
     this.projectRoot = options.projectRoot
     this.contentLoader = new SkillContentLoader(options.fileService)
     this.supportedAgents = Object.entries(AGENT_CONNECTOR_CONFIG)
@@ -68,7 +86,7 @@ export class SkillConnector implements IConnector {
       throw new Error(`Skill connector has no configured path for agent: ${agent}`)
     }
 
-    return path.join(basePath, BRV_SKILL_NAME)
+    return path.join(resolveSkillDisplayPath(config, basePath, this.pathResolverOptions()), BRV_SKILL_NAME)
   }
 
   getSupportedAgents(): Agent[] {
@@ -103,14 +121,7 @@ export class SkillConnector implements IConnector {
 
     try {
       const skillFilePath = path.join(fullDir, MAIN_SKILL_FILE_NAME)
-      if (await this.fileService.exists(skillFilePath)) {
-        return {
-          alreadyInstalled: true,
-          configPath: fullDir,
-          message: `Skill connector is already installed for ${agent}`,
-          success: true,
-        }
-      }
+      const alreadyInstalled = await this.fileService.exists(skillFilePath)
 
       await Promise.all(
         SKILL_FILE_NAMES.map(async (fileName) => {
@@ -120,10 +131,14 @@ export class SkillConnector implements IConnector {
         }),
       )
 
+      await this.upsertAutonomousAttachment(config)
+
       return {
-        alreadyInstalled: false,
+        alreadyInstalled,
         configPath: fullDir,
-        message: `Skill connector installed for ${agent} (created ${fullDir}/)`,
+        message: alreadyInstalled
+          ? `Skill connector refreshed for ${agent}`
+          : `Skill connector installed for ${agent} (created ${fullDir}/)`,
         success: true,
       }
     } catch (error) {
@@ -161,14 +176,21 @@ export class SkillConnector implements IConnector {
     const config = this.getConfig(agent)
 
     try {
+      // For attachment agents the always-loaded block is part of the install;
+      // a present SKILL.md without it is an incomplete install that re-install
+      // must be allowed to repair (it is otherwise short-circuited as "same type").
+      const attachmentOk = await this.hasAutonomousAttachment(config)
+
       // Check project scope first
       if (config.projectPath) {
         const projectDir = this.resolveFullPath(config, 'project', BRV_SKILL_NAME)
-        const projectSkillFile = path.join(projectDir, SKILL_FILE_NAMES[0])
-        if (await this.fileService.exists(projectSkillFile)) {
+        if (attachmentOk && (await this.hasAllManagedSkillFiles(projectDir))) {
           return {
             configExists: true,
-            configPath: path.join(config.projectPath, BRV_SKILL_NAME),
+            configPath: path.join(
+              resolveSkillDisplayPath(config, config.projectPath, this.pathResolverOptions()),
+              BRV_SKILL_NAME,
+            ),
             installed: true,
           }
         }
@@ -177,11 +199,13 @@ export class SkillConnector implements IConnector {
       // Check global scope
       if (config.globalPath) {
         const globalDir = this.resolveFullPath(config, 'global', BRV_SKILL_NAME)
-        const globalSkillFile = path.join(globalDir, SKILL_FILE_NAMES[0])
-        if (await this.fileService.exists(globalSkillFile)) {
+        if (attachmentOk && (await this.hasAllManagedSkillFiles(globalDir))) {
           return {
             configExists: true,
-            configPath: path.join(config.globalPath, BRV_SKILL_NAME),
+            configPath: path.join(
+              resolveSkillDisplayPath(config, config.globalPath, this.pathResolverOptions()),
+              BRV_SKILL_NAME,
+            ),
             installed: true,
           }
         }
@@ -222,6 +246,7 @@ export class SkillConnector implements IConnector {
     }
 
     const config = this.getConfig(agent)
+    let removedAttachment = false
 
     try {
       // Try to uninstall from project scope
@@ -230,8 +255,12 @@ export class SkillConnector implements IConnector {
         const projectSkillFile = path.join(projectDir, SKILL_FILE_NAMES[0])
         if (await this.fileService.exists(projectSkillFile)) {
           await this.fileService.deleteDirectory(projectDir)
+          await this.removeAutonomousAttachment(config)
           return {
-            configPath: path.join(config.projectPath, BRV_SKILL_NAME),
+            configPath: path.join(
+              resolveSkillDisplayPath(config, config.projectPath, this.pathResolverOptions()),
+              BRV_SKILL_NAME,
+            ),
             message: `Skill connector uninstalled for ${agent}`,
             success: true,
             wasInstalled: true,
@@ -245,8 +274,12 @@ export class SkillConnector implements IConnector {
         const globalSkillFile = path.join(globalDir, SKILL_FILE_NAMES[0])
         if (await this.fileService.exists(globalSkillFile)) {
           await this.fileService.deleteDirectory(globalDir)
+          await this.removeAutonomousAttachment(config)
           return {
-            configPath: path.join(config.globalPath, BRV_SKILL_NAME),
+            configPath: path.join(
+              resolveSkillDisplayPath(config, config.globalPath, this.pathResolverOptions()),
+              BRV_SKILL_NAME,
+            ),
             message: `Skill connector uninstalled for ${agent}`,
             success: true,
             wasInstalled: true,
@@ -254,11 +287,14 @@ export class SkillConnector implements IConnector {
         }
       }
 
+      removedAttachment = await this.removeAutonomousAttachment(config)
       return {
         configPath: '',
-        message: `Skill connector is not installed for ${agent}`,
+        message: removedAttachment
+          ? `Skill connector block removed for ${agent}`
+          : `Skill connector is not installed for ${agent}`,
         success: true,
-        wasInstalled: false,
+        wasInstalled: removedAttachment,
       }
     } catch (error) {
       return {
@@ -273,24 +309,15 @@ export class SkillConnector implements IConnector {
   /**
    * Write files to a named skill subdirectory for the given agent.
    * Used by hub install to write downloaded skill files to e.g. `.claude/skills/{skillName}/`.
-   *
-   * @param agent - Agent connector target
-   * @param skillName - Skill folder name to create under the connector path
-   * @param files - Skill files to write
-   * @param options - Optional install scope
-   * @param options.scope - 'global' writes to home dir, 'project' (default) writes to project root
    */
   async writeSkillFiles(
-    agent: Agent,
-    skillName: string,
-    files: Array<{content: string; name: string}>,
-    options?: WriteSkillFilesOptions,
+    params: WriteSkillFilesParams,
   ): Promise<{alreadyInstalled: boolean; installedFiles: string[]; installedPath: string}> {
+    const {agent, files, scope = 'project', skillName} = params
     if (!this.isSupported(agent)) {
       throw new Error(`Skill connector does not support agent: ${agent}`)
     }
 
-    const scope = options?.scope ?? 'project'
     const config = this.getConfig(agent)
     const basePath = scope === 'global' ? config.globalPath : config.projectPath
     if (!basePath) {
@@ -298,20 +325,25 @@ export class SkillConnector implements IConnector {
     }
 
     const fullDir = this.resolveFullPath(config, scope, skillName)
+    const filesWithPaths = files.map((file) => ({
+      ...file,
+      filePath: path.join(fullDir, file.name),
+    }))
 
-    if (files.length > 0) {
-      const firstFilePath = path.join(fullDir, files[0].name)
-      if (await this.fileService.exists(firstFilePath)) {
+    if (filesWithPaths.length > 0) {
+      const existingFiles = await Promise.all(filesWithPaths.map((file) => this.fileService.exists(file.filePath)))
+      if (existingFiles.every(Boolean)) {
         return {alreadyInstalled: true, installedFiles: [], installedPath: fullDir}
       }
     }
 
     const installedFiles: string[] = []
     await Promise.all(
-      files.map(async (file) => {
-        const filePath = path.join(fullDir, file.name)
-        await this.fileService.write(file.content, filePath, 'overwrite')
-        installedFiles.push(filePath)
+      filesWithPaths.map(async (file) => {
+        if (await this.fileService.exists(file.filePath)) return
+
+        await this.fileService.write(file.content, file.filePath, 'overwrite')
+        installedFiles.push(file.filePath)
       }),
     )
 
@@ -324,6 +356,37 @@ export class SkillConnector implements IConnector {
    */
   private getConfig(agent: Agent): SkillConnectorConfig {
     return SKILL_CONNECTOR_CONFIGS[agent as SkillSupportedAgent]
+  }
+
+  private async hasAllManagedSkillFiles(skillDir: string): Promise<boolean> {
+    const exists = await Promise.all(
+      SKILL_FILE_NAMES.map((fileName) => this.fileService.exists(path.join(skillDir, fileName))),
+    )
+    return exists.every(Boolean)
+  }
+
+  private async hasAutonomousAttachment(config: SkillConnectorConfig): Promise<boolean> {
+    if (!config.attachment) return true
+
+    const blockContent = await this.loadByteroverBlockContent()
+    return hasAutonomousAgentBlocks(config.attachment, blockContent, this.pathResolverOptions())
+  }
+
+  private async loadByteroverBlockContent(): Promise<string> {
+    return this.contentLoader.loadSectionFile(BYTEROVER_BLOCK_SECTION_NAME)
+  }
+
+  private pathResolverOptions(): {env: NodeJS.ProcessEnv; homeDir?: string} {
+    return {
+      env: this.env,
+      homeDir: this.homeDir,
+    }
+  }
+
+  private async removeAutonomousAttachment(config: SkillConnectorConfig): Promise<boolean> {
+    if (!config.attachment) return false
+
+    return removeAutonomousAgentBlocks(config.attachment, this.pathResolverOptions())
   }
 
   /**
@@ -339,7 +402,7 @@ export class SkillConnector implements IConnector {
         throw new Error('Global path is not configured for this agent')
       }
 
-      return path.join(os.homedir(), config.globalPath, skillName)
+      return path.join(resolveSkillGlobalBasePath(config, this.pathResolverOptions()), skillName)
     }
 
     if (!config.projectPath) {
@@ -347,5 +410,12 @@ export class SkillConnector implements IConnector {
     }
 
     return path.join(this.projectRoot, config.projectPath, skillName)
+  }
+
+  private async upsertAutonomousAttachment(config: SkillConnectorConfig): Promise<void> {
+    if (!config.attachment) return
+
+    const blockContent = await this.loadByteroverBlockContent()
+    await upsertAutonomousAgentBlocks(config.attachment, blockContent, this.pathResolverOptions())
   }
 }

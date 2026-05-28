@@ -4,6 +4,7 @@ const LABELS: Record<string, string> = {
   'llm.iterationBudgetMs': 'Agentic loop budget',
   'llm.requestTimeoutMs': 'LLM request timeout',
   'taskHistory.maxEntries': 'Task history size',
+  'update.checkForUpdates': 'Check for updates at startup',
 }
 
 export function labelFor(key: string): string {

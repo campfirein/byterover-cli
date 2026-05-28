@@ -1,12 +1,9 @@
-import {Button} from '@campfirein/byterover-packages/components/button'
 import {Input} from '@campfirein/byterover-packages/components/input'
 import {cn} from '@campfirein/byterover-packages/lib/utils'
-import {Plus, Search} from 'lucide-react'
+import {Search} from 'lucide-react'
 
-import type {TaskListAvailableModel, TaskListCounts} from '../../../../shared/transport/events/task-events'
-import type {ProviderDTO} from '../../../../shared/transport/types/dto'
+import type {TaskListCounts} from '../../../../shared/transport/events/task-events'
 
-import {TourPointer} from '../../onboarding/components/tour-pointer'
 import {STATUS_FILTERS, type StatusFilter} from '../stores/task-store'
 import {type DurationPreset} from '../utils/duration-presets'
 import {TaskFilterMenu} from './task-filter-menu'
@@ -27,50 +24,32 @@ export const STATUS_DOT_COLOR: Record<Exclude<StatusFilter, 'all'>, string> = {
 }
 
 export interface FilterBarProps {
-  availableModels: TaskListAvailableModel[]
-  availableProviders: string[]
   breakdown: TaskListCounts
   createdAfter?: number
   createdBefore?: number
   durationPreset: DurationPreset
-  modelFilter: string[]
   onDurationChange: (preset: DurationPreset) => void
-  onModelChange: (next: string[]) => void
-  onNewTask: () => void
-  onProviderChange: (next: string[]) => void
   onSearchChange: (query: string) => void
   onStatusChange: (filter: StatusFilter) => void
   onTimeRangeChange: (range: {createdAfter?: number; createdBefore?: number}) => void
   onTypeChange: (next: string[]) => void
-  providerFilter: string[]
-  providers: ProviderDTO[]
   searchQuery: string
   statusFilter: StatusFilter
-  tourCue?: string
   typeFilter: string[]
 }
 
 export function FilterBar({
-  availableModels,
-  availableProviders,
   breakdown,
   createdAfter,
   createdBefore,
   durationPreset,
-  modelFilter,
   onDurationChange,
-  onModelChange,
-  onNewTask,
-  onProviderChange,
   onSearchChange,
   onStatusChange,
   onTimeRangeChange,
   onTypeChange,
-  providerFilter,
-  providers,
   searchQuery,
   statusFilter,
-  tourCue,
   typeFilter,
 }: FilterBarProps) {
   return (
@@ -101,19 +80,12 @@ export function FilterBar({
 
       <div className="ml-auto flex items-center gap-2">
         <TaskFilterMenu
-          availableModels={availableModels}
-          availableProviders={availableProviders}
           createdAfter={createdAfter}
           createdBefore={createdBefore}
           durationPreset={durationPreset}
-          modelFilter={modelFilter}
           onDurationChange={onDurationChange}
-          onModelChange={onModelChange}
-          onProviderChange={onProviderChange}
           onTimeRangeChange={onTimeRangeChange}
           onTypeChange={onTypeChange}
-          providerFilter={providerFilter}
-          providers={providers}
           typeFilter={typeFilter}
         />
 
@@ -127,13 +99,6 @@ export function FilterBar({
             value={searchQuery}
           />
         </div>
-
-        <TourPointer active={Boolean(tourCue)} align="end" label={tourCue ?? ''}>
-          <Button className="h-8" onClick={onNewTask} size="sm" variant="default">
-            <Plus className="size-4" />
-            New task
-          </Button>
-        </TourPointer>
       </div>
     </div>
   )

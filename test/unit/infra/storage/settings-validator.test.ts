@@ -13,10 +13,13 @@ describe('SettingsValidator', () => {
     it('returns the descriptor for a known key', () => {
       const descriptor = validator.validateKey('agentPool.maxSize')
       expect(descriptor.key).to.equal('agentPool.maxSize')
-      expect(descriptor.type).to.equal('integer')
-      expect(descriptor.default).to.be.a('number')
-      expect(descriptor.min).to.be.a('number')
-      expect(descriptor.max).to.be.a('number')
+      if (descriptor.type === 'integer') {
+        expect(descriptor.default).to.be.a('number')
+        expect(descriptor.min).to.be.a('number')
+        expect(descriptor.max).to.be.a('number')
+      } else {
+        expect.fail('expected integer descriptor for agentPool.maxSize')
+      }
     })
 
     it('throws UnknownSettingKeyError for an unknown key', () => {
@@ -73,19 +76,31 @@ describe('SettingsValidator', () => {
 
     it('throws InvalidSettingValueError when value is above max', () => {
       const descriptor = validator.validateKey('agentPool.maxSize')
-      expect(() => validator.validate('agentPool.maxSize', descriptor.max + 1)).to.throw(
-        InvalidSettingValueError,
-      )
+      if (descriptor.type === 'integer') {
+        expect(() => validator.validate('agentPool.maxSize', descriptor.max + 1)).to.throw(
+          InvalidSettingValueError,
+        )
+      } else {
+        expect.fail('expected integer descriptor')
+      }
     })
 
     it('accepts the minimum boundary value', () => {
       const descriptor = validator.validateKey('agentPool.maxSize')
-      expect(validator.validate('agentPool.maxSize', descriptor.min)).to.equal(descriptor.min)
+      if (descriptor.type === 'integer') {
+        expect(validator.validate('agentPool.maxSize', descriptor.min)).to.equal(descriptor.min)
+      } else {
+        expect.fail('expected integer descriptor')
+      }
     })
 
     it('accepts the maximum boundary value', () => {
       const descriptor = validator.validateKey('agentPool.maxSize')
-      expect(validator.validate('agentPool.maxSize', descriptor.max)).to.equal(descriptor.max)
+      if (descriptor.type === 'integer') {
+        expect(validator.validate('agentPool.maxSize', descriptor.max)).to.equal(descriptor.max)
+      } else {
+        expect.fail('expected integer descriptor')
+      }
     })
 
     it('validates each registered key independently', () => {
@@ -211,6 +226,73 @@ describe('SettingsValidator', () => {
       expect(result.invalid).to.have.lengthOf(1)
       expect(result.invalid[0].key).to.equal('agentPool.maxSize')
       expect(result.invalid[0].value).to.equal(0)
+    })
+  })
+
+  describe('validate (boolean descriptor — T1 update.checkForUpdates)', () => {
+    it('accepts true', () => {
+      expect(validator.validate('update.checkForUpdates', true)).to.equal(true)
+    })
+
+    it('accepts false', () => {
+      expect(validator.validate('update.checkForUpdates', false)).to.equal(false)
+    })
+
+    it('rejects a numeric value', () => {
+      try {
+        validator.validate('update.checkForUpdates', 1)
+        expect.fail('expected throw')
+      } catch (error) {
+        expect(error).to.be.instanceOf(InvalidSettingValueError)
+        if (error instanceof InvalidSettingValueError) {
+          expect(error.key).to.equal('update.checkForUpdates')
+          expect(error.message.toLowerCase()).to.include('boolean')
+        }
+      }
+    })
+
+    it('rejects a string value', () => {
+      expect(() => validator.validate('update.checkForUpdates', 'true')).to.throw(
+        InvalidSettingValueError,
+      )
+    })
+
+    it('rejects null', () => {
+      expect(() => validator.validate('update.checkForUpdates', null)).to.throw(
+        InvalidSettingValueError,
+      )
+    })
+
+    it('rejects missing values (undefined)', () => {
+      // Surface a true undefined to the validator via a property access
+      // rather than a literal `undefined` argument, to avoid the
+      // unicorn/no-useless-undefined rule on direct argument passing.
+      const missing: {absent?: unknown} = {}
+      expect(() => validator.validate('update.checkForUpdates', missing.absent)).to.throw(
+        InvalidSettingValueError,
+      )
+    })
+  })
+
+  describe('partition (mixed integer + boolean)', () => {
+    it('puts a valid boolean entry into valid and keeps integer entries beside it', () => {
+      const result = validator.partition({
+        'agentPool.maxSize': 25,
+        'update.checkForUpdates': true,
+      })
+      expect(result.valid).to.deep.equal({
+        'agentPool.maxSize': 25,
+        'update.checkForUpdates': true,
+      })
+      expect(result.invalid).to.deep.equal([])
+    })
+
+    it('puts a string masquerading as boolean into invalid', () => {
+      const result = validator.partition({'update.checkForUpdates': 'yes'})
+      expect(result.valid).to.deep.equal({})
+      expect(result.invalid).to.have.lengthOf(1)
+      expect(result.invalid[0].key).to.equal('update.checkForUpdates')
+      expect(result.invalid[0].value).to.equal('yes')
     })
   })
 })

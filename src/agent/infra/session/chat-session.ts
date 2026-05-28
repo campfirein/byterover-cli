@@ -10,7 +10,10 @@ import {SessionEventBus} from '../events/event-emitter.js'
 import {MessageQueueService} from './message-queue.js'
 import {sessionStatusManager} from './session-status.js'
 
-// List of all session events that should be forwarded to agent bus
+// List of all session events that should be forwarded to agent bus.
+// Mirrors the canonical SESSION_EVENT_NAMES in `agent/core/domain/agent-events/types.ts`
+// (subset, with `llmservice:usage` deliberately included so token-telemetry
+// emission lands on the agent bus where TaskUsageAggregator subscribes).
 const SESSION_EVENT_NAMES: readonly [
   'llmservice:thinking',
   'llmservice:chunk',
@@ -20,6 +23,7 @@ const SESSION_EVENT_NAMES: readonly [
   'llmservice:doomLoopDetected',
   'llmservice:error',
   'llmservice:unsupportedInput',
+  'llmservice:usage',
   'message:queued',
   'message:dequeued',
   'run:complete',
@@ -35,6 +39,7 @@ const SESSION_EVENT_NAMES: readonly [
   'llmservice:doomLoopDetected',
   'llmservice:error',
   'llmservice:unsupportedInput',
+  'llmservice:usage',
   'message:queued',
   'message:dequeued',
   'run:complete',
@@ -95,18 +100,23 @@ export class ChatSession implements IChatSession {
 
   /**
    * Cancel the current operation or a specific task.
-   * @param taskId - Optional taskId to cancel specific task, otherwise cancels fallback controller
+   *
+   * @param taskId - Optional taskId to cancel a specific task, otherwise cancels the fallback controller
+   * @returns true when a controller was found and aborted, false otherwise (so callers can decide
+   *          whether to emit a terminal event upstream)
    */
-  public cancel(taskId?: string): void {
+  public cancel(taskId?: string): boolean {
     if (taskId) {
       const controller = this.activeControllers.get(taskId)
-      if (controller) {
-        controller.abort()
-        this.activeControllers.delete(taskId)
-      }
-    } else if (this.currentController) {
-      this.currentController.abort()
+      if (!controller) return false
+      controller.abort()
+      this.activeControllers.delete(taskId)
+      return true
     }
+
+    if (!this.currentController) return false
+    this.currentController.abort()
+    return true
   }
 
   /**

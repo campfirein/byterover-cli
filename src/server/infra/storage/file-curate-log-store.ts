@@ -34,17 +34,28 @@ const CurateLogSummaryFileSchema = z.object({
   updated: z.number(),
 })
 
+const CurateLogTimingFileSchema = z.object({
+  llmMs: z.number().optional(),
+  totalMs: z.number().optional(),
+})
+
 const CurateLogEntryBaseSchema = z.object({
+  cacheCreationTokens: z.number().optional(),
+  cachedInputTokens: z.number().optional(),
+  format: z.enum(['html', 'markdown']).optional(),
   id: z.string(),
   input: z.object({
     context: z.string().optional(),
     files: z.array(z.string()).optional(),
     folders: z.array(z.string()).optional(),
   }),
+  inputTokens: z.number().optional(),
   operations: z.array(CurateLogOperationFileSchema),
+  outputTokens: z.number().optional(),
   startedAt: z.number(),
   summary: CurateLogSummaryFileSchema,
   taskId: z.string(),
+  timing: CurateLogTimingFileSchema.optional(),
 })
 
 const CurateLogEntryFileSchema = z.discriminatedUnion('status', [

@@ -182,10 +182,11 @@ describe('DreamStateService', () => {
       expect(persisted.totalDreams).to.equal(7)
     })
 
-    it('does not lose increments when interleaved with a step-7-style reset writer', async () => {
-      // Models the dream-executor step 7 race: a dream "resets" curationsSinceDream
-      // to 0 while a curate's incrementCurationCount runs concurrently. Without the
-      // mutex covering both writers, the increment is lost.
+    it('does not lose increments when interleaved with a concurrent reset writer', async () => {
+      // Models a race that the per-file mutex must cover: one writer "resets"
+      // curationsSinceDream to 0 while a curate's incrementCurationCount runs
+      // concurrently. Without the mutex covering both writers, the increment
+      // is lost.
       await service.update((state) => ({...state, curationsSinceDream: 5, totalDreams: 1}))
 
       // Fire a step-7-style reset and an increment in parallel.

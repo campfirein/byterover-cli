@@ -336,6 +336,136 @@ describe('undoLastDream', () => {
     expect(result.restoredArchives).to.include('auth/old-doc.md')
   })
 
+  it('undoes PRUNE/ARCHIVE: restores from previousTexts (tool-mode) when present, ignoring stubPath', async () => {
+    // Tool-mode finalize writes a PRUNE/ARCHIVE op with `previousTexts`
+    // instead of `stubPath`. Undo should write the body back to its
+    // original location and remove the .brv/archive/<path> copy.
+    const brvDir = join(tmpdir(), `brv-undo-tm-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    await mkdir(join(brvDir, 'context-tree'), {recursive: true})
+    await mkdir(join(brvDir, 'archive', 'testing'), {recursive: true})
+    const originalContent = '<bv-topic path="testing/old" title="O">restored body</bv-topic>'
+    await writeFile(join(brvDir, 'archive', 'testing', 'old.html'), originalContent, 'utf8')
+
+    dreamLogStore.getById.resolves(completedLog([{
+      action: 'ARCHIVE',
+      file: 'testing/old.html',
+      needsReview: false,
+      previousTexts: {'testing/old.html': originalContent},
+      reason: 'tool-mode finalize',
+      type: 'PRUNE',
+    }]))
+
+    const result = await undoLastDream({
+      ...deps,
+      contextTreeDir: join(brvDir, 'context-tree'),
+    })
+
+    expect(result.restoredFiles).to.include('testing/old.html')
+    const restoredBody = await readFile(join(brvDir, 'context-tree', 'testing', 'old.html'), 'utf8')
+    expect(restoredBody).to.equal(originalContent)
+    // .brv/archive/<path> copy must be removed so we don't leave a stale duplicate.
+    try {
+      await access(join(brvDir, 'archive', 'testing', 'old.html'))
+      expect.fail('archive copy should have been deleted')
+    } catch (error) {
+      expect((error as NodeJS.ErrnoException).code).to.equal('ENOENT')
+    }
+  })
+
+  it('undoes PRUNE/ARCHIVE: restores original mtime via utimes() when previousMtimes is present', async () => {
+    // Without this, writeFile stamps the restore wall-clock as the new
+    // mtime and a topic archived as stale-mtime (>60d for draft) silently
+    // drops below the prune threshold on the next scan even though the
+    // file is back.
+    const brvDir = join(tmpdir(), `brv-undo-mtime-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    await mkdir(join(brvDir, 'context-tree'), {recursive: true})
+    await mkdir(join(brvDir, 'archive'), {recursive: true})
+    await writeFile(join(brvDir, 'archive', 'stale.html'), 'x', 'utf8')
+
+    const seventyDaysAgoMs = Date.now() - 70 * 24 * 60 * 60 * 1000
+
+    dreamLogStore.getById.resolves(completedLog([{
+      action: 'ARCHIVE',
+      file: 'stale.html',
+      needsReview: false,
+      previousMtimes: {'stale.html': seventyDaysAgoMs},
+      previousTexts: {'stale.html': '<bv-topic path="stale" title="S"/>'},
+      reason: 'tool-mode finalize',
+      type: 'PRUNE',
+    }]))
+
+    await undoLastDream({...deps, contextTreeDir: join(brvDir, 'context-tree')})
+
+    const {stat} = await import('node:fs/promises')
+    const stats = await stat(join(brvDir, 'context-tree', 'stale.html'))
+    // Allow a small tolerance for filesystem mtime precision (e.g. APFS = 1ns; HFS+ = 1s)
+    expect(stats.mtimeMs).to.be.closeTo(seventyDaysAgoMs, 2000)
+  })
+
+  it('undoes PRUNE/ARCHIVE: restores sidecar signals via runtimeSignalStore.set when previousSignals is present', async () => {
+    // Without this, the file returns but signals (importance, maturity,
+    // accessCount...) are reset to defaults, so a topic archived as
+    // low-importance (importance < 35) won't re-surface on the next
+    // prune scan even though the file is back.
+    const brvDir = join(tmpdir(), `brv-undo-signals-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    await mkdir(join(brvDir, 'context-tree'), {recursive: true})
+    await mkdir(join(brvDir, 'archive'), {recursive: true})
+    await writeFile(join(brvDir, 'archive', 'lowimp.html'), 'x', 'utf8')
+
+    const signalStoreStub = {set: stub().resolves()}
+
+    dreamLogStore.getById.resolves(completedLog([{
+      action: 'ARCHIVE',
+      file: 'lowimp.html',
+      needsReview: false,
+      previousSignals: {
+        'lowimp.html': {accessCount: 3, importance: 15, maturity: 'draft', recency: 0.7, updateCount: 1},
+      },
+      previousTexts: {'lowimp.html': '<bv-topic path="lowimp" title="L"/>'},
+      reason: 'tool-mode finalize',
+      type: 'PRUNE',
+    }]))
+
+    await undoLastDream({
+      ...deps,
+      contextTreeDir: join(brvDir, 'context-tree'),
+      runtimeSignalStore: signalStoreStub,
+    })
+
+    expect(signalStoreStub.set.calledOnce, 'expected runtimeSignalStore.set to be called').to.equal(true)
+    expect(signalStoreStub.set.firstCall.args[0]).to.equal('lowimp.html')
+    expect(signalStoreStub.set.firstCall.args[1]).to.deep.include({importance: 15, maturity: 'draft'})
+  })
+
+  it('undoes PRUNE/ARCHIVE: skips signal restore gracefully for legacy logs without previousSignals', async () => {
+    // Backward compat: older log entries (pre-fix) don't carry previousSignals.
+    // Undo must still restore the file body without throwing.
+    const brvDir = join(tmpdir(), `brv-undo-legacy-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    await mkdir(join(brvDir, 'context-tree'), {recursive: true})
+    await mkdir(join(brvDir, 'archive'), {recursive: true})
+    await writeFile(join(brvDir, 'archive', 'old.html'), 'x', 'utf8')
+
+    const signalStoreStub = {set: stub().resolves()}
+
+    dreamLogStore.getById.resolves(completedLog([{
+      action: 'ARCHIVE',
+      file: 'old.html',
+      needsReview: false,
+      previousTexts: {'old.html': '<bv-topic path="old" title="O"/>'},
+      reason: 'tool-mode finalize',
+      type: 'PRUNE',
+    }]))
+
+    const result = await undoLastDream({
+      ...deps,
+      contextTreeDir: join(brvDir, 'context-tree'),
+      runtimeSignalStore: signalStoreStub,
+    })
+
+    expect(result.restoredFiles).to.include('old.html')
+    expect(signalStoreStub.set.called, 'set must not be called when previousSignals is absent').to.equal(false)
+  })
+
   it('skips PRUNE/KEEP (no-op)', async () => {
     dreamLogStore.getById.resolves(completedLog([{
       action: 'KEEP',

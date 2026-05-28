@@ -9,6 +9,8 @@ import {
   patchRulesFile,
   patchSkillFile,
   patchWorkflowsFile,
+  removeByteroverBlock,
+  upsertByteroverBlock,
 } from '../../../../../src/server/infra/connectors/shared/rule-segment-patcher.js'
 
 // ---------------------------------------------------------------------------
@@ -492,6 +494,99 @@ describe('rule-segment-patcher', () => {
       // File should be unchanged — no anchor found, no patch applied
       const content = await readFile(path.join(hubSkillDir, 'SKILL.md'), 'utf8')
       expect(content).to.equal(hubContent)
+    })
+  })
+
+  describe('upsertByteroverBlock / removeByteroverBlock', () => {
+    const BLOCK = `${START}\nmanaged byterover block\n${END}`
+
+    it('creates a missing file (including parent dirs) with the managed block', async () => {
+      const filePath = path.join(testDir, 'nested', 'SOUL.md')
+
+      const changed = await upsertByteroverBlock(filePath, BLOCK)
+
+      expect(changed).to.be.true
+      const content = await readFile(filePath, 'utf8')
+      expect(content).to.equal(`${BLOCK}\n`)
+    })
+
+    it('is a no-op when the block is already present and unchanged', async () => {
+      const filePath = path.join(testDir, 'SOUL.md')
+      await upsertByteroverBlock(filePath, BLOCK)
+
+      const changed = await upsertByteroverBlock(filePath, BLOCK)
+
+      expect(changed).to.be.false
+    })
+
+    it('replaces a stale block in place, preserving surrounding content', async () => {
+      const filePath = path.join(testDir, 'SOUL.md')
+      await writeFile(filePath, `before\n\n${START}\nstale\n${END}\n\nafter\n`, 'utf8')
+
+      const changed = await upsertByteroverBlock(filePath, BLOCK)
+
+      expect(changed).to.be.true
+      const content = await readFile(filePath, 'utf8')
+      expect(content).to.include('before')
+      expect(content).to.include('after')
+      expect(content).to.include('managed byterover block')
+      expect(content).to.not.include('stale')
+    })
+
+    it('returns false when removing from a missing file', async () => {
+      const removed = await removeByteroverBlock(path.join(testDir, 'absent.md'))
+
+      expect(removed).to.be.false
+    })
+
+    it('returns false when the file has no managed block', async () => {
+      const filePath = path.join(testDir, 'SOUL.md')
+      await writeFile(filePath, 'just user content\n', 'utf8')
+
+      const removed = await removeByteroverBlock(filePath)
+
+      expect(removed).to.be.false
+      expect(await readFile(filePath, 'utf8')).to.equal('just user content\n')
+    })
+
+    it('removes a mid-file block and keeps before/after separated by one blank line', async () => {
+      const filePath = path.join(testDir, 'SOUL.md')
+      await writeFile(filePath, `before\n\n${BLOCK}\n\nafter\n`, 'utf8')
+
+      const removed = await removeByteroverBlock(filePath)
+
+      expect(removed).to.be.true
+      expect(await readFile(filePath, 'utf8')).to.equal('before\n\nafter\n')
+    })
+
+    it('empties a file that contained only the managed block', async () => {
+      const filePath = path.join(testDir, 'SOUL.md')
+      await writeFile(filePath, `${BLOCK}\n`, 'utf8')
+
+      const removed = await removeByteroverBlock(filePath)
+
+      expect(removed).to.be.true
+      expect(await readFile(filePath, 'utf8')).to.equal('')
+    })
+
+    it('removes a block at EOF with no trailing newline, keeping the leading content', async () => {
+      const filePath = path.join(testDir, 'SOUL.md')
+      await writeFile(filePath, `keep me\n\n${BLOCK}`, 'utf8')
+
+      const removed = await removeByteroverBlock(filePath)
+
+      expect(removed).to.be.true
+      expect(await readFile(filePath, 'utf8')).to.equal('keep me\n')
+    })
+
+    it('keeps only the trailing content when the block is at the start of the file', async () => {
+      const filePath = path.join(testDir, 'SOUL.md')
+      await writeFile(filePath, `${BLOCK}\n\ntrailing content\n`, 'utf8')
+
+      const removed = await removeByteroverBlock(filePath)
+
+      expect(removed).to.be.true
+      expect(await readFile(filePath, 'utf8')).to.equal('trailing content\n')
     })
   })
 })

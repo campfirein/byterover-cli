@@ -9,7 +9,7 @@
  */
 
 import {expect} from 'chai'
-import {restore, stub} from 'sinon'
+import sinon, {restore, stub} from 'sinon'
 
 import type {ICipherAgent} from '../../../../src/agent/core/interfaces/i-cipher-agent.js'
 
@@ -461,6 +461,67 @@ describe('CurateExecutor (regression)', () => {
 
       // Even on agent body failure, the session must be cleaned up — no leak.
       expect((agent.deleteTaskSession as ReturnType<typeof stub>).calledOnceWithExactly('session-id')).to.be.true
+    })
+
+    // Regression: telemetry forwarding has to fire on BOTH paths. If either is
+    // skipped, the agent-process layer never sends `task:curateResult`, and the
+    // log handler's merge in `onTaskCompleted` / `onTaskError` quietly degrades
+    // to a no-op — failed-curate telemetry just disappears from disk.
+    it('invokes onTelemetry exactly once on the happy path before returning', async () => {
+      const agent = buildSplitTestAgent()
+      stub(FileContextTreeSnapshotService.prototype, 'getCurrentState').resolves(new Map())
+      stub(FileContextTreeSummaryService.prototype, 'propagateStaleness').resolves([])
+      stub(FileContextTreeManifestService.prototype, 'buildManifest').resolves()
+      stub(DreamStateService.prototype, 'enqueueStaleSummaryPaths').resolves()
+      stub(DreamStateService.prototype, 'incrementCurationCount').resolves()
+
+      const onTelemetry = sinon.spy()
+
+      const executor = new CurateExecutor()
+      await executor.runAgentBody(agent, {
+        clientCwd: '/p',
+        content: 'happy',
+        onTelemetry,
+        projectRoot: '/p',
+        taskId: 't-happy',
+      })
+
+      expect(onTelemetry.calledOnce).to.equal(true)
+      const [record] = onTelemetry.firstCall.args
+      expect(record.format).to.equal('html')
+      // Aggregator was not wired in this test — totals stay zero, so usage is
+      // omitted (the helper guards against `inputTokens=0 && outputTokens=0`).
+      expect(record.usage).to.equal(undefined)
+      expect(record.timing.totalMs).to.be.a('number')
+    })
+
+    it('invokes onTelemetry exactly once on the error path before propagating the throw', async () => {
+      const agent = buildSplitTestAgent()
+      ;(agent.executeOnSession as ReturnType<typeof stub>).rejects(new Error('agent failed'))
+
+      const onTelemetry = sinon.spy()
+
+      const executor = new CurateExecutor()
+      let thrown: Error | undefined
+      try {
+        await executor.runAgentBody(agent, {
+          clientCwd: '/p',
+          content: 'sad',
+          onTelemetry,
+          projectRoot: '/p',
+          taskId: 't-sad',
+        })
+        expect.fail('runAgentBody should have thrown')
+      } catch (error) {
+        thrown = error as Error
+      }
+
+      // Original error propagated unchanged.
+      expect(thrown?.message).to.equal('agent failed')
+      // Telemetry callback fired before the throw, so the daemon can still
+      // emit `task:curateResult` and the handler's onTaskError merge has
+      // something to fold into the on-disk entry.
+      expect(onTelemetry.calledOnce).to.equal(true)
     })
 
     it('executeWithAgent (backwards-compat wrapper) still runs Phase 4 inline before returning', async () => {

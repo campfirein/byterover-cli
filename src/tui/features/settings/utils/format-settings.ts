@@ -6,6 +6,7 @@ const CATEGORY_HEADERS: Readonly<Record<SettingsRowCategory, string>> = {
   llm: 'LLM',
   other: 'OTHER',
   'task-history': 'TASK HISTORY',
+  updates: 'UPDATES',
 }
 
 export function groupRowsByCategory(rows: readonly SettingsRow[]): ReadonlyArray<{
@@ -52,6 +53,11 @@ export function bottomHintFor(mode: 'browse' | 'edit' | 'edit-error' | 'saving',
 }
 
 export function preFillBufferFor(row: SettingsRow): string {
+  // preFillBufferFor only runs when entering integer text-input mode.
+  // Boolean rows take the toggle path in the page and never reach here;
+  // guard the narrowing so the function still compiles under the wider
+  // SettingsRow union.
+  if (typeof row.current !== 'number') return String(row.current)
   if (row.unit === 'ms') return formatDuration(row.current)
   return String(row.current)
 }

@@ -1,4 +1,4 @@
-import type {ISettingsStore} from '../../core/interfaces/storage/i-settings-store.js'
+import type {ISettingsStore, SettingsStartupSnapshot} from '../../core/interfaces/storage/i-settings-store.js'
 
 import {
   AGENT_MAX_CONCURRENT_TASKS,
@@ -45,8 +45,13 @@ export async function bootstrapSettings(options: BootstrapSettingsOptions): Prom
   }
 
   return {
-    agentMaxConcurrentTasks: snapshot.values[SETTINGS_KEYS.AGENT_POOL_MAX_CONCURRENT_TASKS] ?? AGENT_MAX_CONCURRENT_TASKS,
-    agentPoolMaxSize: snapshot.values[SETTINGS_KEYS.AGENT_POOL_MAX_SIZE] ?? AGENT_POOL_MAX_SIZE,
-    taskHistoryMaxEntries: snapshot.values[SETTINGS_KEYS.TASK_HISTORY_MAX_ENTRIES] ?? TASK_HISTORY_DEFAULT_MAX_ENTRIES,
+    agentMaxConcurrentTasks: readNumber(snapshot, SETTINGS_KEYS.AGENT_POOL_MAX_CONCURRENT_TASKS, AGENT_MAX_CONCURRENT_TASKS),
+    agentPoolMaxSize: readNumber(snapshot, SETTINGS_KEYS.AGENT_POOL_MAX_SIZE, AGENT_POOL_MAX_SIZE),
+    taskHistoryMaxEntries: readNumber(snapshot, SETTINGS_KEYS.TASK_HISTORY_MAX_ENTRIES, TASK_HISTORY_DEFAULT_MAX_ENTRIES),
   }
+}
+
+function readNumber(snapshot: SettingsStartupSnapshot, key: string, fallback: number): number {
+  const value = snapshot.values[key]
+  return typeof value === 'number' ? value : fallback
 }

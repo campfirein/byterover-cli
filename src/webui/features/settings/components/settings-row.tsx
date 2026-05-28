@@ -14,12 +14,19 @@ import {useResetSetting} from '../api/reset-setting'
 import {useSetSetting} from '../api/set-setting'
 import {labelFor} from '../lib/labels'
 import {useRestartBannerStore} from '../stores/restart-banner-store'
+import {BooleanSettingsRow} from './boolean-settings-row'
 
 type Props = {
   row: SettingsRowData
 }
 
 export function SettingsRow({row}: Props) {
+  if (row.type === 'boolean') return <BooleanSettingsRow row={row} />
+
+  return <IntegerSettingsRow row={row} />
+}
+
+function IntegerSettingsRow({row}: Props) {
   const setMutation = useSetSetting()
   const resetMutation = useResetSetting()
   const markDirty = useRestartBannerStore((s) => s.markDirty)
@@ -57,7 +64,7 @@ export function SettingsRow({row}: Props) {
     setError(undefined)
     const response = await setMutation.mutateAsync({key: row.key, value: parsed.value})
     if (response.ok) {
-      markDirty(row.key)
+      markDirty(row.key, row.restartRequired)
       isUserEditingRef.current = false
       toast.success(`${label} set to ${toastValue(parsed.value)}`)
       return
@@ -70,7 +77,7 @@ export function SettingsRow({row}: Props) {
     setError(undefined)
     const response = await resetMutation.mutateAsync({key: row.key})
     if (response.ok) {
-      markDirty(row.key)
+      markDirty(row.key, row.restartRequired)
       isUserEditingRef.current = false
       toast.success(`${label} reset to default`)
       return

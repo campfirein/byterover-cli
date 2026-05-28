@@ -285,7 +285,7 @@ describe('ToolsSDK', () => {
 
       const sdk = createToolsSDK({
         fileSystem: mockFileSystem as unknown as IFileSystem,
-        searchKnowledgeService: mockSearchKnowledgeService as ISearchKnowledgeService,
+        searchKnowledgeService: mockSearchKnowledgeService as unknown as ISearchKnowledgeService,
       })
       const result = await sdk.searchKnowledge('authentication', {limit: 5})
 
@@ -315,7 +315,7 @@ describe('ToolsSDK', () => {
 
       const sdk = createToolsSDK({
         fileSystem: mockFileSystem as unknown as IFileSystem,
-        searchKnowledgeService: mockSearchKnowledgeService as ISearchKnowledgeService,
+        searchKnowledgeService: mockSearchKnowledgeService as unknown as ISearchKnowledgeService,
       })
       await sdk.searchKnowledge('query')
 
@@ -358,7 +358,7 @@ describe('ToolsSDK', () => {
 
       const sdk = createToolsSDK({
         fileSystem: mockFileSystem as unknown as IFileSystem,
-        searchKnowledgeService: mockSearchKnowledgeService as ISearchKnowledgeService,
+        searchKnowledgeService: mockSearchKnowledgeService as unknown as ISearchKnowledgeService,
       })
 
       try {

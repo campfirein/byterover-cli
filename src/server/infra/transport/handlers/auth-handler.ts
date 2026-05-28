@@ -223,7 +223,7 @@ export class AuthHandler {
           return {isAuthorized: false}
         }
 
-        const {projectPath} = data
+        const projectPath = data?.projectPath
         const [user, brvConfig] = await Promise.all([
           this.userService.getCurrentUser(token.sessionKey),
           projectPath ? this.projectConfigStore.read(projectPath) : Promise.resolve(),

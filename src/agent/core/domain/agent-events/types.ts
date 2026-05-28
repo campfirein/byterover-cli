@@ -31,6 +31,7 @@ export const SESSION_EVENT_NAMES = [
   'llmservice:toolMetadata',
   'llmservice:toolResult',
   'llmservice:unsupportedInput',
+  'llmservice:usage',
   'llmservice:warning',
   'message:dequeued',
   'message:queued',
@@ -462,6 +463,30 @@ export interface AgentEventMap {
   }
 
   /**
+   * Emitted by LoggingContentGenerator after every LLM call with the per-call
+   * token-usage rollup (canonical names). Consumed by `TaskUsageAggregator`
+   * to roll up totals onto QueryLogEntry / CurateLogEntry.
+   * @property {number} [cacheCreationTokens] - Tokens written to cache on first call
+   * @property {number} [cachedInputTokens] - Tokens read from prompt cache
+   * @property {number} durationMs - Wall-clock duration of the LLM call
+   * @property {number} inputTokens - Tokens consumed for the prompt
+   * @property {string} model - Model identifier
+   * @property {number} outputTokens - Tokens emitted for the completion
+   * @property {string} sessionId - ID of the session
+   * @property {string} [taskId] - Optional task ID for concurrent task isolation
+   */
+  'llmservice:usage': {
+    cacheCreationTokens?: number
+    cachedInputTokens?: number
+    durationMs: number
+    inputTokens: number
+    model: string
+    outputTokens: number
+    sessionId: string
+    taskId?: string
+  }
+
+  /**
    * Emitted when LLM service encounters a warning (e.g., max iterations reached).
    * @property {string} message - Warning message
    * @property {string} [model] - Model identifier
@@ -776,6 +801,29 @@ export interface SessionEventMap {
    */
   'llmservice:unsupportedInput': {
     reason: string
+    taskId?: string
+  }
+
+  /**
+   * Emitted by LoggingContentGenerator after every LLM call with the per-call
+   * token-usage rollup (canonical names). Session-scoped (no sessionId in
+   * payload — already implied by the bus). Consumed by `TaskUsageAggregator`.
+   *
+   * @property {number} [cacheCreationTokens] - Tokens written to cache on first call
+   * @property {number} [cachedInputTokens] - Tokens read from prompt cache
+   * @property {number} durationMs - Wall-clock duration of the LLM call
+   * @property {number} inputTokens - Tokens consumed for the prompt
+   * @property {string} model - Model identifier
+   * @property {number} outputTokens - Tokens emitted for the completion
+   * @property {string} [taskId] - Optional task ID for concurrent task isolation
+   */
+  'llmservice:usage': {
+    cacheCreationTokens?: number
+    cachedInputTokens?: number
+    durationMs: number
+    inputTokens: number
+    model: string
+    outputTokens: number
     taskId?: string
   }
 
