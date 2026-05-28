@@ -315,7 +315,7 @@ describe('AnalyticsHook M14.3 generic task_* emit simulation', () => {
     })
   })
 
-  describe('project_path_hash (M16 follow-up): join-key parity with other handler-emitted events', () => {
+  describe('project_path_hash (M17 follow-up): join-key parity with other handler-emitted events', () => {
     it('stamps the sha256(projectPath) on every emit when task.projectPath is set', async () => {
       const task = buildTask('curate', {projectPath: '/Users/dev/example-project', taskId: 'task-pph-1'})
       await hook.onTaskCreate(task)

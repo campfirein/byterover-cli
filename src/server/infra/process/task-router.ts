@@ -169,7 +169,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * M16: tool-mode curate / query emit synthetic `llmservice:toolResult` /
+ * M17: tool-mode curate / query emit synthetic `llmservice:toolResult` /
  * `llmservice:toolCall` events so the lifecycle-hook chain (AnalyticsHook,
  * CurateLogHandler, QueryLogHandler) has inputs. Those events MUST NOT
  * broadcast to clients (CLI, TUI, MCP, webui) — they're internal plumbing,
@@ -1894,7 +1894,7 @@ export class TaskRouter {
       }
     }
 
-    // M16: synthetic LLM events (emitted by tool-mode curate / query so the
+    // M17: synthetic LLM events (emitted by tool-mode curate / query so the
     // lifecycle-hook chain has inputs) MUST NOT surface in the CLI's
     // streamed output, TUI live view, MCP client, or webui — they're
     // internal analytics plumbing. Skip the per-client send + broadcast

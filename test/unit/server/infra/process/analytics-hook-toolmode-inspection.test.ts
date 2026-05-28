@@ -58,10 +58,10 @@ async function fakeReadFileForInspection(filePath: string): Promise<string> {
     return '---\nkeywords: ["jwt", "session"]\nrelated: ["auth/middleware", "users"]\ntags: ["security"]\n---\nbody\n'
   }
 
-  if (filePath === '/Users/dev/example-project/.brv/context-tree/analytics/m16.html') {
-    // M16 follow-up: curate-tool-mode writes HTML topic files whose
+  if (filePath === '/Users/dev/example-project/.brv/context-tree/analytics/m17.html') {
+    // M17 follow-up: curate-tool-mode writes HTML topic files whose
     // tags/keywords/related live as comma-separated attrs on `<bv-topic>`.
-    return '<bv-topic path="analytics/m16" title="M16" tags="analytics, m16, tool-mode" keywords="synthetic, broadcast-skip" related="@analytics/related.html, @analytics/another.html"><bv-task>noop</bv-task></bv-topic>'
+    return '<bv-topic path="analytics/m17" title="M17" tags="analytics, m17, tool-mode" keywords="synthetic, broadcast-skip" related="@analytics/related.html, @analytics/another.html"><bv-task>noop</bv-task></bv-topic>'
   }
 
   return '---\n---\nempty\n'
@@ -278,7 +278,7 @@ describe('analytics-hook tool-mode event inspection (M14)', () => {
     dumpEvents('query-tool-mode — error path', trackStub)
   })
 
-  it('HTML topic: read_paths_with_metadata extracts keywords/tags/related from `<bv-topic>` attrs (M16 follow-up)', async () => {
+  it('HTML topic: read_paths_with_metadata extracts keywords/tags/related from `<bv-topic>` attrs (M17 follow-up)', async () => {
     const trackStub = sinon.stub()
     const client: IAnalyticsClient = {
       abort() {
@@ -296,7 +296,7 @@ describe('analytics-hook tool-mode event inspection (M14)', () => {
       taskId: 'task-query-html-1',
       toolCalls: [
         {
-          args: {filePath: '/Users/dev/example-project/.brv/context-tree/analytics/m16.html'},
+          args: {filePath: '/Users/dev/example-project/.brv/context-tree/analytics/m17.html'},
           sessionId: 's1',
           status: 'completed',
           timestamp: NOW,
@@ -314,10 +314,10 @@ describe('analytics-hook tool-mode event inspection (M14)', () => {
     const paths = props.read_paths_with_metadata as Array<Record<string, unknown>>
     expect(paths).to.have.lengthOf(1)
     const entry = paths[0]
-    expect(entry.relative_path).to.equal('.brv/context-tree/analytics/m16.html')
-    // M16: comma-separated `tags`/`keywords`/`related` HTML attrs become arrays.
+    expect(entry.relative_path).to.equal('.brv/context-tree/analytics/m17.html')
+    // M17: comma-separated `tags`/`keywords`/`related` HTML attrs become arrays.
     expect(entry.keywords).to.deep.equal(['synthetic', 'broadcast-skip'])
-    expect(entry.tags).to.deep.equal(['analytics', 'm16', 'tool-mode'])
+    expect(entry.tags).to.deep.equal(['analytics', 'm17', 'tool-mode'])
     // `related` lifts to the structured `related_paths[]` shape: each entry's
     // own keywords/tags arrays default to empty (only top-level reads enrich).
     expect(entry.related_paths).to.deep.equal([

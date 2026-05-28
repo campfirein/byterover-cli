@@ -139,7 +139,7 @@ type FrontmatterFields = {
 }
 
 /**
- * M16 follow-up: project-scoped join key for the task / curate / query
+ * M17 follow-up: project-scoped join key for the task / curate / query
  * funnel events. Mirrors the convention every other handler-emitted
  * event uses (vc-*, review-*, source-*, worktree-*, brv-init,
  * context-tree-file-edited, webui-session-*). Returns `{}` when the
@@ -664,7 +664,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
     if (!this.isEnabled()) return {}
     try {
       const content = await this.readFile(filePath, 'utf8')
-      // M16 follow-up: HTML topic files (curate-tool-mode writes) carry the
+      // M17 follow-up: HTML topic files (curate-tool-mode writes) carry the
       // frontmatter as attributes on `<bv-topic>`, NOT as YAML. parseFrontmatter
       // returns null for them. Branch on extension so both formats produce
       // the same FrontmatterFields shape downstream.
@@ -694,7 +694,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
 
 /**
  * Split a `<bv-topic>` attribute value into a string array. The HTML writer
- * emits these as comma-separated lists (e.g. `tags="analytics, m16, tool-mode"`)
+ * emits these as comma-separated lists (e.g. `tags="analytics, m17, tool-mode"`)
  * to mirror the YAML array semantics. Whitespace around each entry is
  * trimmed; empty entries are dropped so a trailing comma never produces
  * a zero-length tag.

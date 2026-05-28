@@ -61,7 +61,7 @@ export const QueryCompletedSchema = z
     duration_ms: z.number().int().nonnegative(),
     matched_doc_count: z.number().int().nonnegative(),
     outcome: z.enum(['completed', 'cancelled', 'error']),
-    /** M16 follow-up: see task-created.ts for the rationale. */
+    /** M17 follow-up: see task-created.ts for the rationale. */
     project_path_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
     read_doc_count: z.number().int().nonnegative(),
     read_paths_with_metadata: z.array(ReadPathWithMetadataSchema).max(10).optional(),

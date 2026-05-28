@@ -795,7 +795,7 @@ async function executeTask(
             )
           }
 
-          // M16: synthetic llmservice:toolResult so AnalyticsHook +
+          // M17: synthetic llmservice:toolResult so AnalyticsHook +
           // CurateLogHandler fire `curate_operation_applied` and bump
           // `curate_run_completed.operations_*` (the legacy LLM-driven
           // path emitted this event; tool-mode has to forge it).
@@ -1034,7 +1034,7 @@ async function executeTask(
           })
           result = JSON.stringify(toolModeResult)
 
-          // M16: synthetic llmservice:toolCall events so AnalyticsHook
+          // M17: synthetic llmservice:toolCall events so AnalyticsHook
           // populates query_completed counters + read_paths_with_metadata
           // (the legacy LLM path emitted these via real read_file /
           // search_knowledge tool calls; tool-mode runs deterministic

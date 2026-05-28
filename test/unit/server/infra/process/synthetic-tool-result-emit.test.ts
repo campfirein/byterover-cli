@@ -42,7 +42,7 @@ const buildMetadata = (overrides: Partial<QueryToolModeMetadata> = {}): QueryToo
   ...overrides,
 })
 
-describe('synthetic-tool-result-emit (M16 tool-mode gap fix)', () => {
+describe('synthetic-tool-result-emit (M17 tool-mode gap fix)', () => {
   describe('emitSyntheticCurateToolResult', () => {
     it('dispatches an llmservice:toolResult that round-trips through extractCurateOperations', () => {
       const {requestStub, transport} = buildTransport()
@@ -66,7 +66,7 @@ describe('synthetic-tool-result-emit (M16 tool-mode gap fix)', () => {
       expect(payload.toolName).to.equal('curate')
       expect(payload.success).to.equal(true)
       expect(payload.taskId).to.equal('task-1')
-      // M16: marker tells TaskRouter to skip the per-client broadcast so
+      // M17: marker tells TaskRouter to skip the per-client broadcast so
       // synthetic envelopes never surface in CLI / TUI / MCP / webui.
       expect(payload.metadata).to.deep.equal({_synthetic: true})
 
@@ -144,7 +144,7 @@ describe('synthetic-tool-result-emit (M16 tool-mode gap fix)', () => {
       const [first, ...reads] = requestStub.getCalls()
 
       // Every call carries the synthetic marker so TaskRouter skips the
-      // per-client broadcast (M16 — see SYNTHETIC_EVENT_METADATA docblock).
+      // per-client broadcast (M17 — see SYNTHETIC_EVENT_METADATA docblock).
       for (const call of requestStub.getCalls()) {
         expect(call.args[1].metadata).to.deep.equal({_synthetic: true})
       }

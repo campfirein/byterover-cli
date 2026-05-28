@@ -24,7 +24,7 @@ export const CurateOperationAppliedSchema = z
     knowledge_path: z.string().min(1),
     needs_review: z.boolean(),
     operation_type: z.enum(['ADD', 'UPDATE', 'DELETE', 'MERGE', 'UPSERT']),
-    /** M16 follow-up: see task-created.ts for the rationale. */
+    /** M17 follow-up: see task-created.ts for the rationale. */
     project_path_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
     // TODO(M15.x): harmonise with the sibling `query_completed.read_paths_
     // _with_metadata[].related_paths` structured shape — current asymmetry
