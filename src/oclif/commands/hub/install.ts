@@ -40,7 +40,6 @@ export default class HubInstall extends Command {
     }),
     scope: Flags.string({
       char: 's',
-      default: 'project',
       description: 'Install scope for skills (global: home directory, project: current project)',
       options: ['global', 'project'],
     }),
@@ -65,7 +64,9 @@ export default class HubInstall extends Command {
         agent: flags.agent,
         entryId: args.id,
         registry: flags.registry,
-        scope: flags.scope as 'global' | 'project',
+        // Forward scope only when explicitly set so the daemon can infer the
+        // per-agent default (global for global-only skill agents).
+        ...(flags.scope ? {scope: flags.scope as 'global' | 'project'} : {}),
       })
 
       if (format === 'json') {

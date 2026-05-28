@@ -110,7 +110,9 @@ export function HubPanel() {
   async function handleInstallEntry(entryId: string, registry?: string, type?: string) {
     try {
       const agent = type === 'agent-skill' ? agentSelections[entryId] ?? 'Codex' : undefined
-      const result = await installMutation.mutateAsync({agent, entryId, registry, scope: 'project'})
+      // Omit scope so the daemon infers the per-agent default (global for
+      // global-only skill agents like Hermes/OpenClaw, project otherwise).
+      const result = await installMutation.mutateAsync({agent, entryId, registry})
       setFeedback({
         details: result.installedPath ? `Installed at ${result.installedPath}` : result.installedFiles.join('\n'),
         text: result.message,

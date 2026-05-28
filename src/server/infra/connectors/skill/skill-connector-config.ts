@@ -5,8 +5,15 @@ import type {Agent} from '../../../core/domain/entities/agent.js'
  * Paths are relative to their respective roots and do NOT include the skill name.
  */
 export type SkillConnectorConfig = {
+  /**
+   * Optional autonomous-agent instruction target that receives the managed
+   * ByteRover rules block in addition to the skill files.
+   */
+  attachment?: 'hermes' | 'openclaw'
   /** Base directory for skill files relative to user home directory */
   globalPath: string
+  /** Root used for globalPath. Defaults to user home. */
+  globalRoot?: 'hermes-home' | 'home' | 'openclaw-state'
   /** Base directory for skill files relative to project root */
   projectPath: null | string
 }
@@ -48,6 +55,12 @@ export const SKILL_CONNECTOR_CONFIGS = {
     globalPath: '.copilot/skills',
     projectPath: '.github/skills',
   },
+  Hermes: {
+    attachment: 'hermes',
+    globalPath: 'skills',
+    globalRoot: 'hermes-home',
+    projectPath: null,
+  },
   Junie: {
     globalPath: '.junie/skills',
     projectPath: '.junie/skills',
@@ -65,7 +78,9 @@ export const SKILL_CONNECTOR_CONFIGS = {
     projectPath: '.claude/skills',
   },
   OpenClaw: {
-    globalPath: '.openclaw/skills',
+    attachment: 'openclaw',
+    globalPath: 'skills',
+    globalRoot: 'openclaw-state',
     projectPath: null,
   },
   OpenCode: {
@@ -111,5 +126,19 @@ export const MAIN_SKILL_FILE_NAME = 'SKILL.md'
 
 /**
  * Names of the skill files written by the skill connector.
+ *
+ * The first entry MUST be MAIN_SKILL_FILE_NAME — `status` and `uninstall`
+ * use it as the install marker.
  */
-export const SKILL_FILE_NAMES = [MAIN_SKILL_FILE_NAME] as const
+export const SKILL_FILE_NAMES = [
+  MAIN_SKILL_FILE_NAME,
+  'onboarding.md',
+  'query.md',
+  'curate.md',
+  'review.md',
+  'swarm.md',
+  'vc.md',
+  'dream.md',
+  'history.md',
+  'troubleshooting.md',
+] as const

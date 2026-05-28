@@ -12,7 +12,7 @@
     "coding-assistant",
     "knowledge-management"
   ],
-  "version": "3.16.0",
+  "version": "3.16.1",
   "author": "ByteRover",
   "bin": {
     "brv": "./bin/run.js"

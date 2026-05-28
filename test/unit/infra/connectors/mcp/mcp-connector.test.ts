@@ -1,4 +1,5 @@
 import {expect} from 'chai'
+import {dump as yamlDump, load as yamlLoad} from 'js-yaml'
 import {mkdir, rm, writeFile} from 'node:fs/promises'
 import {homedir, tmpdir} from 'node:os'
 import path from 'node:path'
@@ -434,6 +435,166 @@ describe('McpConnector', () => {
           args: [], // eslint-disable-line perfectionist/sort-objects
         })
         expect(json.otherSetting).to.equal('preserved')
+      })
+    })
+  })
+
+  describe('Hermes (YAML, global scope)', () => {
+    const {serverConfig} = MCP_CONNECTOR_CONFIGS.Hermes
+    let files: Map<string, string>
+    let hermesConnector: McpConnector
+    let configPath: string
+
+    beforeEach(() => {
+      configPath = path.join(homedir(), '.hermes/config.yaml')
+      files = new Map()
+      const stubFileService: IFileService = {
+        async createBackup() {
+          return ''
+        },
+        async delete(p) {
+          files.delete(p)
+        },
+        async deleteDirectory() {},
+        async exists(p) {
+          return files.has(p)
+        },
+        async read(p) {
+          const c = files.get(p)
+          if (c === undefined) throw new Error('ENOENT')
+          return c
+        },
+        async replaceContent() {},
+        async write(content, p) {
+          files.set(p, content)
+        },
+      }
+      hermesConnector = new McpConnector({
+        fileService: stubFileService,
+        projectRoot: testDir,
+        templateService,
+      })
+    })
+
+    it('reports Hermes as supported', () => {
+      expect(hermesConnector.isSupported('Hermes')).to.be.true
+      expect(hermesConnector.getConfigPath('Hermes')).to.equal(configPath)
+    })
+
+    it('resolves the Hermes config path under HERMES_HOME when set', () => {
+      const previous = process.env.HERMES_HOME
+      const customHome = path.join(testDir, 'relocated-hermes')
+      process.env.HERMES_HOME = customHome
+      try {
+        expect(hermesConnector.getConfigPath('Hermes')).to.equal(path.join(customHome, 'config.yaml'))
+      } finally {
+        if (previous === undefined) delete process.env.HERMES_HOME
+        else process.env.HERMES_HOME = previous
+      }
+    })
+
+    describe('install', () => {
+      it('creates ~/.hermes/config.yaml with mcp_servers.brv when file is missing', async () => {
+        const result = await hermesConnector.install('Hermes')
+
+        expect(result.success).to.be.true
+        expect(result.alreadyInstalled).to.be.false
+        expect(result.configPath).to.equal(configPath)
+
+        const parsed = yamlLoad(files.get(configPath)!) as Record<string, Record<string, unknown>>
+        expect(parsed.mcp_servers.brv).to.deep.equal(serverConfig)
+      })
+
+      it('preserves unrelated Hermes config (model, other servers) when adding brv', async () => {
+        files.set(
+          configPath,
+          // eslint-disable-next-line camelcase
+          yamlDump({mcp_servers: {other: {command: 'other'}}, model: 'sonnet'}),
+        )
+
+        const result = await hermesConnector.install('Hermes')
+
+        expect(result.success).to.be.true
+        expect(result.alreadyInstalled).to.be.false
+
+        const parsed = yamlLoad(files.get(configPath)!) as Record<string, unknown>
+        const servers = parsed.mcp_servers as Record<string, unknown>
+        expect(parsed.model).to.equal('sonnet')
+        expect(servers.other).to.deep.equal({command: 'other'})
+        expect(servers.brv).to.deep.equal(serverConfig)
+      })
+
+      it('returns alreadyInstalled when brv server already present', async () => {
+        // eslint-disable-next-line camelcase
+        files.set(configPath, yamlDump({mcp_servers: {brv: serverConfig}}))
+
+        const result = await hermesConnector.install('Hermes')
+
+        expect(result.success).to.be.true
+        expect(result.alreadyInstalled).to.be.true
+      })
+    })
+
+    describe('status', () => {
+      it('returns configExists=false when file missing', async () => {
+        const result = await hermesConnector.status('Hermes')
+
+        expect(result.configExists).to.be.false
+        expect(result.installed).to.be.false
+      })
+
+      it('returns installed=true when brv server present', async () => {
+        // eslint-disable-next-line camelcase
+        files.set(configPath, yamlDump({mcp_servers: {brv: serverConfig}}))
+
+        const result = await hermesConnector.status('Hermes')
+
+        expect(result.configExists).to.be.true
+        expect(result.installed).to.be.true
+      })
+
+      it('returns installed=false when only other servers present', async () => {
+        // eslint-disable-next-line camelcase
+        files.set(configPath, yamlDump({mcp_servers: {other: {command: 'other'}}}))
+
+        const result = await hermesConnector.status('Hermes')
+
+        expect(result.configExists).to.be.true
+        expect(result.installed).to.be.false
+      })
+    })
+
+    describe('uninstall', () => {
+      it('returns wasInstalled=false when config does not exist', async () => {
+        const result = await hermesConnector.uninstall('Hermes')
+
+        expect(result.success).to.be.true
+        expect(result.wasInstalled).to.be.false
+      })
+
+      it('removes only brv entry, preserving other servers and root keys', async () => {
+        files.set(
+          configPath,
+          yamlDump({
+            // eslint-disable-next-line camelcase
+            mcp_servers: {
+              brv: serverConfig,
+              other: {command: 'other'},
+            },
+            model: 'sonnet',
+          }),
+        )
+
+        const result = await hermesConnector.uninstall('Hermes')
+
+        expect(result.success).to.be.true
+        expect(result.wasInstalled).to.be.true
+
+        const parsed = yamlLoad(files.get(configPath)!) as Record<string, unknown>
+        const servers = parsed.mcp_servers as Record<string, unknown>
+        expect(servers.brv).to.be.undefined
+        expect(servers.other).to.deep.equal({command: 'other'})
+        expect(parsed.model).to.equal('sonnet')
       })
     })
   })

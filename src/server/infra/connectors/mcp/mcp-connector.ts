@@ -1,3 +1,4 @@
+import {dump as yamlDump} from 'js-yaml'
 import {set} from 'lodash-es'
 import os from 'node:os'
 import path from 'node:path'
@@ -13,12 +14,7 @@ import type {ConnectorOperationOptions, IConnector} from '../../../core/interfac
 import type {IFileService} from '../../../core/interfaces/services/i-file-service.js'
 import type {IRuleTemplateService} from '../../../core/interfaces/services/i-rule-template-service.js'
 import type {IMcpConfigWriter} from '../../../core/interfaces/storage/i-mcp-config-writer.js'
-import type {
-  JsonMcpConnectorConfig,
-  McpConnectorConfig,
-  McpSupportedAgent,
-  TomlMcpConnectorConfig,
-} from './mcp-connector-config.js'
+import type {McpConnectorConfig, McpSupportedAgent} from './mcp-connector-config.js'
 
 import {AGENT_CONNECTOR_CONFIG} from '../../../core/domain/entities/agent.js'
 import {RULES_CONNECTOR_CONFIGS} from '../rules/rules-connector-config.js'
@@ -27,6 +23,7 @@ import {RuleFileManager} from '../shared/rule-file-manager.js'
 import {JsonMcpConfigWriter} from './json-mcp-config-writer.js'
 import {MCP_CONNECTOR_CONFIGS} from './mcp-connector-config.js'
 import {TomlMcpConfigWriter} from './toml-mcp-config-writer.js'
+import {YamlMcpConfigWriter} from './yaml-mcp-config-writer.js'
 
 /**
  * Options for constructing McpConnector.
@@ -211,6 +208,13 @@ export class McpConnector implements IConnector {
       })
     }
 
+    if (config.format === 'yaml') {
+      return new YamlMcpConfigWriter({
+        fileService: this.fileService,
+        serverKeyPath: config.serverKeyPath,
+      })
+    }
+
     return new TomlMcpConfigWriter({
       fileService: this.fileService,
       serverName: config.serverName,
@@ -222,15 +226,16 @@ export class McpConnector implements IConnector {
    */
   private formatConfigContent(config: McpConnectorConfig): string {
     if (config.format === 'json') {
-      // Build the nested JSON structure based on serverKeyPath
-      const jsonConfig = config as JsonMcpConnectorConfig
-      const result = set({}, jsonConfig.serverKeyPath, config.serverConfig)
+      const result = set({}, config.serverKeyPath, config.serverConfig)
       return JSON.stringify(result, null, 2)
     }
 
-    // TOML format
-    const tomlConfig = config as TomlMcpConnectorConfig
-    const lines = [`[mcp_servers.${tomlConfig.serverName}]`]
+    if (config.format === 'yaml') {
+      const result = set({}, config.serverKeyPath, config.serverConfig)
+      return yamlDump(result)
+    }
+
+    const lines = [`[mcp_servers.${config.serverName}]`]
     for (const [key, value] of Object.entries(config.serverConfig)) {
       if (typeof value === 'string') {
         lines.push(`${key} = "${value}"`)

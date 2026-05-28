@@ -11,6 +11,10 @@ All notable user-facing changes to ByteRover CLI will be documented in this file
   - `brv config get language.mode` / `brv config get language.code` — read back the current setting.
 
   CJK queries (Chinese, Japanese, Korean) are now searchable in BM25 — the tokenizer was previously whitespace-only and treated entire CJK sentences as one token. **Restoration recipe** for users who prefer the prior implicit-English behavior: `brv config set language.code en` then `brv config set language.mode fixed`. Reported by Dmitriy K — thanks for the thorough reproduction in [#616](https://github.com/campfirein/byterover-cli/issues/616).
+## [3.16.1]
+
+### Fixed
+- **Stay signed in across restarts.** A valid login could be misread at startup, dropping you into the provider picker and asking you to run `brv login` again on every launch. The CLI now reads your auth state correctly, so a signed-in session stays signed in.
 
 ## [3.16.0]
 

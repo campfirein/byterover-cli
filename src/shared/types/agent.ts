@@ -13,6 +13,7 @@ export const AGENT_VALUES = [
   'Cursor',
   'Gemini CLI',
   'Github Copilot',
+  'Hermes',
   'Junie',
   'Kilo Code',
   'Kiro',
