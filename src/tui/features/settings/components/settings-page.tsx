@@ -144,6 +144,12 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
 
       if (key.return || input === ' ') {
         const row = rows[cursor]
+        if (row.type === 'readonly-info') {
+          // Read-only rows refuse every mutation keybind: no toggle, no
+          // edit, no reset. Selection still works (Up/Down navigate).
+          return
+        }
+
         if (row.type === 'boolean') {
           toggleBoolean(row).catch(() => {})
         } else {
@@ -154,7 +160,9 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
       }
 
       if (input?.toLowerCase() === 'r') {
-        resetRow(rows[cursor]).catch(() => {})
+        const row = rows[cursor]
+        if (row.type === 'readonly-info') return
+        resetRow(row).catch(() => {})
       }
     },
     {isActive: mode === 'browse'},
@@ -211,7 +219,7 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
 
   const keyWidth = Math.max(40, ...rows.map((r) => r.label.length))
   const currentWidth = Math.max(7, ...rows.map((r) => r.displayCurrent.length))
-  const defaultWidth = Math.max(8, ...rows.map((r) => r.displayDefault.length))
+  const defaultWidth = Math.max(8, ...rows.map((r) => (r.displayDefault ?? '').length))
   const rangeWidth = Math.max(8, ...rows.map((r) => r.displayRange.length))
 
   return (
@@ -242,11 +250,14 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
               isSavingThis,
               width: currentWidth,
             })
+            const trailingCell = row.type === 'readonly-info'
+              ? pad('(read-only)', defaultWidth + 10)
+              : `${pad(`(default ${row.displayDefault ?? ''})`, defaultWidth + 10)}  ${pad(row.displayRange, rangeWidth)}`
             return (
               <Box flexDirection="column" key={row.key}>
                 <Text color={isSelected ? colors.primary : undefined}>
                   {marker}
-                  {pad(row.label, keyWidth)}  {currentDisplay}  {pad(`(default ${row.displayDefault})`, defaultWidth + 10)}  {pad(row.displayRange, rangeWidth)}
+                  {pad(row.label, keyWidth)}  {currentDisplay}  {trailingCell}
                 </Text>
                 {isSelected && rowError !== undefined && (
                   <Box marginLeft={2}>
@@ -260,7 +271,7 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
       ))}
 
       <Box marginTop={1}>
-        <Text>{bottomHintFor(hintMode, focusedRow?.key)}</Text>
+        <Text>{bottomHintFor(hintMode, focusedRow?.key, focusedRow?.type)}</Text>
       </Box>
     </Box>
   )

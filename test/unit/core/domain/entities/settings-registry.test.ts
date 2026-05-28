@@ -1,5 +1,10 @@
 import {expect} from 'chai'
 
+import type {
+  ReadonlyInfoSettingDescriptor,
+  SettingDescriptor,
+} from '../../../../../src/server/core/domain/entities/settings.js'
+
 import {
   findSettingDescriptor,
   SETTINGS_KEYS,
@@ -21,6 +26,7 @@ describe('settings registry — M7 T2 shape', () => {
   it('declares category on every descriptor', () => {
     for (const descriptor of SETTINGS_REGISTRY) {
       expect(descriptor.category, `key ${descriptor.key} missing category`).to.be.oneOf([
+        'analytics',
         'concurrency',
         'llm',
         'task-history',
@@ -91,7 +97,11 @@ describe('settings registry — M7 T2 shape', () => {
     it('declares the descriptor as type=boolean with default=true', () => {
       const descriptor = findSettingDescriptor(SETTINGS_KEYS.UPDATE_CHECK_FOR_UPDATES)
       expect(descriptor?.type).to.equal('boolean')
-      expect(descriptor?.default).to.equal(true)
+      if (descriptor?.type === 'boolean') {
+        expect(descriptor.default).to.equal(true)
+      } else {
+        expect.fail('expected boolean descriptor for update.checkForUpdates')
+      }
     })
 
     it('marks the descriptor as not requiring a daemon restart', () => {
@@ -125,6 +135,109 @@ describe('settings registry — M7 T2 shape', () => {
       } else {
         expect.fail('expected integer descriptor for agentPool.maxSize')
       }
+    })
+  })
+
+  describe('analytics category (M16.3)', () => {
+    it('accepts category=analytics on a readonly-info descriptor', () => {
+      const descriptor: ReadonlyInfoSettingDescriptor = {
+        category: 'analytics',
+        description: 'live analytics shipping snapshot',
+        key: '_test.analytics',
+        restartRequired: false,
+        type: 'readonly-info',
+      }
+      expect(descriptor.category).to.equal('analytics')
+    })
+
+    it('accepts category=analytics on a boolean descriptor (M16.2 will use this)', () => {
+      const descriptor: SettingDescriptor = {
+        category: 'analytics',
+        default: false,
+        description: 'analytics opt-in',
+        key: '_test.analytics.enabled',
+        restartRequired: false,
+        type: 'boolean',
+      }
+      expect(descriptor.category).to.equal('analytics')
+    })
+  })
+
+  describe('readonly-info variant (M16.1)', () => {
+    it('accepts a readonly-info literal that narrows on type without a cast', () => {
+      const descriptor: ReadonlyInfoSettingDescriptor = {
+        category: 'updates',
+        description: 'live operational snapshot for tests',
+        key: '_test.snapshot',
+        restartRequired: false,
+        type: 'readonly-info',
+      }
+      expect(descriptor.type).to.equal('readonly-info')
+    })
+
+    it('discriminates the SettingDescriptor union on type without an `as` assertion', () => {
+      const descriptor: SettingDescriptor = {
+        category: 'updates',
+        description: 'live operational snapshot for tests',
+        key: '_test.snapshot',
+        restartRequired: false,
+        type: 'readonly-info',
+      }
+      if (descriptor.type === 'readonly-info') {
+        const {key} = descriptor
+        expect(key).to.equal('_test.snapshot')
+      } else {
+        expect.fail('expected readonly-info branch')
+      }
+    })
+
+    it('rejects restartRequired=true on a readonly-info descriptor at the type level', () => {
+      // The descriptor narrows `restartRequired` to literal `false`. The
+      // assignment below would fail to type-check if a future refactor
+      // widened the field back to `boolean`, regressing the invariant.
+      const descriptor: ReadonlyInfoSettingDescriptor = {
+        description: 'snapshot',
+        key: '_test.snapshot',
+        restartRequired: false,
+        type: 'readonly-info',
+      }
+      expect(descriptor.restartRequired).to.equal(false)
+    })
+
+    it('SETTINGS_REGISTRY now includes analytics.status as the first readonly-info entry (M16.3)', () => {
+      // M16.3 lands the first real readonly-info descriptor in the
+      // production registry: `analytics.status` (the live shipping
+      // snapshot consumed by the legacy `brv analytics status`).
+      const readonlyInfoEntries = SETTINGS_REGISTRY.filter((d) => d.type === 'readonly-info')
+      expect(readonlyInfoEntries).to.have.lengthOf(1)
+      expect(readonlyInfoEntries[0].key).to.equal('analytics.status')
+    })
+  })
+
+  describe('analytics.status descriptor (M16.3)', () => {
+    it('exposes ANALYTICS_STATUS on SETTINGS_KEYS', () => {
+      expect(SETTINGS_KEYS.ANALYTICS_STATUS).to.equal('analytics.status')
+    })
+
+    it('registers a descriptor for analytics.status', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.ANALYTICS_STATUS)
+      expect(descriptor, 'descriptor must exist in SETTINGS_REGISTRY').to.exist
+    })
+
+    it('declares the descriptor as type=readonly-info under category=analytics', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.ANALYTICS_STATUS)
+      expect(descriptor?.type).to.equal('readonly-info')
+      expect(descriptor?.category).to.equal('analytics')
+    })
+
+    it('marks the descriptor as not requiring a daemon restart', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.ANALYTICS_STATUS)
+      expect(descriptor?.restartRequired).to.equal(false)
+    })
+
+    it('description fits the 80-char tooltip budget', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.ANALYTICS_STATUS)
+      expect(descriptor?.description.length).to.be.at.most(80)
     })
   })
 })

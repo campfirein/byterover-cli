@@ -1,4 +1,4 @@
-export type SettingsRowCategory = 'concurrency' | 'llm' | 'other' | 'task-history' | 'updates'
+export type SettingsRowCategory = 'analytics' | 'concurrency' | 'llm' | 'other' | 'task-history' | 'updates'
 export type SettingsRowUnit = 'count' | 'ms'
 
 /**
@@ -9,14 +9,18 @@ export type SettingsRowUnit = 'count' | 'ms'
  * Restart requirement is propagated from the descriptor verbatim (no
  * literal `true` constraint) so the dirty-banner filter on the page can
  * gate the restart warning per row.
+ *
+ * Readonly-info rows carry no `default` / `displayDefault`. The
+ * renderer must omit the `(default ...)` cell for them and skip
+ * edit / toggle / reset keybinds.
  */
 export interface SettingsRow {
   readonly category: SettingsRowCategory
-  readonly current: boolean | number
-  readonly default: boolean | number
+  readonly current: boolean | number | Readonly<Record<string, unknown>> | undefined
+  readonly default?: boolean | number
   readonly description: string
   readonly displayCurrent: string
-  readonly displayDefault: string
+  readonly displayDefault?: string
   readonly displayRange: string
   readonly key: string
   readonly label: string
@@ -24,7 +28,7 @@ export interface SettingsRow {
   readonly min?: number
   readonly modified: boolean
   readonly restartRequired: boolean
-  readonly type: 'boolean' | 'integer'
+  readonly type: 'boolean' | 'integer' | 'readonly-info'
   readonly unit?: SettingsRowUnit
 }
 
@@ -37,5 +41,6 @@ export const CATEGORY_ORDER: readonly SettingsRowCategory[] = [
   'llm',
   'task-history',
   'updates',
+  'analytics',
   'other',
 ]
