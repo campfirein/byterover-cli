@@ -17,6 +17,14 @@ export const TaskCreatedSchema = z
   .object({
     has_files: z.boolean(),
     has_folder: z.boolean(),
+    /**
+     * M16 follow-up: project-scoped join key, matching the convention every
+     * other handler-emitted event uses (vc-*, review-*, source-*, worktree-*,
+     * brv-init, context-tree-file-edited, webui-session-*). Optional because
+     * TaskInfo.projectPath is `?: string` — when the router does not resolve
+     * a project context the emit omits the field rather than fabricating one.
+     */
+    project_path_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
     task_id: z.string().min(1),
     task_type: z.enum(TASK_TYPE_VALUES),
   })

@@ -314,4 +314,54 @@ describe('AnalyticsHook M14.3 generic task_* emit simulation', () => {
       expect((op?.args[1] as Record<string, unknown>).relative_path).to.equal('<outside-project>/secret.md')
     })
   })
+
+  describe('project_path_hash (M16 follow-up): join-key parity with other handler-emitted events', () => {
+    it('stamps the sha256(projectPath) on every emit when task.projectPath is set', async () => {
+      const task = buildTask('curate', {projectPath: '/Users/dev/example-project', taskId: 'task-pph-1'})
+      await hook.onTaskCreate(task)
+      await hook.onToolResult('task-pph-1', buildCurateOpToolResult())
+      await hook.onTaskCompleted('task-pph-1', '', task)
+
+      const expectedHash = '8c8c8c'
+      const events = trackStub.getCalls().map((c) => ({
+        name: c.args[0] as string,
+        props: c.args[1] as Record<string, unknown>,
+      }))
+
+      // Every payload carries project_path_hash matching the sha256 hex regex.
+      for (const {name, props} of events) {
+        expect(props.project_path_hash, `${name} should carry project_path_hash`).to.be.a('string').and.match(/^[0-9a-f]{64}$/)
+      }
+
+      // All payloads share the same hash (same projectPath).
+      const hashes = new Set(events.map((e) => e.props.project_path_hash))
+      expect(hashes.size, 'all emits for one task share the same project_path_hash').to.equal(1)
+      // The value is NOT a placeholder string.
+      expect([...hashes][0]).to.not.equal(expectedHash)
+    })
+
+    it('omits the field when task.projectPath is undefined', async () => {
+      const task = buildTask('search', {projectPath: undefined, taskId: 'task-pph-noproj'})
+      await hook.onTaskCreate(task)
+      await hook.onTaskCompleted('task-pph-noproj', '', task)
+
+      const events = trackStub.getCalls().map((c) => c.args[1] as Record<string, unknown>)
+      for (const props of events) {
+        expect(props).to.not.have.property('project_path_hash')
+      }
+    })
+
+    it('matches hashProjectPath(projectPath) — verifiable from the public utility', async () => {
+      const {hashProjectPath} = await import('../../../../../src/server/utils/hash-path.js')
+      const projectPath = '/Users/dev/some/other/proj'
+      const expected = hashProjectPath(projectPath)
+
+      const task = buildTask('curate', {projectPath, taskId: 'task-pph-match'})
+      await hook.onTaskCreate(task)
+
+      const created = trackStub.getCalls().find((c) => c.args[0] === AnalyticsEventNames.TASK_CREATED)
+      const props = created?.args[1] as Record<string, unknown>
+      expect(props.project_path_hash).to.equal(expected)
+    })
+  })
 })

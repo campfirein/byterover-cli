@@ -18,6 +18,7 @@ import {AnalyticsEventNames} from '../../../shared/analytics/event-names.js'
 import {TaskTypes} from '../../../shared/analytics/task-types.js'
 import {parseFrontmatter} from '../../core/domain/knowledge/markdown-writer.js'
 import {extractCurateOperations} from '../../utils/curate-result-parser.js'
+import {hashProjectPath} from '../../utils/hash-path.js'
 import {processLog} from '../../utils/process-logger.js'
 import {readHtmlTopicSync} from '../render/reader/html-reader.js'
 import {CURATE_TASK_TYPES} from './curate-log-handler.js'
@@ -135,6 +136,19 @@ type FrontmatterFields = {
   keywords?: string[]
   related?: string[]
   tags?: string[]
+}
+
+/**
+ * M16 follow-up: project-scoped join key for the task / curate / query
+ * funnel events. Mirrors the convention every other handler-emitted
+ * event uses (vc-*, review-*, source-*, worktree-*, brv-init,
+ * context-tree-file-edited, webui-session-*). Returns `{}` when the
+ * project path is unset so the spread omits the field — schemas declare
+ * `project_path_hash` as optional for that reason.
+ */
+function projectPathHashOptional(projectPath: string | undefined): {project_path_hash?: string} {
+  if (typeof projectPath !== 'string' || projectPath.length === 0) return {}
+  return {project_path_hash: hashProjectPath(projectPath)}
 }
 
 /**
@@ -280,6 +294,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
     // per-flavor M12 emit (terminal-event-last convention).
     this.emit(AnalyticsEventNames.TASK_COMPLETED, {
       duration_ms: this.durationMs(task),
+      ...projectPathHashOptional(task.projectPath),
       task_id: taskId,
       task_type: toAnalyticsTaskType(task.type),
     })
@@ -296,6 +311,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
     this.emit(AnalyticsEventNames.TASK_CREATED, {
       has_files: (task.files?.length ?? 0) > 0,
       has_folder: typeof task.folderPath === 'string' && task.folderPath.length > 0,
+      ...projectPathHashOptional(task.projectPath),
       task_id: task.taskId,
       task_type: toAnalyticsTaskType(task.type),
     })
@@ -381,6 +397,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
       operations_updated: state.counters.updated,
       outcome,
       pending_review_count: state.counters.pendingReview,
+      ...projectPathHashOptional(task.projectPath ?? state.projectPath),
       task_id: taskId,
       task_type: toAnalyticsTaskType(state.taskType),
     }
@@ -466,6 +483,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
       duration_ms: this.durationMs(task),
       matched_doc_count: matchedDocCount,
       outcome,
+      ...projectPathHashOptional(task.projectPath),
       read_doc_count: readPaths.size,
       // M12.1 schema marks read_paths_with_metadata as optional outer array.
       // Mirror that: omit the field when the command had no read paths
@@ -549,6 +567,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
     this.emit(AnalyticsEventNames.TASK_FAILED, {
       duration_ms: this.durationMs(task),
       failure_kind: failureKind,
+      ...projectPathHashOptional(task.projectPath),
       task_id: taskId,
       task_type: toAnalyticsTaskType(task.type),
     })
@@ -618,6 +637,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
         knowledge_path: op.path,
         needs_review: op.needsReview ?? false,
         operation_type: op.type,
+        ...projectPathHashOptional(state.projectPath),
         ...(frontmatter.related ? {related: frontmatter.related} : {}),
         relative_path: toRelativePath(op.filePath, state.projectPath),
         tags: frontmatter.tags ?? [],
