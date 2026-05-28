@@ -197,4 +197,132 @@ describe('Environment Configuration', () => {
       expect(() => getCurrentConfig()).to.throw('Missing required environment variable: BRV_IAM_BASE_URL')
     })
   })
+
+  describe('BRV_ANALYTICS_BASE_URL resolution (no-fallback)', () => {
+    let savedAnalyticsBaseUrl: string | undefined
+
+    before(() => {
+      savedAnalyticsBaseUrl = process.env.BRV_ANALYTICS_BASE_URL
+    })
+
+    after(() => {
+      if (savedAnalyticsBaseUrl === undefined) {
+        delete process.env.BRV_ANALYTICS_BASE_URL
+      } else {
+        process.env.BRV_ANALYTICS_BASE_URL = savedAnalyticsBaseUrl
+      }
+    })
+
+    afterEach(() => {
+      delete process.env.BRV_ANALYTICS_BASE_URL
+    })
+
+    it('resolves to undefined when BRV_ANALYTICS_BASE_URL is unset (no code-side fallback)', async () => {
+      delete process.env.BRV_ANALYTICS_BASE_URL
+
+      const {getCurrentConfig} = await import(`../../../src/server/config/environment.js?t=${Date.now()}`)
+      const config = getCurrentConfig()
+
+      expect(config.analyticsBaseUrl).to.equal(undefined)
+    })
+
+    it('resolves to undefined when BRV_ANALYTICS_BASE_URL is an empty string', async () => {
+      process.env.BRV_ANALYTICS_BASE_URL = ''
+
+      const {getCurrentConfig} = await import(`../../../src/server/config/environment.js?t=${Date.now()}`)
+      const config = getCurrentConfig()
+
+      expect(config.analyticsBaseUrl).to.equal(undefined)
+    })
+
+    it('resolves to undefined when BRV_ANALYTICS_BASE_URL is whitespace only', async () => {
+      process.env.BRV_ANALYTICS_BASE_URL = '   '
+
+      const {getCurrentConfig} = await import(`../../../src/server/config/environment.js?t=${Date.now()}`)
+      const config = getCurrentConfig()
+
+      expect(config.analyticsBaseUrl).to.equal(undefined)
+    })
+
+    it('resolves to undefined and does not throw when BRV_ANALYTICS_BASE_URL is malformed', async () => {
+      process.env.BRV_ANALYTICS_BASE_URL = 'not-a-url'
+
+      const {getCurrentConfig} = await import(`../../../src/server/config/environment.js?t=${Date.now()}`)
+
+      expect(() => getCurrentConfig()).to.not.throw()
+      const config = getCurrentConfig()
+      expect(config.analyticsBaseUrl).to.equal(undefined)
+    })
+
+    it('preserves a valid URL and strips trailing slash', async () => {
+      process.env.BRV_ANALYTICS_BASE_URL = 'https://telemetry-test.example/'
+
+      const {getCurrentConfig} = await import(`../../../src/server/config/environment.js?t=${Date.now()}`)
+      const config = getCurrentConfig()
+
+      expect(config.analyticsBaseUrl).to.equal('https://telemetry-test.example')
+    })
+
+    describe('resolveAnalyticsBaseUrl (pure helper)', () => {
+      it('returns undefined and does not invoke the logger when input is undefined', async () => {
+        const {resolveAnalyticsBaseUrl} = await import(
+          `../../../src/server/config/environment.js?t=${Date.now()}`
+        )
+        const messages: string[] = []
+        const log = (message: string): void => {
+          messages.push(message)
+        }
+
+        const result = resolveAnalyticsBaseUrl(undefined, log)
+
+        expect(result).to.equal(undefined)
+        expect(messages).to.deep.equal([])
+      })
+
+      it('returns undefined and does not invoke the logger when input is empty / whitespace', async () => {
+        const {resolveAnalyticsBaseUrl} = await import(
+          `../../../src/server/config/environment.js?t=${Date.now()}`
+        )
+        const messages: string[] = []
+        const log = (message: string): void => {
+          messages.push(message)
+        }
+
+        expect(resolveAnalyticsBaseUrl('', log)).to.equal(undefined)
+        expect(resolveAnalyticsBaseUrl('   ', log)).to.equal(undefined)
+        expect(messages).to.deep.equal([])
+      })
+
+      it('returns undefined AND emits one warning naming the env var and the bad value on malformed input', async () => {
+        const {resolveAnalyticsBaseUrl} = await import(
+          `../../../src/server/config/environment.js?t=${Date.now()}`
+        )
+        const messages: string[] = []
+        const log = (message: string): void => {
+          messages.push(message)
+        }
+
+        const result = resolveAnalyticsBaseUrl('not-a-url', log)
+
+        expect(result).to.equal(undefined)
+        expect(messages).to.have.lengthOf(1)
+        expect(messages[0]).to.include('BRV_ANALYTICS_BASE_URL')
+        expect(messages[0]).to.include('not-a-url')
+      })
+
+      it('returns the normalized URL (trailing slash stripped) on valid input without logging', async () => {
+        const {resolveAnalyticsBaseUrl} = await import(
+          `../../../src/server/config/environment.js?t=${Date.now()}`
+        )
+        const messages: string[] = []
+        const log = (message: string): void => {
+          messages.push(message)
+        }
+
+        expect(resolveAnalyticsBaseUrl('https://valid.example/', log)).to.equal('https://valid.example')
+        expect(resolveAnalyticsBaseUrl('https://valid.example', log)).to.equal('https://valid.example')
+        expect(messages).to.deep.equal([])
+      })
+    })
+  })
 })
