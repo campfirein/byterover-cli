@@ -69,6 +69,10 @@ import {FolderPackExecutor} from '../executor/folder-pack-executor.js'
 import {QueryExecutor} from '../executor/query-executor.js'
 import {SearchExecutor} from '../executor/search-executor.js'
 import {backupContextTreeFile, buildCurateHtmlLogEntry} from '../process/curate-html-log.js'
+import {
+  emitSyntheticCurateToolResult,
+  emitSyntheticQueryToolCalls,
+} from '../process/synthetic-tool-result-emit.js'
 import {validateHtmlTopic, writeHtmlTopic} from '../render/writer/html-writer.js'
 import {FileCurateLogStore} from '../storage/file-curate-log-store.js'
 import {FileReviewBackupStore} from '../storage/file-review-backup-store.js'
@@ -759,26 +763,27 @@ async function executeTask(
             topicPathResolved = preValidation.topicPath
           }
 
+          const curateLogStore = new FileCurateLogStore({baseDir: storagePath})
+          const entryId = await curateLogStore.getNextId()
+          const logEntry = buildCurateHtmlLogEntry({
+            completedAt,
+            confirmOverwrite: Boolean(confirmOverwrite),
+            existedBefore,
+            // Absolute path — the review-handler treats `op.filePath` as
+            // absolute and calls `relative(contextTreeDir, ...)` to derive
+            // a display key. Storing a relative path here makes the entry
+            // unmatchable in `brv review approve`.
+            filePath: writeResult.ok ? writeResult.filePath : undefined,
+            id: entryId,
+            meta,
+            reviewDisabled: reviewDisabled ?? false,
+            startedAt,
+            taskId,
+            topicPath: topicPathResolved,
+            writeResult,
+          })
+
           try {
-            const curateLogStore = new FileCurateLogStore({baseDir: storagePath})
-            const entryId = await curateLogStore.getNextId()
-            const logEntry = buildCurateHtmlLogEntry({
-              completedAt,
-              confirmOverwrite: Boolean(confirmOverwrite),
-              existedBefore,
-              // Absolute path — the review-handler treats `op.filePath` as
-              // absolute and calls `relative(contextTreeDir, ...)` to derive
-              // a display key. Storing a relative path here makes the entry
-              // unmatchable in `brv review approve`.
-              filePath: writeResult.ok ? writeResult.filePath : undefined,
-              id: entryId,
-              meta,
-              reviewDisabled: reviewDisabled ?? false,
-              startedAt,
-              taskId,
-              topicPath: topicPathResolved,
-              writeResult,
-            })
             await curateLogStore.save(logEntry)
             logId = entryId
           } catch (error) {
@@ -788,6 +793,19 @@ async function executeTask(
             agentLog(
               `curate-tool-mode: failed to persist log entry for ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
             )
+          }
+
+          // M16: synthetic llmservice:toolResult so AnalyticsHook +
+          // CurateLogHandler fire `curate_operation_applied` and bump
+          // `curate_run_completed.operations_*` (the legacy LLM-driven
+          // path emitted this event; tool-mode has to forge it).
+          if (transport) {
+            emitSyntheticCurateToolResult({
+              log: agentLog,
+              operations: logEntry.operations,
+              taskId,
+              transport,
+            })
           }
 
           // Regenerate the context-tree index so the new topic appears in
@@ -1015,6 +1033,22 @@ async function executeTask(
             worktreeRoot,
           })
           result = JSON.stringify(toolModeResult)
+
+          // M16: synthetic llmservice:toolCall events so AnalyticsHook
+          // populates query_completed counters + read_paths_with_metadata
+          // (the legacy LLM path emitted these via real read_file /
+          // search_knowledge tool calls; tool-mode runs deterministic
+          // BM25 server-side and emits zero LLM events on its own).
+          if (transport) {
+            emitSyntheticQueryToolCalls({
+              log: agentLog,
+              matchedDocs: toolModeResult.matchedDocs,
+              metadata: toolModeResult.metadata,
+              projectPath,
+              taskId,
+              transport,
+            })
+          }
 
           break
         }
