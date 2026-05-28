@@ -570,6 +570,11 @@ export class TaskRouter {
         const callId = typeof data.callId === 'string' ? data.callId : undefined
         const sessionId = typeof data.sessionId === 'string' ? data.sessionId : ''
         const toolName = typeof data.toolName === 'string' ? data.toolName : ''
+        // PR #728 review fix: forward the M17 `_synthetic` marker from the
+        // wire envelope's `metadata` onto the persisted ToolCallEvent so
+        // downstream consumers (TaskHistoryHook, WebUI task-detail panel)
+        // can hide synthetic accumulator entries as internal plumbing.
+        const isSynthetic = isSyntheticLlmEvent(data)
         const newCall: ToolCallEvent = {
           args,
           ...(callId === undefined ? {} : {callId}),
@@ -577,6 +582,7 @@ export class TaskRouter {
           status: 'running',
           timestamp: Date.now(),
           toolName,
+          ...(isSynthetic ? {_synthetic: true as const} : {}),
         }
         this.tasks.set(taskId, {
           ...task,

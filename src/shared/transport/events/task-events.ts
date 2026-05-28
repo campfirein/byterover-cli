@@ -99,6 +99,15 @@ export type ReasoningContentItem = {
  * stored in `TaskHistoryEntry.toolCalls`.
  */
 export type ToolCallEvent = {
+  /**
+   * PR #728 review fix (M17): true when this entry was produced by the
+   * tool-mode synthetic-emit path (`synthetic-tool-result-emit.ts`)
+   * rather than a real LLM-driven tool call. The accumulator carries the
+   * flag forward from the inbound event's `metadata._synthetic` marker so
+   * downstream consumers (history persistence, WebUI task-detail panel)
+   * can filter or hide them as internal plumbing.
+   */
+  _synthetic?: true
   args: Record<string, unknown>
   callId?: string
   error?: string
