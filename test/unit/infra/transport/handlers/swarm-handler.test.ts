@@ -169,33 +169,37 @@ describe('SwarmHandler', () => {
   })
 
   describe('graceful degradation', () => {
-    it('returns {tracked: false, reason: analytics-unavailable} when no analyticsClient is wired', async () => {
-      const standaloneTransport = createMockTransportServer()
-      new SwarmHandler({transport: standaloneTransport}).setup()
-      const handler = standaloneTransport._handlers.get(SwarmEvents.TRACK_QUERY_COMPLETED)
-      if (handler === undefined) throw new Error('handler not registered')
+    // Run the degradation checks across every event so a future divergence
+    // (e.g. one handler refactored, others not) fails loudly.
+    const VALID_PAYLOAD_BY_EVENT: Record<string, Record<string, unknown>> = {
+      [SwarmEvents.TRACK_ONBOARDED]: {duration_ms: 1, member_count: 1, outcome: 'success', swarm_kind: 'new'},
+      [SwarmEvents.TRACK_QUERY_COMPLETED]: {duration_ms: 1, outcome: 'success'},
+      [SwarmEvents.TRACK_STORE_COMPLETED]: {duration_ms: 1, operation: 'create', outcome: 'success'},
+    }
 
-      const response = (await handler(
-        {duration_ms: 1, outcome: 'success'},
-        'client-1',
-      )) as SwarmTrackResponse
+    for (const eventName of Object.values(SwarmEvents)) {
+      it(`returns {tracked: false, reason: analytics-unavailable} for ${eventName} when no analyticsClient is wired`, async () => {
+        const standaloneTransport = createMockTransportServer()
+        new SwarmHandler({transport: standaloneTransport}).setup()
+        const handler = standaloneTransport._handlers.get(eventName)
+        if (handler === undefined) throw new Error('handler not registered')
 
-      expect(response.tracked).to.equal(false)
-      expect(response.reason).to.equal('analytics-unavailable')
-    })
+        const response = (await handler(VALID_PAYLOAD_BY_EVENT[eventName], 'client-1')) as SwarmTrackResponse
 
-    it('returns {tracked: false, reason: analytics-throw} when track() throws — never propagates to the caller', async () => {
-      const handler = transport._handlers.get(SwarmEvents.TRACK_QUERY_COMPLETED)
-      if (handler === undefined) throw new Error('handler not registered')
-      analyticsClient.trackThrows = new Error('queue full')
+        expect(response.tracked).to.equal(false)
+        expect(response.reason).to.equal('analytics-unavailable')
+      })
 
-      const response = (await handler(
-        {duration_ms: 5, outcome: 'success'},
-        'client-1',
-      )) as SwarmTrackResponse
+      it(`returns {tracked: false, reason: analytics-throw} for ${eventName} when track() throws`, async () => {
+        const handler = transport._handlers.get(eventName)
+        if (handler === undefined) throw new Error('handler not registered')
+        analyticsClient.trackThrows = new Error('queue full')
 
-      expect(response.tracked).to.equal(false)
-      expect(response.reason).to.equal('analytics-throw')
-    })
+        const response = (await handler(VALID_PAYLOAD_BY_EVENT[eventName], 'client-1')) as SwarmTrackResponse
+
+        expect(response.tracked).to.equal(false)
+        expect(response.reason).to.equal('analytics-throw')
+      })
+    }
   })
 })

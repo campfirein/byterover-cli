@@ -39,12 +39,18 @@ export type SwarmTrackStoreCompletedRequest = SwarmStoreCompletedProps
 export type SwarmTrackOnboardedRequest = SwarmOnboardedProps
 
 /**
+ * Closed enum so a typo or stray ad-hoc reason becomes a compile error
+ * rather than a silent miss on the consumer side.
+ */
+export type SwarmTrackReason = 'analytics-throw' | 'analytics-unavailable' | 'schema-rejection'
+
+/**
  * The handler returns a small ack so the CLI can confirm the emit was
  * accepted (or learn it was schema-rejected). Analytics-handler.ts pattern.
  */
 export interface SwarmTrackResponse {
   /** Set when the daemon dropped the emit; populated for schema-rejection or analytics-disabled. */
-  reason?: string
+  reason?: SwarmTrackReason
   /**
    * True when the daemon accepted the payload and forwarded to the
    * analytics client. False when validation failed or the analytics

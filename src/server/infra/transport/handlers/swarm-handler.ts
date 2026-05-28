@@ -22,9 +22,6 @@
  * handler internals change; CLI / LLM-tool callers stay unchanged.
  */
 
-import type {SwarmOnboardedProps} from '../../../../shared/analytics/events/swarm-onboarded.js'
-import type {SwarmQueryCompletedProps} from '../../../../shared/analytics/events/swarm-query-completed.js'
-import type {SwarmStoreCompletedProps} from '../../../../shared/analytics/events/swarm-store-completed.js'
 import type {
   SwarmTrackOnboardedRequest,
   SwarmTrackQueryCompletedRequest,
@@ -76,46 +73,48 @@ export class SwarmHandler {
     )
   }
 
-  private emit<P>(
-    eventName: typeof AnalyticsEventNames[keyof typeof AnalyticsEventNames],
-    properties: P,
-  ): SwarmTrackResponse {
-    const client = this.analyticsClient
-    if (!client) return {reason: 'analytics-unavailable', tracked: false}
-    try {
-      // The `track` method is typed against AnalyticsEventNames; the
-      // dispatch above ensures each branch passes the matching props
-      // type. A direct call here keeps the type-narrowing without an
-      // `as` cast — the schema parse already validated the shape.
-      ;(client.track as (event: string, props: P) => void)(eventName, properties)
-      return {tracked: true}
-    } catch (error) {
-      processLog(
-        `[Swarm] analytics track ${eventName} failed: ${error instanceof Error ? error.message : String(error)}`,
-      )
-      return {reason: 'analytics-throw', tracked: false}
-    }
-  }
-
   private handleTrackOnboarded(data: SwarmTrackOnboardedRequest): SwarmTrackResponse {
     const parsed = SwarmOnboardedSchema.safeParse(data)
     if (!parsed.success) return {reason: 'schema-rejection', tracked: false}
-    return this.emit<SwarmOnboardedProps>(AnalyticsEventNames.SWARM_ONBOARDED, parsed.data)
+    return this.runEmit(AnalyticsEventNames.SWARM_ONBOARDED, (client) =>
+      client.track(AnalyticsEventNames.SWARM_ONBOARDED, parsed.data),
+    )
   }
 
   private handleTrackQueryCompleted(data: SwarmTrackQueryCompletedRequest): SwarmTrackResponse {
     // Validate at the transport boundary — the CLI is an external trust
-    // boundary even though we ship it ourselves. A future re-version of
-    // the CLI sending an outdated wire shape gets a clean rejection here
-    // rather than a malformed row in raw_events.
+    // boundary even though we ship it ourselves.
     const parsed = SwarmQueryCompletedSchema.safeParse(data)
     if (!parsed.success) return {reason: 'schema-rejection', tracked: false}
-    return this.emit<SwarmQueryCompletedProps>(AnalyticsEventNames.SWARM_QUERY_COMPLETED, parsed.data)
+    return this.runEmit(AnalyticsEventNames.SWARM_QUERY_COMPLETED, (client) =>
+      client.track(AnalyticsEventNames.SWARM_QUERY_COMPLETED, parsed.data),
+    )
   }
 
   private handleTrackStoreCompleted(data: SwarmTrackStoreCompletedRequest): SwarmTrackResponse {
     const parsed = SwarmStoreCompletedSchema.safeParse(data)
     if (!parsed.success) return {reason: 'schema-rejection', tracked: false}
-    return this.emit<SwarmStoreCompletedProps>(AnalyticsEventNames.SWARM_STORE_COMPLETED, parsed.data)
+    return this.runEmit(AnalyticsEventNames.SWARM_STORE_COMPLETED, (client) =>
+      client.track(AnalyticsEventNames.SWARM_STORE_COMPLETED, parsed.data),
+    )
+  }
+
+  /**
+   * Shared try/catch wrapper. The thunk does the literal-narrowed
+   * `track(NAME, props)` call so TS infers `PropsArg<E>` per event — no
+   * generic widening, no `as` cast.
+   */
+  private runEmit(eventLabel: string, fn: (client: IAnalyticsClient) => void): SwarmTrackResponse {
+    const client = this.analyticsClient
+    if (!client) return {reason: 'analytics-unavailable', tracked: false}
+    try {
+      fn(client)
+      return {tracked: true}
+    } catch (error) {
+      processLog(
+        `[Swarm] analytics track ${eventLabel} failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return {reason: 'analytics-throw', tracked: false}
+    }
   }
 }
