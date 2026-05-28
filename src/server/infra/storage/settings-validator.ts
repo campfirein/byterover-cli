@@ -105,6 +105,11 @@ export class SettingsValidator {
         continue
       }
 
+      if (descriptor.storage === 'global-config') {
+        invalid.push({key, reason: `'${key}' is stored in config.json, not settings.json`, value})
+        continue
+      }
+
       try {
         valid[key] = validateWritableAgainst(descriptor, value)
       } catch (error) {
@@ -142,6 +147,14 @@ export class SettingsValidator {
     const descriptor = this.validateKey(key)
     if (descriptor.type === 'readonly-info') {
       throw new ReadonlySettingKeyError(key)
+    }
+
+    if (descriptor.storage === 'global-config') {
+      throw new InvalidSettingValueError(
+        key,
+        value,
+        `'${key}' is stored in config.json, not settings.json; use the SettingsHandler facade`,
+      )
     }
 
     return validateWritableAgainst(descriptor, value)

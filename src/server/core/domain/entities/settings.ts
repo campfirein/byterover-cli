@@ -35,16 +35,33 @@ type BaseSettingDescriptor = {
   readonly restartRequired: boolean
 }
 
+/**
+ * Where the writable value's canonical storage lives.
+ *
+ * - `'file'` (default, omitted on most descriptors) — persisted to
+ *   `<BRV_DATA_DIR>/settings.json` via `FileSettingsStore`.
+ * - `'global-config'` — persisted to `<BRV_DATA_DIR>/config.json` via
+ *   `GlobalConfigHandler`. The settings handler routes GET/SET/RESET/LIST
+ *   for these keys through the global-config facade; the file store
+ *   refuses to persist them.
+ *
+ * Read-only descriptors (`readonly-info`) are never persisted and do
+ * not carry this field.
+ */
+export type SettingStorage = 'file' | 'global-config'
+
 export type IntegerSettingDescriptor = BaseSettingDescriptor & {
   readonly default: number
   readonly max: number
   readonly min: number
+  readonly storage?: SettingStorage
   readonly type: 'integer'
   readonly unit?: SettingUnit
 }
 
 export type BooleanSettingDescriptor = BaseSettingDescriptor & {
   readonly default: boolean
+  readonly storage?: SettingStorage
   readonly type: 'boolean'
 }
 
@@ -100,6 +117,7 @@ export type SettingItem = {
 export const SETTINGS_KEYS = {
   AGENT_POOL_MAX_CONCURRENT_TASKS: 'agentPool.maxConcurrentTasksPerProject',
   AGENT_POOL_MAX_SIZE: 'agentPool.maxSize',
+  ANALYTICS_ENABLED: 'analytics.enabled',
   ANALYTICS_STATUS: 'analytics.status',
   LLM_ITERATION_BUDGET_MS: 'llm.iterationBudgetMs',
   LLM_REQUEST_TIMEOUT_MS: 'llm.requestTimeoutMs',
@@ -174,6 +192,15 @@ export const SETTINGS_REGISTRY: readonly SettingDescriptor[] = [
     key: SETTINGS_KEYS.ANALYTICS_STATUS,
     restartRequired: false,
     type: 'readonly-info',
+  },
+  {
+    category: 'analytics',
+    default: false,
+    description: 'Send anonymous telemetry to ByteRover. Local tracking is always on.',
+    key: SETTINGS_KEYS.ANALYTICS_ENABLED,
+    restartRequired: false,
+    storage: 'global-config',
+    type: 'boolean',
   },
 ]
 

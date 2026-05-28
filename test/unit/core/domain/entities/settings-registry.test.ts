@@ -214,6 +214,52 @@ describe('settings registry — M7 T2 shape', () => {
     })
   })
 
+  describe('analytics.enabled descriptor (M16.2)', () => {
+    it('exposes ANALYTICS_ENABLED on SETTINGS_KEYS', () => {
+      expect(SETTINGS_KEYS.ANALYTICS_ENABLED).to.equal('analytics.enabled')
+    })
+
+    it('registers a descriptor for analytics.enabled', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.ANALYTICS_ENABLED)
+      expect(descriptor, 'descriptor must exist in SETTINGS_REGISTRY').to.exist
+    })
+
+    it('declares the descriptor as type=boolean, default=false, category=analytics, restartRequired=false', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.ANALYTICS_ENABLED)
+      expect(descriptor?.type).to.equal('boolean')
+      if (descriptor?.type === 'boolean') {
+        expect(descriptor.default).to.equal(false)
+      }
+
+      expect(descriptor?.category).to.equal('analytics')
+      expect(descriptor?.restartRequired).to.equal(false)
+    })
+
+    it('declares storage=global-config so the file store skips persistence', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.ANALYTICS_ENABLED)
+      // `storage` is an optional field on writable descriptors; defaults to 'file'.
+      // analytics.enabled lives in `config.json`, not `settings.json`.
+      if (descriptor?.type === 'boolean') {
+        expect(descriptor.storage).to.equal('global-config')
+      } else {
+        expect.fail('expected boolean descriptor for analytics.enabled')
+      }
+    })
+
+    it('description fits the 80-char tooltip budget', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.ANALYTICS_ENABLED)
+      expect(descriptor?.description.length).to.be.at.most(80)
+    })
+
+    it('existing writable descriptors omit the storage field (defaults to file)', () => {
+      const maxSize = findSettingDescriptor(SETTINGS_KEYS.AGENT_POOL_MAX_SIZE)
+      if (maxSize?.type === 'integer') {
+        // Optional field; existing descriptors do not declare it.
+        expect(maxSize.storage === undefined || maxSize.storage === 'file').to.equal(true)
+      }
+    })
+  })
+
   describe('analytics.status descriptor (M16.3)', () => {
     it('exposes ANALYTICS_STATUS on SETTINGS_KEYS', () => {
       expect(SETTINGS_KEYS.ANALYTICS_STATUS).to.equal('analytics.status')

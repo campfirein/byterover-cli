@@ -1,8 +1,4 @@
-import {confirm} from '@inquirer/prompts'
 import {Command, Flags} from '@oclif/core'
-import {readFile} from 'node:fs/promises'
-import {dirname, resolve} from 'node:path'
-import {fileURLToPath} from 'node:url'
 
 import {PRIVACY_POLICY_URL} from '../../../shared/constants/privacy.js'
 import {
@@ -10,16 +6,13 @@ import {
   type GlobalConfigGetResponse,
   type GlobalConfigSetAnalyticsResponse,
 } from '../../../shared/transport/events/global-config-events.js'
+import {
+  collectConsent as libCollectConsent,
+  confirmDisclosure as libConfirmDisclosure,
+  isInteractive as libIsInteractive,
+  loadDisclosure as libLoadDisclosure,
+} from '../../lib/analytics-disclosure.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
-
-// The disclosure markdown is a static asset (PM/legal own its copy) that the
-// build copies into dist/server/templates/sections/. Reading it as a file from
-// oclif is a runtime fs read, not a TypeScript import, so the oclif-server
-// boundary rule is preserved. If a future need surfaces the disclosure to
-// other surfaces (e.g. the M1.7 webui rendering it as HTML), consider moving
-// the asset under src/shared/ or serving it via a daemon transport event.
-const here = dirname(fileURLToPath(import.meta.url))
-const DISCLOSURE_PATH = resolve(here, '../../../server/templates/sections/analytics-disclosure.md')
 
 export default class Enable extends Command {
   public static description = `Enable ByteRover CLI analytics.
@@ -41,8 +34,12 @@ Disable any time with: brv analytics disable`
     }),
   }
 
+  // Thin wrappers delegating to the shared disclosure lib. Preserved as
+  // protected methods so the existing test subclass (which overrides them)
+  // keeps working. This whole command file is slated for deletion once the
+  // unified `brv settings` surface replaces `brv analytics`.
   protected async confirmDisclosure(): Promise<boolean> {
-    return confirm({default: false, message: 'Enable analytics with the terms above?'})
+    return libConfirmDisclosure()
   }
 
   protected async getCurrentAnalytics(options?: DaemonClientOptions): Promise<boolean> {
@@ -53,11 +50,11 @@ Disable any time with: brv analytics disable`
   }
 
   protected isInteractive(): boolean {
-    return process.stdin.isTTY === true && process.stdout.isTTY === true
+    return libIsInteractive()
   }
 
   protected async loadDisclosure(): Promise<string> {
-    return readFile(DISCLOSURE_PATH, 'utf8')
+    return libLoadDisclosure()
   }
 
   public async run(): Promise<void> {
@@ -107,20 +104,16 @@ Disable any time with: brv analytics disable`
   }
 
   private async collectConsent(yesFlag: boolean): Promise<boolean> {
-    const disclosure = await this.loadDisclosure()
-    this.log(disclosure)
-
-    if (yesFlag) {
-      return true
-    }
-
-    if (!this.isInteractive()) {
-      this.error(
-        'Cannot enable analytics in non-interactive mode without confirmation.\n' +
-          'Re-run in a terminal, or pass --yes to accept the disclosure non-interactively.',
-      )
-    }
-
-    return this.confirmDisclosure()
+    // Delegate the consent flow to the shared lib but preserve the subclass-override
+    // hooks (`this.loadDisclosure`, `this.isInteractive`, `this.confirmDisclosure`)
+    // so existing tests that stub them keep working.
+    return libCollectConsent({
+      loadFn: () => this.loadDisclosure(),
+      onError: (msg) => this.error(msg),
+      onLog: (msg) => this.log(msg),
+      promptFn: () => this.confirmDisclosure(),
+      ttyCheck: () => this.isInteractive(),
+      yesFlag,
+    })
   }
 }

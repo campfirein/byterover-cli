@@ -301,6 +301,11 @@ export async function setupFeatureHandlers({
   }
   new SettingsHandler({
     analyticsClient,
+    // Route `analytics.enabled` GET/SET/RESET/LIST through the
+    // global-config handler so the canonical storage in config.json, the
+    // device-id seeding race fix, the analytics cache, and the
+    // abort-on-disable side-effect all stay unchanged.
+    globalConfigHandler,
     infoProviders: new Map([
       ['analytics.status', async () => buildAnalyticsStatusSnapshot(analyticsStatusSnapshotDeps)],
     ]),

@@ -1,5 +1,6 @@
-import {Args, Command, Flags} from '@oclif/core'
+import {Args, Command, Errors, Flags} from '@oclif/core'
 
+import {SETTINGS_KEYS} from '../../../server/core/domain/entities/settings.js'
 import {
   SettingsEvents,
   type SettingsGetRequest,
@@ -14,6 +15,7 @@ import {
   formatDuration,
   parseDuration,
 } from '../../../shared/utils/format-duration.js'
+import {collectConsent} from '../../lib/analytics-disclosure.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
 
@@ -40,6 +42,13 @@ export default class SettingsSet extends Command {
       default: 'text',
       description: 'Output format (text or json)',
       options: ['text', 'json'],
+    }),
+    // Skip the analytics disclosure prompt (CI / non-interactive).
+    // No-op for non-analytics keys.
+    yes: Flags.boolean({
+      char: 'y',
+      default: false,
+      description: 'Skip the analytics disclosure prompt (CI / non-interactive)',
     }),
   }
 
@@ -100,6 +109,37 @@ export default class SettingsSet extends Command {
         return
       }
 
+      // Enable-to-true on `analytics.enabled` triggers the disclosure
+      // prompt. Idempotent (no prompt if already enabled), false-unchanged,
+      // and other keys unaffected. `collectConsent`'s `onError` calls
+      // `this.error()` which throws CLIError; we let it propagate to
+      // oclif's exit handler (clean message, non-zero exit).
+      if (
+        args.key === SETTINGS_KEYS.ANALYTICS_ENABLED &&
+        parsed.value === true &&
+        descriptor.current !== true
+      ) {
+        const accepted = await collectConsent({
+          onError: (msg) => this.error(msg),
+          onLog: (msg) => this.log(msg),
+          yesFlag: flags.yes,
+        })
+
+        if (!accepted) {
+          if (format === 'json') {
+            writeJsonResponse({
+              command: 'settings set',
+              data: {accepted: false, key: args.key},
+              success: true,
+            })
+          } else {
+            this.log('Analytics not enabled')
+          }
+
+          return
+        }
+      }
+
       const response = await this.writeSetting(args.key, parsed.value)
 
       if (response.ok) {
@@ -124,6 +164,14 @@ export default class SettingsSet extends Command {
         this.log(response.error.message)
       }
     } catch (error) {
+      // CLIError thrown from `this.error()` (e.g. the non-TTY disclosure
+      // guard) carries its own clean message + exit code via oclif's exit
+      // handler — let it propagate untouched. Everything else gets the
+      // daemon-connection-friendly formatter.
+      if (error instanceof Errors.CLIError) {
+        throw error
+      }
+
       process.exitCode = 1
       if (format === 'json') {
         writeJsonResponse({command: 'settings set', data: {error: formatConnectionError(error)}, success: false})

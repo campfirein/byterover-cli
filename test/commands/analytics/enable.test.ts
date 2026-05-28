@@ -231,7 +231,7 @@ describe('analytics enable command (M1.4 disclosure UX)', () => {
   describe('6. disclosure markdown contains all required sections', () => {
     it('should include the five required sections plus the privacy policy link', async () => {
       const here = dirname(fileURLToPath(import.meta.url))
-      const disclosurePath = resolve(here, '../../../src/server/templates/sections/analytics-disclosure.md')
+      const disclosurePath = resolve(here, '../../../src/shared/assets/analytics-disclosure.md')
       const text = await readFile(disclosurePath, 'utf8')
 
       expect(text, 'what-is-collected section').to.match(/what is collected/i)

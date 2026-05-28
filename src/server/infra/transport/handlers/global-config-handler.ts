@@ -91,6 +91,18 @@ export class GlobalConfigHandler {
   }
 
   /**
+   * Public async read of the persisted analytics flag. Surfaced for
+   * the SettingsHandler facade so `brv settings get analytics.enabled`
+   * resolves through the SAME `globalConfigStore.read()` path that
+   * `globalConfig:get` uses. Returns the on-disk value (or `false`
+   * when no config file exists).
+   */
+  async getCurrentAnalytics(): Promise<boolean> {
+    const response = await this.read()
+    return response.analytics
+  }
+
+  /**
    * Synchronously refreshes the cached analytics flag from disk. Daemon
    * bootstrap awaits this once before constructing AnalyticsClient so
    * the very first `track()` (e.g. `daemon_start`) sees the correct
@@ -122,6 +134,17 @@ export class GlobalConfigHandler {
    */
   setAnalyticsClient(client: IAnalyticsClient): void {
     this.analyticsClient = client
+  }
+
+  /**
+   * Public write of the analytics flag. Surfaced for the SettingsHandler
+   * facade so `brv settings set analytics.enabled <value>` goes through
+   * the SAME write path as `globalConfig:setAnalytics` — concurrent-safe
+   * via `writeChain`, refreshes the cache, emits `analytics_disabled`,
+   * triggers the abort-on-disable on the analytics client.
+   */
+  async setAnalyticsValue(value: boolean): Promise<GlobalConfigSetAnalyticsResponse> {
+    return this.setAnalytics(value)
   }
 
   setup(): void {

@@ -6,11 +6,17 @@ import type {SettingsRow} from '../../../../shared/types/settings-row.js'
 import type {CustomDialogCallbacks} from '../../../types/commands.js'
 
 import {buildSettingsRows, parseRowInput} from '../../../../shared/utils/format-settings.js'
+import {loadAnalyticsDisclosureText} from '../../../../shared/utils/load-analytics-disclosure.js'
 import {useTheme} from '../../../hooks/index.js'
 import {useGetSettings, useResetSetting, useSetSetting} from '../api/settings-api.js'
 import {bottomHintFor, groupRowsByCategory, preFillBufferFor} from '../utils/format-settings.js'
 
-type Mode = 'browse' | 'edit' | 'saving'
+type Mode = 'browse' | 'confirm-disclosure' | 'edit' | 'saving'
+
+// Hardcoded to avoid the `tui/` -> `server/` boundary violation that
+// would happen if we imported SETTINGS_KEYS. The string is a stable
+// contract — a rename would require a config-migration ticket regardless.
+const ANALYTICS_ENABLED_KEY = 'analytics.enabled'
 
 export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): React.ReactNode {
   const {data, error, isLoading} = useGetSettings()
@@ -25,12 +31,21 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
   const [editBuffer, setEditBuffer] = useState('')
   const [rowError, setRowError] = useState<string | undefined>()
   const [dirtyKeys, setDirtyKeys] = useState<ReadonlySet<string>>(new Set())
+  const [disclosureText, setDisclosureText] = useState<string | undefined>()
+  const [pendingDisclosureRow, setPendingDisclosureRow] = useState<SettingsRow | undefined>()
 
   const rows = useMemo<SettingsRow[]>(() => (data ? buildSettingsRows(data.items) : []), [data])
   const groups = useMemo(() => groupRowsByCategory(rows), [rows])
   const focusedRow = rows[cursor]
+  // `hintMode` only feeds the bottom hint on the row-list render. The
+  // `confirm-disclosure` mode short-circuits that render entirely (its
+  // own hint is inlined below), so it never reaches `bottomHintFor`.
   const hintMode: 'browse' | 'edit' | 'edit-error' | 'saving' =
-    mode === 'edit' && rowError !== undefined ? 'edit-error' : mode
+    mode === 'confirm-disclosure'
+      ? 'browse'
+      : mode === 'edit' && rowError !== undefined
+        ? 'edit-error'
+        : mode
 
   // Restart warning fires only when at least one dirty key actually
   // requires a daemon restart. Boolean toggles (e.g. update.checkForUpdates,
@@ -99,12 +114,11 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
     [resetMutation],
   )
 
-  const toggleBoolean = useCallback(
-    async (row: SettingsRow) => {
-      if (row.type !== 'boolean' || typeof row.current !== 'boolean') return
+  const performToggle = useCallback(
+    async (row: SettingsRow, nextValue: boolean) => {
       setMode('saving')
       setRowError(undefined)
-      const response = await setMutation.mutateAsync({key: row.key, value: !row.current})
+      const response = await setMutation.mutateAsync({key: row.key, value: nextValue})
       if (response.ok) {
         setDirtyKeys((previous) => {
           const next = new Set(previous)
@@ -119,6 +133,34 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
       setMode('browse')
     },
     [setMutation],
+  )
+
+  const toggleBoolean = useCallback(
+    async (row: SettingsRow) => {
+      if (row.type !== 'boolean' || typeof row.current !== 'boolean') return
+
+      // analytics.enabled false -> true requires the disclosure consent
+      // prompt. Load the markdown and switch into the confirm-disclosure
+      // mode; the user must press Enter to accept (which fires the actual
+      // SET) or Esc to cancel.
+      if (row.key === ANALYTICS_ENABLED_KEY && row.current === false) {
+        setRowError(undefined)
+        setPendingDisclosureRow(row)
+        try {
+          const text = await loadAnalyticsDisclosureText()
+          setDisclosureText(text)
+          setMode('confirm-disclosure')
+        } catch (error) {
+          setRowError(error instanceof Error ? error.message : String(error))
+          setPendingDisclosureRow(undefined)
+        }
+
+        return
+      }
+
+      await performToggle(row, !row.current)
+    },
+    [performToggle],
   )
 
   useInput(
@@ -203,6 +245,26 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
     {isActive: mode === 'saving'},
   )
 
+  // Disclosure confirm: Enter accepts and flips the flag, Esc cancels
+  // without flipping. Up/Down do nothing — the disclosure is a single
+  // modal-ish overlay; navigation resumes after the choice.
+  useInput(
+    (_input, key) => {
+      if (key.escape) {
+        setMode('browse')
+        setPendingDisclosureRow(undefined)
+        return
+      }
+
+      if (key.return) {
+        const row = pendingDisclosureRow
+        setPendingDisclosureRow(undefined)
+        if (row !== undefined) performToggle(row, true).catch(() => {})
+      }
+    },
+    {isActive: mode === 'confirm-disclosure'},
+  )
+
   React.useEffect(() => {
     if (error) {
       onComplete(`Failed to load settings: ${error.message}`)
@@ -214,6 +276,31 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
       <Text>
         <Spinner type="dots" /> Loading settings...
       </Text>
+    )
+  }
+
+  // Disclosure overlay. Renders the full markdown text + prompt; the
+  // surrounding row list is hidden so the user focuses on the
+  // disclosure. Enter confirms, Esc cancels.
+  if (mode === 'confirm-disclosure') {
+    return (
+      <Box flexDirection="column">
+        <Box marginBottom={1}>
+          <Text>ANALYTICS DISCLOSURE</Text>
+        </Box>
+        {disclosureText === undefined ? (
+          <Text>
+            <Spinner type="dots" /> Loading disclosure...
+          </Text>
+        ) : (
+          <Box flexDirection="column">
+            <Text>{disclosureText}</Text>
+          </Box>
+        )}
+        <Box marginTop={1}>
+          <Text color={colors.primary}>Enter: enable analytics | Esc: cancel</Text>
+        </Box>
+      </Box>
     )
   }
 
