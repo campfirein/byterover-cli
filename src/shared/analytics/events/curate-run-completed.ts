@@ -26,6 +26,8 @@ export const CurateRunCompletedSchema = z
     operations_updated: z.number().int().nonnegative(),
     outcome: z.enum(['completed', 'partial', 'cancelled', 'error']),
     pending_review_count: z.number().int().nonnegative(),
+    /** M17 follow-up: see task-created.ts for the rationale. */
+    project_path_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
     task_id: z.string().min(1),
     task_type: z.enum(TASK_TYPE_VALUES),
   })

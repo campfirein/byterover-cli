@@ -169,6 +169,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * M17: tool-mode curate / query emit synthetic `llmservice:toolResult` /
+ * `llmservice:toolCall` events so the lifecycle-hook chain (AnalyticsHook,
+ * CurateLogHandler, QueryLogHandler) has inputs. Those events MUST NOT
+ * broadcast to clients (CLI, TUI, MCP, webui) — they're internal plumbing,
+ * not user-visible progress. The marker lives under `metadata._synthetic`
+ * (declared in synthetic-tool-result-emit.ts:SYNTHETIC_EVENT_METADATA).
+ */
+function isSyntheticLlmEvent(data: {[key: string]: unknown}): boolean {
+  return isRecord(data.metadata) && data.metadata._synthetic === true
+}
+
+/**
  * Bounded-concurrency map for async I/O (M2.16 pass-2 lazy crack of data files).
  * Keeps file-descriptor usage well under macOS default soft limit (256).
  * No external dep (`p-limit` is not installed); ~10 lines hand-roll.
@@ -558,6 +570,11 @@ export class TaskRouter {
         const callId = typeof data.callId === 'string' ? data.callId : undefined
         const sessionId = typeof data.sessionId === 'string' ? data.sessionId : ''
         const toolName = typeof data.toolName === 'string' ? data.toolName : ''
+        // PR #728 review fix: forward the M17 `_synthetic` marker from the
+        // wire envelope's `metadata` onto the persisted ToolCallEvent so
+        // downstream consumers (TaskHistoryHook, WebUI task-detail panel)
+        // can hide synthetic accumulator entries as internal plumbing.
+        const isSynthetic = isSyntheticLlmEvent(data)
         const newCall: ToolCallEvent = {
           args,
           ...(callId === undefined ? {} : {callId}),
@@ -565,6 +582,7 @@ export class TaskRouter {
           status: 'running',
           timestamp: Date.now(),
           toolName,
+          ...(isSynthetic ? {_synthetic: true as const} : {}),
         }
         this.tasks.set(taskId, {
           ...task,
@@ -1882,15 +1900,23 @@ export class TaskRouter {
       }
     }
 
-    this.transport.sendTo(task.clientId, eventName, {taskId, ...rest})
-    broadcastToProjectRoom(
-      this.projectRegistry,
-      this.projectRouter,
-      task.projectPath,
-      eventName,
-      {taskId, ...rest},
-      task.clientId,
-    )
+    // M17: synthetic LLM events (emitted by tool-mode curate / query so the
+    // lifecycle-hook chain has inputs) MUST NOT surface in the CLI's
+    // streamed output, TUI live view, MCP client, or webui — they're
+    // internal analytics plumbing. Skip the per-client send + broadcast
+    // when the marker is present; the accumulator and onToolResult hook
+    // chain above already ran.
+    if (!isSyntheticLlmEvent(data)) {
+      this.transport.sendTo(task.clientId, eventName, {taskId, ...rest})
+      broadcastToProjectRoom(
+        this.projectRegistry,
+        this.projectRouter,
+        task.projectPath,
+        eventName,
+        {taskId, ...rest},
+        task.clientId,
+      )
+    }
 
     // Reset the heartbeat timer — every forwarded LLM event counts as
     // activity so a noisy task never triggers a redundant `task:heartbeat`.

@@ -44,7 +44,15 @@ function baseFromTaskInfo(task: TaskInfo): Record<string, unknown> {
     ...(task.reasoningContents === undefined ? {} : {reasoningContents: task.reasoningContents}),
     ...(task.responseContent === undefined ? {} : {responseContent: task.responseContent}),
     ...(task.sessionId === undefined ? {} : {sessionId: task.sessionId}),
-    ...(task.toolCalls === undefined ? {} : {toolCalls: task.toolCalls}),
+    // PR #728 review fix (M17): tool-mode dispatch forges synthetic
+    // `llmservice:toolCall` envelopes so AnalyticsHook can read them off
+    // task.toolCalls — but those entries MUST NOT surface in persisted
+    // history or the WebUI task-detail panel as if they were real LLM tool
+    // calls. The accumulator stamps them with `_synthetic: true`; strip
+    // here so history sees only the LLM-driven calls.
+    ...(task.toolCalls === undefined
+      ? {}
+      : {toolCalls: task.toolCalls.filter((c) => c._synthetic !== true)}),
     ...(task.worktreeRoot === undefined ? {} : {worktreeRoot: task.worktreeRoot}),
   }
 }

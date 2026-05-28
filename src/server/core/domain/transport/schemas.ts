@@ -733,6 +733,12 @@ export const LlmResponseEventSchema = z.object({
 export const LlmToolCallEventSchema = z.object({
   args: z.record(z.unknown()),
   callId: z.string().optional(),
+  // PR #728 review nit: parity with `LlmToolResultEventSchema` so M17
+  // synthetic emits can stamp `metadata._synthetic = true` on toolCalls
+  // too — same marker the broadcast-skip guard in `TaskRouter.routeLlmEvent`
+  // reads. Without this, a future `.strict()` migration would silently drop
+  // the marker on toolCall envelopes.
+  metadata: z.record(z.unknown()).optional(),
   sessionId: z.string(),
   taskId: z.string(),
   toolName: z.string(),

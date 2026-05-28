@@ -229,6 +229,16 @@ export class CurateLogHandler implements ITaskLifecycleHook {
   async onTaskCreate(task: TaskInfo): Promise<void | {logId?: string}> {
     if (!CURATE_TASK_TYPES.includes(task.type as (typeof CURATE_TASK_TYPES)[number])) return
     if (!task.projectPath) return
+    // PR #728 review fix: `curate-tool-mode` writes are persisted directly
+    // by `agent-process.ts` via `buildCurateHtmlLogEntry` + `FileCurateLogStore.save`.
+    // Before M17, `CurateLogHandler.onTaskCompleted` also saved a sibling entry but
+    // with `operations: []` (because `onToolResult` never fired for tool-mode)
+    // — tolerably useless, ignored by `brv curate view`. After M17.1 the
+    // synthetic `llmservice:toolResult` makes `onToolResult` accumulate ops
+    // here too, so the sibling entry becomes a near-duplicate of the
+    // agent-process one. Skip the create path for tool-mode entirely; the
+    // handler stays the source of truth for legacy `curate` / `curate-folder`.
+    if (task.type === 'curate-tool-mode') return
 
     const store = this.getOrCreateStore(task.projectPath)
     const logId = await store.getNextId().catch(() => {})
