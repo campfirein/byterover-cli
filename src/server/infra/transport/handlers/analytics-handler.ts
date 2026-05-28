@@ -36,6 +36,7 @@ import {SourceRemovedSchema} from '../../../../shared/analytics/events/source-re
 import {SpaceSwitchedSchema} from '../../../../shared/analytics/events/space-switched.js'
 import {SwarmOnboardedSchema} from '../../../../shared/analytics/events/swarm-onboarded.js'
 import {SwarmQueryCompletedSchema} from '../../../../shared/analytics/events/swarm-query-completed.js'
+import {SwarmStoreCompletedSchema} from '../../../../shared/analytics/events/swarm-store-completed.js'
 import {TaskCompletedSchema} from '../../../../shared/analytics/events/task-completed.js'
 import {TaskCreatedSchema} from '../../../../shared/analytics/events/task-created.js'
 import {TaskFailedSchema} from '../../../../shared/analytics/events/task-failed.js'
@@ -340,6 +341,13 @@ export class AnalyticsHandler {
         const props = SwarmQueryCompletedSchema.safeParse(rawProperties ?? {})
         if (!props.success) return
         this.analyticsClient.track(AnalyticsEventNames.SWARM_QUERY_COMPLETED, props.data)
+        break
+      }
+
+      case AnalyticsEventNames.SWARM_STORE_COMPLETED: {
+        const props = SwarmStoreCompletedSchema.safeParse(rawProperties ?? {})
+        if (!props.success) return
+        this.analyticsClient.track(AnalyticsEventNames.SWARM_STORE_COMPLETED, props.data)
         break
       }
 

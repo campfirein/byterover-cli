@@ -162,6 +162,7 @@ describe('analytics privacy fixture (smoke)', () => {
       'space_switched',
       'swarm_onboarded',
       'swarm_query_completed',
+      'swarm_store_completed',
       'task_completed',
       'task_created',
       'task_failed',

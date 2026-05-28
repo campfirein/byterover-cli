@@ -46,6 +46,7 @@ export const AnalyticsEventNames = {
   SPACE_SWITCHED: 'space_switched',
   SWARM_ONBOARDED: 'swarm_onboarded',
   SWARM_QUERY_COMPLETED: 'swarm_query_completed',
+  SWARM_STORE_COMPLETED: 'swarm_store_completed',
   TASK_COMPLETED: 'task_completed',
   TASK_CREATED: 'task_created',
   TASK_FAILED: 'task_failed',
