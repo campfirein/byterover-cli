@@ -10,6 +10,7 @@ import type {IGlobalConfigStore} from '../../../../../src/server/core/interfaces
 import type {StoredAnalyticsRecord} from '../../../../../src/shared/analytics/stored-record.js'
 
 import {GlobalConfig} from '../../../../../src/server/core/domain/entities/global-config.js'
+import {NoopAnalyticsSender} from '../../../../../src/server/infra/analytics/noop-analytics-sender.js'
 import {wireAnalyticsHttpSender} from '../../../../../src/server/infra/process/wire-analytics-http-sender.js'
 
 /**
@@ -173,6 +174,24 @@ describe('M4.2 wireAnalyticsHttpSender (integration)', () => {
     const result = await sender.send([makeRecord({id: 'r1'})])
 
     expect(result).to.deep.equal({failed: ['r1'], succeeded: []})
+  })
+
+  it('returns a NoopAnalyticsSender when analyticsBaseUrl is undefined (no HTTP traffic, all ids drained)', async () => {
+    // Strict: no nock scope registered. With `disableNetConnect`, any
+    // axios construction that actually issues a request would throw.
+    // We additionally assert the sender's class identity to lock-in
+    // the wiring swap at the composition root.
+    const sender = wireAnalyticsHttpSender({
+      analyticsBaseUrl: undefined,
+      authStateReader: makeAuthReader(),
+      globalConfigStore: makeConfigStore(),
+      version: '3.12.0',
+    })
+
+    expect(sender).to.be.instanceOf(NoopAnalyticsSender)
+
+    const result = await sender.send([makeRecord({id: 'r1'}), makeRecord({id: 'r2'})])
+    expect(result).to.deep.equal({failed: [], succeeded: ['r1', 'r2']})
   })
 
   it('normalises a trailing slash on the base URL (axios baseURL hygiene)', async () => {

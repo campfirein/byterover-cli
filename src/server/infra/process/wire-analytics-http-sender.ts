@@ -4,9 +4,16 @@ import type {IGlobalConfigStore} from '../../core/interfaces/storage/i-global-co
 
 import {AxiosAnalyticsHttpClient} from '../analytics/axios-analytics-http-client.js'
 import {HttpAnalyticsSender} from '../analytics/http-analytics-sender.js'
+import {NoopAnalyticsSender} from '../analytics/noop-analytics-sender.js'
 
 export type AnalyticsHttpSenderWiring = {
-  analyticsBaseUrl: string
+  /**
+   * Resolved `BRV_ANALYTICS_BASE_URL`. `undefined` signals "no working
+   * remote endpoint" (env unset, empty, or malformed — see
+   * `resolveAnalyticsBaseUrl`). The factory then returns a
+   * `NoopAnalyticsSender` and the axios client is never constructed.
+   */
+  analyticsBaseUrl: string | undefined
   authStateReader: IAuthStateReader
   globalConfigStore: IGlobalConfigStore
   /** CLI semver string (e.g. `3.12.0`). Wrapped into the user-agent header. */
@@ -30,10 +37,18 @@ export type AnalyticsHttpSenderWiring = {
  * a future swap (e.g. swapping axios for undici, or wrapping the sender
  * for M4.5 backoff) lands at one obvious seam.
  *
+ * When `wiring.analyticsBaseUrl === undefined` (env unset, empty, or
+ * malformed) the factory short-circuits to `NoopAnalyticsSender` so the
+ * axios client is never constructed and no outbound HTTP fires. Local
+ * JSONL tracking via `AnalyticsClient.track()` keeps working unchanged;
+ * the noop drains the pending queue on each flush.
+ *
  * The returned value is the `IAnalyticsSender` consumed by
  * `AnalyticsClient.flush()`.
  */
 export function wireAnalyticsHttpSender(wiring: AnalyticsHttpSenderWiring): IAnalyticsSender {
+  if (wiring.analyticsBaseUrl === undefined) return new NoopAnalyticsSender()
+
   const httpClient = new AxiosAnalyticsHttpClient({baseUrl: wiring.analyticsBaseUrl})
   return new HttpAnalyticsSender({
     authStateReader: wiring.authStateReader,
