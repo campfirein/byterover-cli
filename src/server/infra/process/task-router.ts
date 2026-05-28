@@ -16,6 +16,7 @@
  */
 
 import type {ReasoningContentItem, ToolCallEvent} from '../../../shared/transport/events/task-events.js'
+import type {ClientType} from '../../core/domain/client/client-info.js'
 import type {
   LlmChunkEvent,
   LlmErrorEvent,
@@ -146,6 +147,13 @@ type TaskRouterOptions = {
    * Failures are swallowed (fail-open) so dispatch is never blocked.
    */
   resolveActiveProvider?: () => Promise<{model?: string; provider?: string}>
+  /**
+   * M15.8: snapshot the submitting client's identity (transport type +
+   * IDE name) at task-create. Resolved here because the client may
+   * disconnect mid-task, leaving ClientManager.get() unable to recover
+   * the values by the time AnalyticsHook fires the terminal emit.
+   */
+  resolveClientIdentity?: (clientId: string) => undefined | {clientName?: string; clientType?: ClientType}
   /** Resolves the projectPath a client registered with (from client:register). */
   resolveClientProjectPath?: (clientId: string) => string | undefined
   transport: ITransportServer
@@ -319,6 +327,7 @@ export class TaskRouter {
   private readonly projectRegistry: IProjectRegistry | undefined
   private readonly projectRouter: IProjectRouter | undefined
   private readonly resolveActiveProvider: TaskRouterOptions['resolveActiveProvider']
+  private readonly resolveClientIdentity: TaskRouterOptions['resolveClientIdentity']
   private readonly resolveClientProjectPath: ((clientId: string) => string | undefined) | undefined
   /** Track active tasks */
   private tasks: Map<string, TaskInfo> = new Map()
@@ -336,6 +345,7 @@ export class TaskRouter {
     this.projectRegistry = options.projectRegistry
     this.projectRouter = options.projectRouter
     this.resolveActiveProvider = options.resolveActiveProvider
+    this.resolveClientIdentity = options.resolveClientIdentity
     this.resolveClientProjectPath = options.resolveClientProjectPath
   }
 
@@ -977,12 +987,19 @@ export class TaskRouter {
     // awaiting the handler.
     const {model, provider} = this.resolveActiveProvider ? await this.safeResolveActiveProvider() : {}
 
+    // M15.8: snapshot the submitter's identity so AnalyticsHook can emit
+    // mcp_tool_called for tool-mode tasks even if the MCP client disconnects
+    // between handleTaskCreate and the terminal task event.
+    const identity = this.resolveClientIdentity?.(clientId)
+
     this.tasks.set(taskId, {
       clientId,
       content: data.content,
       createdAt: Date.now(),
       status: 'created',
       ...(data.clientCwd ? {clientCwd: data.clientCwd} : {}),
+      ...(identity?.clientName ? {clientName: identity.clientName} : {}),
+      ...(identity?.clientType ? {clientType: identity.clientType} : {}),
       ...(data.files?.length ? {files: data.files} : {}),
       ...(data.folderPath ? {folderPath: data.folderPath} : {}),
       ...(model ? {model} : {}),

@@ -15,6 +15,7 @@ import {type DaemonStartProps, DaemonStartSchema} from './daemon-start.js'
 import {type HubPackageInstalledProps, HubPackageInstalledSchema} from './hub-package-installed.js'
 import {type HubRegistryAddedProps, HubRegistryAddedSchema} from './hub-registry-added.js'
 import {type HubRegistryRemovedProps, HubRegistryRemovedSchema} from './hub-registry-removed.js'
+import {type McpSessionEndedProps, McpSessionEndedSchema} from './mcp-session-ended.js'
 import {type McpSessionStartProps, McpSessionStartSchema} from './mcp-session-start.js'
 import {type McpToolCalledProps, McpToolCalledSchema} from './mcp-tool-called.js'
 import {type OnboardingAutoSetupStartedProps, OnboardingAutoSetupStartedSchema} from './onboarding-auto-setup-started.js'
@@ -78,6 +79,7 @@ export const ALL_EVENT_SCHEMAS = {
   [AnalyticsEventNames.HUB_PACKAGE_INSTALLED]: HubPackageInstalledSchema,
   [AnalyticsEventNames.HUB_REGISTRY_ADDED]: HubRegistryAddedSchema,
   [AnalyticsEventNames.HUB_REGISTRY_REMOVED]: HubRegistryRemovedSchema,
+  [AnalyticsEventNames.MCP_SESSION_ENDED]: McpSessionEndedSchema,
   [AnalyticsEventNames.MCP_SESSION_START]: McpSessionStartSchema,
   [AnalyticsEventNames.MCP_TOOL_CALLED]: McpToolCalledSchema,
   [AnalyticsEventNames.ONBOARDING_AUTO_SETUP_STARTED]: OnboardingAutoSetupStartedSchema,
@@ -132,6 +134,7 @@ export type AnyAnalyticsEvent =
   | {name: typeof AnalyticsEventNames.HUB_PACKAGE_INSTALLED; properties: HubPackageInstalledProps}
   | {name: typeof AnalyticsEventNames.HUB_REGISTRY_ADDED; properties: HubRegistryAddedProps}
   | {name: typeof AnalyticsEventNames.HUB_REGISTRY_REMOVED; properties: HubRegistryRemovedProps}
+  | {name: typeof AnalyticsEventNames.MCP_SESSION_ENDED; properties: McpSessionEndedProps}
   | {name: typeof AnalyticsEventNames.MCP_SESSION_START; properties: McpSessionStartProps}
   | {name: typeof AnalyticsEventNames.MCP_TOOL_CALLED; properties: McpToolCalledProps}
   | {name: typeof AnalyticsEventNames.ONBOARDING_AUTO_SETUP_STARTED; properties: OnboardingAutoSetupStartedProps}

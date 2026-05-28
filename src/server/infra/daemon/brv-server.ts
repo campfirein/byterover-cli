@@ -30,7 +30,9 @@ import {dirname, join} from 'node:path'
 import {fileURLToPath} from 'node:url'
 
 import type {BrvConfig} from '../../core/domain/entities/brv-config.js'
+import type {IAnalyticsClient} from '../../core/interfaces/analytics/i-analytics-client.js'
 
+import {AnalyticsEventNames} from '../../../shared/analytics/event-names.js'
 import {ReviewEvents} from '../../../shared/transport/events/review-events.js'
 import {TaskEvents, type TaskHeartbeatEvent} from '../../../shared/transport/events/task-events.js'
 import {
@@ -76,6 +78,7 @@ import {FileProviderConfigStore} from '../storage/file-provider-config-store.js'
 import {FileSettingsStore} from '../storage/file-settings-store.js'
 import {createProviderKeychainStore} from '../storage/provider-keychain-store.js'
 import {createTokenStore} from '../storage/token-store.js'
+import {attachCliInvocationMiddleware} from '../transport/cli-invocation-middleware.js'
 import {SocketIOTransportServer} from '../transport/socket-io-transport-server.js'
 import {createWebUiMiddleware} from '../webui/webui-middleware.js'
 import {WebUiServer} from '../webui/webui-server.js'
@@ -198,9 +201,21 @@ async function main(): Promise<void> {
   let agentPool: AgentPool | undefined
   let webuiServer: undefined | WebUiServer
 
+  // M15.8 §4 — lazy holder for the analyticsClient. The CLI-invocation
+  // middleware is attached to the transport server BEFORE setupFeatureHandlers
+  // constructs the analytics client; this reference is reseated when the
+  // client lands so the middleware can start emitting.
+  let analyticsClientRef: IAnalyticsClient | undefined
+
   try {
     // 4a. Construct transport server. start() is deferred to step 11 so all handlers register before sockets connect.
     transportServer = new SocketIOTransportServer()
+
+    // M15.8 §4 — attach cli_invocation middleware BEFORE any handler is
+    // registered so every incoming request flows through the wrap. The
+    // analytics client is not constructed yet; the lazy getter resolves it
+    // once setupFeatureHandlers below sets analyticsClientRef.
+    attachCliInvocationMiddleware(transportServer, {getAnalyticsClient: () => analyticsClientRef})
 
     // 4b. Start Web UI server on stable port (separate from transport)
     const daemonDir = dirname(fileURLToPath(import.meta.url))
@@ -700,6 +715,9 @@ async function main(): Promise<void> {
     }
 
     analyticsHook.setAnalyticsClient(featureHandlers.analyticsClient)
+    // M15.8 §4 — seat the cli_invocation middleware's analytics-client ref
+    // so the wrap (attached at line 211) starts emitting on subsequent requests.
+    analyticsClientRef = featureHandlers.analyticsClient
 
     // M4.3: start the flush scheduler AFTER the first track lands so the
     // initial 30s window aligns with real traffic, and wire the shutdown
@@ -718,6 +736,15 @@ async function main(): Promise<void> {
     // Agents also request auth on-demand via state:getAuth, so this ordering is safe.
     await authStateStore.loadToken()
     authStateStore.startPolling()
+
+    // M15.8: emit daemon_start AFTER loadToken() so the event's identity
+    // envelope reflects the just-resolved auth state (anon vs authed).
+    // Wrapped in try so a future track-time failure cannot abort boot.
+    try {
+      featureHandlers.analyticsClient.track(AnalyticsEventNames.DAEMON_START)
+    } catch (error: unknown) {
+      log(`daemon_start emit failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
 
     // 11. Start idle timer + register signal handlers
     idleTimeoutPolicy.start()

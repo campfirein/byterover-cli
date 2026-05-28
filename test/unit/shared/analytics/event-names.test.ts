@@ -19,6 +19,7 @@ describe('AnalyticsEventNames', () => {
       'HUB_PACKAGE_INSTALLED',
       'HUB_REGISTRY_ADDED',
       'HUB_REGISTRY_REMOVED',
+      'MCP_SESSION_ENDED',
       'MCP_SESSION_START',
       'MCP_TOOL_CALLED',
       'ONBOARDING_AUTO_SETUP_STARTED',

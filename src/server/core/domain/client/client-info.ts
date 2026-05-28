@@ -54,6 +54,14 @@ export class ClientInfo {
   public readonly type: ClientType
   /** Mutable: set via setAgentName() for MCP clients after MCP initialize handshake */
   private _agentName: string | undefined
+  /**
+   * M15.8: frozen copy of the IDE name as emitted on `mcp_session_start`.
+   * Read by `mcp_session_ended` so the start/end pair always carries
+   * matching `client_name` even if `_agentName` were re-mutated mid-session.
+   * Also serves as the "session active for analytics" gate — non-undefined
+   * iff a `mcp_session_start` has been emitted for this ClientInfo.
+   */
+  private _mcpSessionEmittedName: string | undefined
   /** Mutable: set via associateProject() for global-scope MCP clients */
   private _projectPath: string | undefined
 
@@ -89,6 +97,16 @@ export class ClientInfo {
   }
 
   /**
+   * M15.8: the `client_name` value emitted on the prior `mcp_session_start`,
+   * or undefined if no session-start has fired for this ClientInfo yet.
+   * Read by ClientManager's `mcp_session_ended` emitter so start/end pairs
+   * remain correlated even if `agentName` were re-mutated mid-session.
+   */
+  get mcpSessionEmittedName(): string | undefined {
+    return this._mcpSessionEmittedName
+  }
+
+  /**
    * The project this client is associated with.
    * Undefined for global-scope MCP clients that haven't been associated yet.
    */
@@ -102,6 +120,16 @@ export class ClientInfo {
    */
   associateProject(projectPath: string): void {
     this._projectPath = projectPath
+  }
+
+  /**
+   * M15.8: freeze the IDE name that `mcp_session_start` was just emitted with.
+   * Called immediately before `analyticsClient.track('mcp_session_start')`
+   * in ClientManager. The matching `mcp_session_ended` reads this value
+   * instead of the live `agentName` to guarantee start/end correlation.
+   */
+  markMcpSessionStartEmitted(emittedName: string): void {
+    this._mcpSessionEmittedName = emittedName
   }
 
   /**
