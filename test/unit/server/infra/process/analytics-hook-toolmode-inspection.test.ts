@@ -321,8 +321,10 @@ describe('analytics-hook tool-mode event inspection (M14)', () => {
     // `related` lifts to the structured `related_paths[]` shape: each entry's
     // own keywords/tags arrays default to empty (only top-level reads enrich).
     expect(entry.related_paths).to.deep.equal([
-      {keywords: [], relative_path: '@analytics/related.html', tags: []},
-      {keywords: [], relative_path: '@analytics/another.html', tags: []},
+      // PR #728 review: `@` prefix is canonicalized off so HTML and YAML
+      // produce the same wire shape for `related_paths[].relative_path`.
+      {keywords: [], relative_path: 'analytics/related.html', tags: []},
+      {keywords: [], relative_path: 'analytics/another.html', tags: []},
     ])
   })
 })

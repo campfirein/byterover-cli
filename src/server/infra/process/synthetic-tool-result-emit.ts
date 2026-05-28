@@ -35,6 +35,33 @@ import {LlmEventNames} from '../../core/domain/transport/schemas.js'
 const SYNTHETIC_SESSION_ID = ''
 
 /**
+ * Fire-and-forget emit that swallows BOTH synchronous throws and async
+ * rejections (PR #728 review fix). `ITransportClient.request` can return
+ * a Promise that rejects after the synchronous call returns; without this
+ * wrapper that rejection becomes an unhandled-rejection warning in Node 16+
+ * and a crash under strict modes. The unit tests only exercise sync throws,
+ * so this guards the prod path against the async case that test stubs miss.
+ */
+function safeDispatch(
+  transport: ITransportClient,
+  event: string,
+  payload: Record<string, unknown>,
+  log: ((msg: string) => void) | undefined,
+  context: string,
+): void {
+  try {
+    const result = transport.request(event, payload) as unknown
+    if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+      ;(result as Promise<unknown>).catch((error: unknown) => {
+        log?.(`${context}: async rejection — ${error instanceof Error ? error.message : String(error)}`)
+      })
+    }
+  } catch (error) {
+    log?.(`${context}: sync throw — ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+/**
  * Marker stamped on every synthetic event's `metadata`. `TaskRouter.routeLlmEvent`
  * inspects this and SKIPS the per-client `sendTo()` + `broadcastToProjectRoom()`
  * for synthetic events. Without the skip, the synthetic tool-call envelopes
@@ -66,20 +93,20 @@ export function emitSyntheticCurateToolResult(opts: {
 }): void {
   const {log, operations, taskId, transport} = opts
   if (operations.length === 0) return
-  try {
-    transport.request(LlmEventNames.TOOL_RESULT, {
+  safeDispatch(
+    transport,
+    LlmEventNames.TOOL_RESULT,
+    {
       metadata: SYNTHETIC_EVENT_METADATA,
       result: JSON.stringify({applied: operations}),
       sessionId: SYNTHETIC_SESSION_ID,
       success: true,
       taskId,
       toolName: 'curate',
-    })
-  } catch (error) {
-    log?.(
-      `synthetic curate toolResult emit failed for ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
-    )
-  }
+    },
+    log,
+    `synthetic curate toolResult emit failed for ${taskId}`,
+  )
 }
 
 /**
@@ -112,8 +139,18 @@ export function emitSyntheticQueryToolCalls(opts: {
 }): void {
   const {log, matchedDocs, metadata, projectPath, taskId, transport} = opts
   const contextTreeRoot = join(projectPath, BRV_DIR, CONTEXT_TREE_DIR)
-  try {
-    transport.request(LlmEventNames.TOOL_CALL, {
+
+  // PR #728 review fix: emit each toolCall + a paired toolResult. The
+  // accumulator's `TOOL_RESULT` branch (`task-router.ts` TOOL_RESULT case)
+  // matches on `callId` and flips the running call to `completed`. Without
+  // the pair, the accumulator persists `status: 'running'` forever and
+  // task-history snapshots show the synthetic call stuck mid-flight.
+  // Sharing the callId between the call and its result is what links them.
+  const searchCallId = randomUUID()
+  safeDispatch(
+    transport,
+    LlmEventNames.TOOL_CALL,
+    {
       args: {
         cacheHit: metadata.cacheHit ?? null,
         matchedCount: matchedDocs.length,
@@ -121,26 +158,61 @@ export function emitSyntheticQueryToolCalls(opts: {
         topScore: metadata.topScore,
         totalFound: metadata.totalFound,
       },
-      callId: randomUUID(),
+      callId: searchCallId,
       metadata: SYNTHETIC_EVENT_METADATA,
       sessionId: SYNTHETIC_SESSION_ID,
       taskId,
       toolName: 'search_knowledge',
-    })
+    },
+    log,
+    `synthetic query search_knowledge toolCall emit failed for ${taskId}`,
+  )
+  safeDispatch(
+    transport,
+    LlmEventNames.TOOL_RESULT,
+    {
+      callId: searchCallId,
+      metadata: SYNTHETIC_EVENT_METADATA,
+      result: JSON.stringify({matched: matchedDocs.length, tier: metadata.tier}),
+      sessionId: SYNTHETIC_SESSION_ID,
+      success: true,
+      taskId,
+      toolName: 'search_knowledge',
+    },
+    log,
+    `synthetic query search_knowledge toolResult emit failed for ${taskId}`,
+  )
 
-    for (const doc of matchedDocs) {
-      transport.request(LlmEventNames.TOOL_CALL, {
+  for (const doc of matchedDocs) {
+    const readCallId = randomUUID()
+    safeDispatch(
+      transport,
+      LlmEventNames.TOOL_CALL,
+      {
         args: {filePath: join(contextTreeRoot, doc.path)},
-        callId: randomUUID(),
+        callId: readCallId,
         metadata: SYNTHETIC_EVENT_METADATA,
         sessionId: SYNTHETIC_SESSION_ID,
         taskId,
         toolName: 'read_file',
-      })
-    }
-  } catch (error) {
-    log?.(
-      `synthetic query toolCall emit failed for ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
+      },
+      log,
+      `synthetic query read_file toolCall emit failed for ${taskId}`,
+    )
+    safeDispatch(
+      transport,
+      LlmEventNames.TOOL_RESULT,
+      {
+        callId: readCallId,
+        metadata: SYNTHETIC_EVENT_METADATA,
+        result: JSON.stringify({path: doc.path}),
+        sessionId: SYNTHETIC_SESSION_ID,
+        success: true,
+        taskId,
+        toolName: 'read_file',
+      },
+      log,
+      `synthetic query read_file toolResult emit failed for ${taskId}`,
     )
   }
 }

@@ -698,12 +698,21 @@ export class AnalyticsHook implements ITaskLifecycleHook {
  * to mirror the YAML array semantics. Whitespace around each entry is
  * trimmed; empty entries are dropped so a trailing comma never produces
  * a zero-length tag.
+ *
+ * PR #728 review fix: HTML `related` refs carry a leading `@` marker (e.g.
+ * `related="@analytics/x.html, @analytics/y.html"`) per the renderer
+ * convention. The legacy YAML path stores them stripped — see
+ * `related-ref-warner.ts:33`. Canonicalize here so the same wire field
+ * (`curate_operation_applied.related` /
+ * `query_completed.read_paths_with_metadata[].related_paths[].relative_path`)
+ * doesn't carry two shapes across HTML and YAML sources.
  */
 function splitTopicAttrList(value: string | undefined): string[] | undefined {
   if (typeof value !== 'string' || value.trim().length === 0) return undefined
   const parts = value
     .split(',')
     .map((part) => part.trim())
+    .map((part) => (part.startsWith('@') ? part.slice(1) : part))
     .filter((part) => part.length > 0)
   return parts.length > 0 ? parts : undefined
 }

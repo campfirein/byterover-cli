@@ -322,7 +322,6 @@ describe('AnalyticsHook M14.3 generic task_* emit simulation', () => {
       await hook.onToolResult('task-pph-1', buildCurateOpToolResult())
       await hook.onTaskCompleted('task-pph-1', '', task)
 
-      const expectedHash = '8c8c8c'
       const events = trackStub.getCalls().map((c) => ({
         name: c.args[0] as string,
         props: c.args[1] as Record<string, unknown>,
@@ -333,11 +332,10 @@ describe('AnalyticsHook M14.3 generic task_* emit simulation', () => {
         expect(props.project_path_hash, `${name} should carry project_path_hash`).to.be.a('string').and.match(/^[0-9a-f]{64}$/)
       }
 
-      // All payloads share the same hash (same projectPath).
+      // All payloads share the same hash (same projectPath). Positive byte-for-byte
+      // verification against `hashProjectPath()` lives in the next `it`.
       const hashes = new Set(events.map((e) => e.props.project_path_hash))
       expect(hashes.size, 'all emits for one task share the same project_path_hash').to.equal(1)
-      // The value is NOT a placeholder string.
-      expect([...hashes][0]).to.not.equal(expectedHash)
     })
 
     it('omits the field when task.projectPath is undefined', async () => {

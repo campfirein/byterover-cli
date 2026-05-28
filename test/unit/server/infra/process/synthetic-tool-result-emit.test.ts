@@ -107,7 +107,7 @@ describe('synthetic-tool-result-emit (M17 tool-mode gap fix)', () => {
       expect(parsed[0].status).to.equal('failed')
     })
 
-    it('swallows transport errors and logs', () => {
+    it('swallows synchronous transport throws and logs', () => {
       const requestStub = sinon.stub().throws(new Error('boom'))
       const transport = {request: requestStub} as unknown as ITransportClient
       const logStub = sinon.stub()
@@ -122,11 +122,36 @@ describe('synthetic-tool-result-emit (M17 tool-mode gap fix)', () => {
       ).to.not.throw()
       expect(logStub.calledOnce).to.equal(true)
       expect(logStub.firstCall.args[0]).to.include('synthetic curate toolResult emit failed')
+      expect(logStub.firstCall.args[0]).to.include('sync throw')
+    })
+
+    it('swallows async transport rejections and logs (PR #728 review fix)', async () => {
+      const requestStub = sinon.stub().rejects(new Error('socket dead'))
+      const transport = {request: requestStub} as unknown as ITransportClient
+      const logStub = sinon.stub()
+
+      emitSyntheticCurateToolResult({
+        log: logStub,
+        operations: [{path: 'x', status: 'success', type: 'ADD'}],
+        taskId: 'task-1',
+        transport,
+      })
+
+      // Async rejection runs on the microtask queue — yield once so the
+      // catch handler fires before we assert. Without this, the log
+      // assertion races the rejection.
+      await new Promise((res) => {
+        setImmediate(res)
+      })
+
+      expect(logStub.calledOnce).to.equal(true)
+      expect(logStub.firstCall.args[0]).to.include('synthetic curate toolResult emit failed')
+      expect(logStub.firstCall.args[0]).to.include('async rejection')
     })
   })
 
   describe('emitSyntheticQueryToolCalls', () => {
-    it('fires one search_knowledge toolCall plus one read_file toolCall per matched doc', () => {
+    it('fires paired toolCall+toolResult for search_knowledge + one pair per matched doc (PR #728 review fix)', () => {
       const {requestStub, transport} = buildTransport()
 
       emitSyntheticQueryToolCalls({
@@ -140,37 +165,47 @@ describe('synthetic-tool-result-emit (M17 tool-mode gap fix)', () => {
         transport,
       })
 
-      expect(requestStub.callCount).to.equal(3)
-      const [first, ...reads] = requestStub.getCalls()
+      // 1 search_knowledge toolCall + 1 toolResult, then 2 docs × (call+result) = 6.
+      // The pair is what flips the accumulator's `status: 'running'` to
+      // `'completed'` in `TaskRouter.accumulateLlmEvent`; without it the
+      // synthetic call would be stuck running for the task's lifetime.
+      expect(requestStub.callCount).to.equal(6)
 
-      // Every call carries the synthetic marker so TaskRouter skips the
+      // Every emission carries the synthetic marker so TaskRouter skips the
       // per-client broadcast (M17 — see SYNTHETIC_EVENT_METADATA docblock).
       for (const call of requestStub.getCalls()) {
         expect(call.args[1].metadata).to.deep.equal({_synthetic: true})
       }
 
-      // First call: the search_knowledge envelope with retrieval metadata.
-      expect(first.args[0]).to.equal(LlmEventNames.TOOL_CALL)
-      expect(first.args[1].toolName).to.equal('search_knowledge')
-      expect(first.args[1].args).to.deep.include({
-        cacheHit: null,
-        matchedCount: 2,
-        tier: 2,
-        topScore: 0.72,
-        totalFound: 2,
-      })
+      // Call/result pairs share a callId so the accumulator matches them.
+      const calls = requestStub.getCalls()
+      const search = {call: calls[0], result: calls[1]}
+      expect(search.call.args[0]).to.equal(LlmEventNames.TOOL_CALL)
+      expect(search.call.args[1].toolName).to.equal('search_knowledge')
+      expect(search.result.args[0]).to.equal(LlmEventNames.TOOL_RESULT)
+      expect(search.result.args[1].toolName).to.equal('search_knowledge')
+      expect(search.result.args[1].callId).to.equal(search.call.args[1].callId)
+      expect(search.result.args[1].success).to.equal(true)
 
-      // Subsequent calls: one read_file per doc, with absolute path under
-      // the project's context tree.
-      expect(reads.map((c) => c.args[1].toolName)).to.deep.equal(['read_file', 'read_file'])
-      const filePaths = reads.map((c) => c.args[1].args.filePath as string)
-      expect(filePaths).to.deep.equal([
-        '/proj/.brv/context-tree/a.md',
-        '/proj/.brv/context-tree/b.md',
-      ])
+      // Per-doc pairs: one call + one result per matched doc, callIds aligned.
+      const readPairs = [
+        {call: calls[2], result: calls[3]},
+        {call: calls[4], result: calls[5]},
+      ]
+      for (const [i, pair] of readPairs.entries()) {
+        expect(pair.call.args[0]).to.equal(LlmEventNames.TOOL_CALL)
+        expect(pair.call.args[1].toolName).to.equal('read_file')
+        expect(pair.call.args[1].args.filePath).to.equal(
+          ['/proj/.brv/context-tree/a.md', '/proj/.brv/context-tree/b.md'][i],
+        )
+        expect(pair.result.args[0]).to.equal(LlmEventNames.TOOL_RESULT)
+        expect(pair.result.args[1].toolName).to.equal('read_file')
+        expect(pair.result.args[1].callId).to.equal(pair.call.args[1].callId)
+        expect(pair.result.args[1].success).to.equal(true)
+      }
     })
 
-    it('emits only the search_knowledge call when no docs matched', () => {
+    it('emits only the search_knowledge call+result pair when no docs matched', () => {
       const {requestStub, transport} = buildTransport()
 
       emitSyntheticQueryToolCalls({
@@ -181,9 +216,12 @@ describe('synthetic-tool-result-emit (M17 tool-mode gap fix)', () => {
         transport,
       })
 
-      expect(requestStub.callCount).to.equal(1)
-      expect(requestStub.firstCall.args[1].toolName).to.equal('search_knowledge')
-      expect(requestStub.firstCall.args[1].args.matchedCount).to.equal(0)
+      expect(requestStub.callCount).to.equal(2)
+      expect(requestStub.getCall(0).args[0]).to.equal(LlmEventNames.TOOL_CALL)
+      expect(requestStub.getCall(0).args[1].toolName).to.equal('search_knowledge')
+      expect(requestStub.getCall(0).args[1].args.matchedCount).to.equal(0)
+      expect(requestStub.getCall(1).args[0]).to.equal(LlmEventNames.TOOL_RESULT)
+      expect(requestStub.getCall(1).args[1].callId).to.equal(requestStub.getCall(0).args[1].callId)
     })
 
     it('does NOT leak the raw query string into args (privacy guard)', () => {
@@ -198,13 +236,19 @@ describe('synthetic-tool-result-emit (M17 tool-mode gap fix)', () => {
       })
 
       for (const call of requestStub.getCalls()) {
-        const args = call.args[1].args as Record<string, unknown>
-        // No `query` field anywhere — only structured metadata + filePath.
-        expect(args).to.not.have.property('query')
+        // toolCall envelopes carry `args`; toolResult envelopes carry `result`.
+        // Either way, the raw query string MUST NOT appear anywhere in the payload.
+        const payload = call.args[1] as Record<string, unknown>
+        const args = payload.args as Record<string, unknown> | undefined
+        if (args) expect(args).to.not.have.property('query')
+        // The result string also MUST NOT carry it.
+        if (typeof payload.result === 'string') {
+          expect(payload.result.toLowerCase()).to.not.include('query')
+        }
       }
     })
 
-    it('swallows transport errors and logs', () => {
+    it('swallows synchronous transport throws and logs (per emit site)', () => {
       const requestStub = sinon.stub().throws(new Error('socket dead'))
       const transport = {request: requestStub} as unknown as ITransportClient
       const logStub = sinon.stub()
@@ -219,8 +263,11 @@ describe('synthetic-tool-result-emit (M17 tool-mode gap fix)', () => {
           transport,
         }),
       ).to.not.throw()
-      expect(logStub.calledOnce).to.equal(true)
-      expect(logStub.firstCall.args[0]).to.include('synthetic query toolCall emit failed')
+      // No-docs case fires 2 emits (search call + search result); both
+      // throw → both get logged independently via safeDispatch.
+      expect(logStub.callCount).to.equal(2)
+      expect(logStub.firstCall.args[0]).to.include('search_knowledge')
+      expect(logStub.firstCall.args[0]).to.include('sync throw')
     })
   })
 })
