@@ -44,6 +44,7 @@ export const AnalyticsEventNames = {
   SOURCE_ADDED: 'source_added',
   SOURCE_REMOVED: 'source_removed',
   SPACE_SWITCHED: 'space_switched',
+  SWARM_ONBOARDED: 'swarm_onboarded',
   TASK_COMPLETED: 'task_completed',
   TASK_CREATED: 'task_created',
   TASK_FAILED: 'task_failed',

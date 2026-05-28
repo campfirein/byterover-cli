@@ -160,6 +160,7 @@ describe('analytics privacy fixture (smoke)', () => {
       'source_added',
       'source_removed',
       'space_switched',
+      'swarm_onboarded',
       'task_completed',
       'task_created',
       'task_failed',

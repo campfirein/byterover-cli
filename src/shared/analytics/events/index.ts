@@ -31,6 +31,7 @@ import {type SettingResetProps, SettingResetSchema} from './setting-reset.js'
 import {type SourceAddedProps, SourceAddedSchema} from './source-added.js'
 import {type SourceRemovedProps, SourceRemovedSchema} from './source-removed.js'
 import {type SpaceSwitchedProps, SpaceSwitchedSchema} from './space-switched.js'
+import {type SwarmOnboardedProps, SwarmOnboardedSchema} from './swarm-onboarded.js'
 import {type TaskCompletedProps, TaskCompletedSchema} from './task-completed.js'
 import {type TaskCreatedProps, TaskCreatedSchema} from './task-created.js'
 import {type TaskFailedProps, TaskFailedSchema} from './task-failed.js'
@@ -97,6 +98,7 @@ export const ALL_EVENT_SCHEMAS = {
   [AnalyticsEventNames.SOURCE_ADDED]: SourceAddedSchema,
   [AnalyticsEventNames.SOURCE_REMOVED]: SourceRemovedSchema,
   [AnalyticsEventNames.SPACE_SWITCHED]: SpaceSwitchedSchema,
+  [AnalyticsEventNames.SWARM_ONBOARDED]: SwarmOnboardedSchema,
   [AnalyticsEventNames.TASK_COMPLETED]: TaskCompletedSchema,
   [AnalyticsEventNames.TASK_CREATED]: TaskCreatedSchema,
   [AnalyticsEventNames.TASK_FAILED]: TaskFailedSchema,
@@ -154,6 +156,7 @@ export type AnyAnalyticsEvent =
   | {name: typeof AnalyticsEventNames.SOURCE_ADDED; properties: SourceAddedProps}
   | {name: typeof AnalyticsEventNames.SOURCE_REMOVED; properties: SourceRemovedProps}
   | {name: typeof AnalyticsEventNames.SPACE_SWITCHED; properties: SpaceSwitchedProps}
+  | {name: typeof AnalyticsEventNames.SWARM_ONBOARDED; properties: SwarmOnboardedProps}
   | {name: typeof AnalyticsEventNames.TASK_COMPLETED; properties: TaskCompletedProps}
   | {name: typeof AnalyticsEventNames.TASK_CREATED; properties: TaskCreatedProps}
   | {name: typeof AnalyticsEventNames.TASK_FAILED; properties: TaskFailedProps}
