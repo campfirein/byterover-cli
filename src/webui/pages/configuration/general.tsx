@@ -1,3 +1,4 @@
+import { AnalyticsPanel } from '../../features/analytics/components/analytics-panel'
 import {ConcurrencyPanel} from '../../features/settings/components/concurrency-panel'
 import {LlmPanel} from '../../features/settings/components/llm-panel'
 import {TaskHistoryPanel} from '../../features/settings/components/task-history-panel'
@@ -10,6 +11,7 @@ export function GeneralSection() {
       <LlmPanel />
       <TaskHistoryPanel />
       <UpdatesPanel />
+      <AnalyticsPanel />
     </>
   )
 }
