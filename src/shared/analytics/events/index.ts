@@ -7,6 +7,7 @@ import {type AuthLogoutProps, AuthLogoutSchema} from './auth-logout.js'
 import {type BrvInitProps, BrvInitSchema} from './brv-init.js'
 import {type CliInvocationProps, CliInvocationSchema} from './cli-invocation.js'
 import {type ConnectorInstalledProps, ConnectorInstalledSchema} from './connector-installed.js'
+import {type ContentMigratedProps, ContentMigratedSchema} from './content-migrated.js'
 import {type ContextTreeFileEditedProps, ContextTreeFileEditedSchema} from './context-tree-file-edited.js'
 import {type CurateOperationAppliedProps, CurateOperationAppliedSchema} from './curate-operation-applied.js'
 import {type CurateRunCompletedProps, CurateRunCompletedSchema} from './curate-run-completed.js'
@@ -72,6 +73,7 @@ export const ALL_EVENT_SCHEMAS = {
   [AnalyticsEventNames.BRV_INIT]: BrvInitSchema,
   [AnalyticsEventNames.CLI_INVOCATION]: CliInvocationSchema,
   [AnalyticsEventNames.CONNECTOR_INSTALLED]: ConnectorInstalledSchema,
+  [AnalyticsEventNames.CONTENT_MIGRATED]: ContentMigratedSchema,
   [AnalyticsEventNames.CONTEXT_TREE_FILE_EDITED]: ContextTreeFileEditedSchema,
   [AnalyticsEventNames.CURATE_OPERATION_APPLIED]: CurateOperationAppliedSchema,
   [AnalyticsEventNames.CURATE_RUN_COMPLETED]: CurateRunCompletedSchema,
@@ -128,6 +130,7 @@ export type AnyAnalyticsEvent =
   | {name: typeof AnalyticsEventNames.BRV_INIT; properties: BrvInitProps}
   | {name: typeof AnalyticsEventNames.CLI_INVOCATION; properties: CliInvocationProps}
   | {name: typeof AnalyticsEventNames.CONNECTOR_INSTALLED; properties: ConnectorInstalledProps}
+  | {name: typeof AnalyticsEventNames.CONTENT_MIGRATED; properties: ContentMigratedProps}
   | {name: typeof AnalyticsEventNames.CONTEXT_TREE_FILE_EDITED; properties: ContextTreeFileEditedProps}
   | {name: typeof AnalyticsEventNames.CURATE_OPERATION_APPLIED; properties: CurateOperationAppliedProps}
   | {name: typeof AnalyticsEventNames.CURATE_RUN_COMPLETED; properties: CurateRunCompletedProps}

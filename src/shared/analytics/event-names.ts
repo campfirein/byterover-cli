@@ -20,6 +20,7 @@ export const AnalyticsEventNames = {
   BRV_INIT: 'brv_init',
   CLI_INVOCATION: 'cli_invocation',
   CONNECTOR_INSTALLED: 'connector_installed',
+  CONTENT_MIGRATED: 'content_migrated',
   CONTEXT_TREE_FILE_EDITED: 'context_tree_file_edited',
   CURATE_OPERATION_APPLIED: 'curate_operation_applied',
   CURATE_RUN_COMPLETED: 'curate_run_completed',

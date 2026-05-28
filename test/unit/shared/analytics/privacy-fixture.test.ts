@@ -136,6 +136,7 @@ describe('analytics privacy fixture (smoke)', () => {
       'brv_init',
       'cli_invocation',
       'connector_installed',
+      'content_migrated',
       'context_tree_file_edited',
       'curate_operation_applied',
       'curate_run_completed',
