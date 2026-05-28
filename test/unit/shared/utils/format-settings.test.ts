@@ -32,6 +32,20 @@ function makeBooleanItem(current: boolean): SettingsItemDTO {
   }
 }
 
+function makeEnumItem(overrides: Partial<SettingsItemDTO> = {}): SettingsItemDTO {
+  return {
+    category: 'language',
+    current: 'auto',
+    default: 'auto',
+    description: 'desc',
+    key: 'language.mode',
+    options: ['auto', 'fixed'],
+    restartRequired: false,
+    type: 'enum',
+    ...overrides,
+  }
+}
+
 function makeRow(overrides: Partial<SettingsRow> = {}): SettingsRow {
   return {
     category: 'concurrency',
@@ -251,6 +265,61 @@ describe('format-settings (shared)', () => {
         makeItem({category: 'concurrency', key: 'agentPool.maxSize'}),
       ])
       expect(rows.map((r) => r.category)).to.deep.equal(['concurrency', 'task-history', 'updates'])
+    })
+  })
+
+  describe('enum rows', () => {
+    it('includes enum items in the output with options propagated', () => {
+      const rows = buildSettingsRows([makeEnumItem()])
+      expect(rows).to.have.lengthOf(1)
+      expect(rows[0].type).to.equal('enum')
+      expect(rows[0].options).to.deep.equal(['auto', 'fixed'])
+    })
+
+    it('formats current=auto as "[ auto ]" and default verbatim', () => {
+      const row = buildSettingsRows([makeEnumItem({current: 'auto'})])[0]
+      expect(row.displayCurrent).to.equal('[ auto ]')
+      expect(row.displayDefault).to.equal('auto')
+    })
+
+    it('marks the row as modified when current differs from default', () => {
+      const row = buildSettingsRows([makeEnumItem({current: 'fixed'})])[0]
+      expect(row.modified).to.equal(true)
+    })
+
+    it('groups language enum rows under category=language', () => {
+      const row = buildSettingsRows([makeEnumItem()])[0]
+      expect(row.category).to.equal('language')
+    })
+
+    it('orders the language category after updates', () => {
+      const rows = buildSettingsRows([
+        makeEnumItem(),
+        makeItem({category: 'concurrency', key: 'agentPool.maxSize'}),
+        makeBooleanItem(true),
+      ])
+      expect(rows.map((r) => r.category)).to.deep.equal(['concurrency', 'updates', 'language'])
+    })
+
+    it('skips enum items with missing or wrong-typed fields (defensive narrowing)', () => {
+      const wonky = {...makeEnumItem(), current: 5} as unknown as SettingsItemDTO
+      expect(buildSettingsRows([wonky])).to.have.lengthOf(0)
+    })
+
+    it('parseRowInput: accepts a valid option as ok and rejects an unknown option', () => {
+      const row = buildSettingsRows([makeEnumItem()])[0]
+      const ok = parseRowInput(row, 'fixed')
+      expect(ok.kind).to.equal('ok')
+      if (ok.kind === 'ok') {
+        expect(ok.value).to.equal('fixed')
+        expect(ok.displayValue).to.equal('fixed')
+      }
+
+      const bad = parseRowInput(row, 'pidgin')
+      expect(bad.kind).to.equal('error')
+      if (bad.kind === 'error') {
+        expect(bad.message).to.match(/Expected one of \[auto, fixed\]/)
+      }
     })
   })
 })

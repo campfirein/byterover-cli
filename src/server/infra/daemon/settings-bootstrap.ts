@@ -1,11 +1,11 @@
 import type {ISettingsStore, SettingsStartupSnapshot} from '../../core/interfaces/storage/i-settings-store.js'
 
+import {SETTINGS_KEYS} from '../../../shared/types/settings-keys.js'
 import {
   AGENT_MAX_CONCURRENT_TASKS,
   AGENT_POOL_MAX_SIZE,
   TASK_HISTORY_DEFAULT_MAX_ENTRIES,
 } from '../../constants.js'
-import {SETTINGS_KEYS} from '../../core/domain/entities/settings.js'
 
 /**
  * Daemon-side resolved view of every settings key the bootstrap path

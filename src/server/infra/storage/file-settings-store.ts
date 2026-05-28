@@ -17,7 +17,8 @@ type SettingsFile = {
    * the file may legitimately retain pre-existing invalid entries that
    * `reset` is forbidden from collateral-damaging (the daemon startup
    * loader handles those via warnings). `set` writes only validated
-   * numeric values; partition() filters at read time.
+   * values (booleans, integers within range, or canonical enum options
+   * — see SettingsValidator); partition() filters at read time.
    */
   readonly values: Record<string, unknown>
   readonly version: string
@@ -63,7 +64,7 @@ export class FileSettingsStore implements ISettingsStore {
       current: overrides[key] ?? descriptor.default,
       default: descriptor.default,
       key: descriptor.key,
-      restartRequired: true,
+      restartRequired: descriptor.restartRequired,
     }
   }
 
@@ -73,7 +74,7 @@ export class FileSettingsStore implements ISettingsStore {
       current: overrides[descriptor.key] ?? descriptor.default,
       default: descriptor.default,
       key: descriptor.key,
-      restartRequired: true,
+      restartRequired: descriptor.restartRequired,
     }))
   }
 
@@ -132,7 +133,7 @@ export class FileSettingsStore implements ISettingsStore {
     return join(this.baseDir, SETTINGS_FILE)
   }
 
-  private async readOverrides(): Promise<Record<string, boolean | number>> {
+  private async readOverrides(): Promise<Record<string, boolean | number | string>> {
     const raw = await this.readRawValues()
     const {valid} = this.validator.partition(raw)
     return {...valid}

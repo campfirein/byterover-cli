@@ -218,4 +218,96 @@ describe('brv settings get', () => {
     const description = SettingsGet.description ?? ''
     expect(description).to.match(/restart/i)
   })
+
+  describe('enum rows', () => {
+    it('prints an "allowed:" line listing the enum options in text mode', async () => {
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      requestStub.resolves({
+        category: 'language',
+        current: 'fixed',
+        default: 'auto',
+        description: 'mode',
+        key: 'language.mode',
+        ok: true,
+        options: ['auto', 'fixed'],
+        restartRequired: false,
+        type: 'enum',
+      })
+
+      await createCommand('language.mode').run()
+      const output = loggedMessages.join('\n')
+
+      expect(output).to.include('language.mode')
+      expect(output).to.match(/current:\s*fixed/)
+      expect(output).to.match(/default:\s*auto/)
+      expect(output).to.match(/allowed:\s*auto,\s*fixed/)
+      // Numeric range column is meaningless for enums.
+      expect(output).to.not.match(/range:/)
+    })
+
+    it('surfaces the enum options array in JSON mode', async () => {
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      requestStub.resolves({
+        category: 'language',
+        current: 'ja',
+        default: 'en',
+        description: 'code',
+        key: 'language.code',
+        ok: true,
+        options: ['ar', 'en', 'ja', 'ru', 'vi', 'zh'],
+        restartRequired: false,
+        type: 'enum',
+      })
+
+      await createJsonCommand('language.code').run()
+
+      const json = parseJsonOutput()
+      expect(json.success).to.be.true
+      expect(json.data).to.have.property('options').that.deep.equals(['ar', 'en', 'ja', 'ru', 'vi', 'zh'])
+      expect(json.data).to.have.property('type', 'enum')
+    })
+
+    it('omits the "allowed:" line in text mode for non-enum keys', async () => {
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      requestStub.resolves({
+        category: 'concurrency',
+        current: 25,
+        default: 10,
+        description: 'desc',
+        key: 'agentPool.maxSize',
+        max: 100,
+        min: 1,
+        ok: true,
+        restartRequired: true,
+        type: 'integer',
+      })
+
+      await createCommand('agentPool.maxSize').run()
+      const output = loggedMessages.join('\n')
+      expect(output).to.not.match(/allowed:/)
+    })
+
+    it('omits the "options" field in JSON mode for non-enum keys', async () => {
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      requestStub.resolves({
+        category: 'concurrency',
+        current: 25,
+        default: 10,
+        description: 'desc',
+        key: 'agentPool.maxSize',
+        max: 100,
+        min: 1,
+        ok: true,
+        restartRequired: true,
+        type: 'integer',
+      })
+
+      await createJsonCommand('agentPool.maxSize').run()
+
+      const json = parseJsonOutput()
+      expect(json.success).to.be.true
+      expect(json.data).to.not.have.property('options')
+      expect(json.data).to.have.property('type', 'integer')
+    })
+  })
 })

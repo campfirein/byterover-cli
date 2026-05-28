@@ -11,7 +11,8 @@
 
 import {expect} from 'chai'
 
-import {buildLanguageClause, LANGUAGE_NAMES} from '../../../../../../src/server/core/domain/render/language-clause.js'
+import {buildLanguageClause} from '../../../../../../src/server/core/domain/render/language-clause.js'
+import {LANGUAGE_NAMES} from '../../../../../../src/shared/language/language-names.js'
 
 describe('language-clause', () => {
   describe('LANGUAGE_NAMES', () => {

@@ -86,6 +86,8 @@ describe('SettingsHandler', () => {
       expect(result.items.map((i) => i.key).sort()).to.deep.equal([
         'agentPool.maxConcurrentTasksPerProject',
         'agentPool.maxSize',
+        'language.code',
+        'language.mode',
         'llm.iterationBudgetMs',
         'llm.requestTimeoutMs',
         'taskHistory.maxEntries',
@@ -135,6 +137,23 @@ describe('SettingsHandler', () => {
       for (const item of result.items) {
         expect(item.scope).to.equal(undefined)
       }
+    })
+
+    it('exposes options on enum-typed items and omits options on non-enum items', async () => {
+      store.listResult = []
+      const result = await invokeList()
+      const byKey = new Map(result.items.map((i) => [i.key, i]))
+
+      const mode = byKey.get('language.mode')
+      expect(mode?.type).to.equal('enum')
+      expect(mode?.options).to.deep.equal(['auto', 'fixed'])
+
+      const code = byKey.get('language.code')
+      expect(code?.type).to.equal('enum')
+      expect(code?.options).to.include('ko')
+
+      expect(byKey.get('agentPool.maxSize')?.options).to.equal(undefined)
+      expect(byKey.get('update.checkForUpdates')?.options).to.equal(undefined)
     })
   })
 
@@ -267,6 +286,29 @@ describe('SettingsHandler', () => {
 
         expect(result.ok).to.be.false
         if (!result.ok) expect(result.error.code).to.equal('unknown_key')
+      })
+
+      it('rejects a numeric value sent to an enum key', async () => {
+        const result = await invokeSet({key: 'language.mode', value: 5})
+
+        expect(result.ok).to.be.false
+        if (!result.ok) {
+          expect(result.error.code).to.equal('invalid_value_type')
+          expect(result.error.key).to.equal('language.mode')
+          expect(result.error.expected).to.equal('enum')
+          expect(result.error.got).to.equal('number')
+        }
+
+        expect(store.calls.filter((c) => c.method === 'set')).to.have.lengthOf(0)
+      })
+
+      it('accepts a string value sent to an enum key and forwards to the store', async () => {
+        const result = await invokeSet({key: 'language.mode', value: 'fixed'})
+
+        expect(result.ok).to.be.true
+        const setCalls = store.calls.filter((c) => c.method === 'set')
+        expect(setCalls).to.have.lengthOf(1)
+        expect(setCalls[0].args).to.deep.equal(['language.mode', 'fixed'])
       })
 
       it('still surfaces a range violation as invalid_value (not invalid_value_type)', async () => {

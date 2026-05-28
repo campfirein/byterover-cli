@@ -3,6 +3,8 @@ import {Args, Command, Flags} from '@oclif/core'
 import type {BrvConfigLanguage} from '../../../server/core/domain/entities/brv-config.js'
 
 import {ProjectConfigStore} from '../../../server/infra/config/file-config-store.js'
+import {SettingsEvents, type SettingsListResponse} from '../../../shared/transport/events/settings-events.js'
+import {SETTINGS_KEYS} from '../../../shared/types/settings-keys.js'
 import {continueSession, kickoffSession, resolveProjectRoot} from '../../lib/curate-session.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
@@ -262,18 +264,65 @@ Bad examples:
   }
 
   /**
-   * Read the per-project language preference from `.brv/config.json`.
-   * Missing config (fresh project) or missing field returns `undefined`,
-   * which the kickoff / correction prompts treat as the auto clause —
-   * match the user's input language. Read failures degrade silently to
-   * `undefined` so a corrupt config never blocks curate.
+   * Resolve the language preference. Daemon settings (the source of
+   * truth) take precedence; a per-project `.brv/config.json language`
+   * field acts as a fallback for users who configured language before
+   * it moved to global settings.
+   *
+   * Note on precedence: only daemon `mode: 'fixed'` short-circuits the
+   * fallback. An explicit daemon `mode: 'auto'` reads as "no opinion"
+   * and falls through to project config, so a stale project-config
+   * `fixed/X` will still win. This is intentional for the migration
+   * window — distinguishing "user explicitly chose auto" from "user
+   * never touched settings" needs raw-overrides access that the
+   * transport doesn't expose today, and the bug only manifests for
+   * users with a pre-existing per-project `language` field. Revisit
+   * once project-config language is fully sunset.
    */
   private async resolveLanguagePreference(projectRoot: string): Promise<BrvConfigLanguage | undefined> {
+    const fromSettings = await readLanguageFromSettings()
+    if (fromSettings !== undefined) return fromSettings
+
     try {
       const config = await new ProjectConfigStore().read(projectRoot)
       return config?.language
     } catch {
       return undefined
     }
+  }
+}
+
+/**
+ * Reads the language preference from daemon settings via the same
+ * `SettingsEvents.LIST` transport every other settings consumer uses.
+ *
+ * Exported (and accepts a `DaemonClientOptions`) so tests can drive
+ * `withDaemonRetry` with a stubbed transport client. Returns `undefined`
+ * on any non-fixed mode, missing/non-string code, or daemon error —
+ * callers should treat `undefined` as "no opinion" and fall back to
+ * project config / the auto clause.
+ *
+ * Uses a tight retry budget by default (1 retry, 0ms delay) because this
+ * runs on every `brv curate` kickoff: `withDaemonRetry`'s 10× retries ×
+ * 1s default would block kickoff for ~9s when the daemon is unreachable
+ * before the catch trips the project-config fallback. The caller can
+ * override either field by passing it in `options`.
+ */
+export async function readLanguageFromSettings(
+  options?: DaemonClientOptions,
+): Promise<BrvConfigLanguage | undefined> {
+  try {
+    const response = await withDaemonRetry<SettingsListResponse>(
+      async (client) => client.requestWithAck<SettingsListResponse>(SettingsEvents.LIST),
+      {maxRetries: 1, retryDelayMs: 0, ...options},
+    )
+    const byKey = new Map(response.items.map((item) => [item.key, item.current]))
+    const mode = byKey.get(SETTINGS_KEYS.LANGUAGE_MODE)
+    const code = byKey.get(SETTINGS_KEYS.LANGUAGE_CODE)
+    if (mode !== 'fixed') return undefined
+    if (typeof code !== 'string') return undefined
+    return {code, mode: 'fixed'}
+  } catch {
+    return undefined
   }
 }

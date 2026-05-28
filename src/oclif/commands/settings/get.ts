@@ -82,6 +82,10 @@ export default class SettingsGet extends Command {
       this.log(`  range:   ${range}`)
     }
 
+    if (item.type === 'enum' && item.options !== undefined && item.options.length > 0) {
+      this.log(`  allowed: ${item.options.join(', ')}`)
+    }
+
     this.log(`  scope:   ${item.scope ?? 'global'}`)
   }
 
@@ -99,12 +103,14 @@ export default class SettingsGet extends Command {
     if (item.category !== undefined) payload.category = item.category
     if (item.unit !== undefined) payload.unit = item.unit
     if (item.scope !== undefined) payload.scope = item.scope
+    if (item.type === 'enum' && item.options !== undefined) payload.options = item.options
     return payload
   }
 }
 
-function renderValue(item: SettingsItemDTO, value: boolean | number): string {
+function renderValue(item: SettingsItemDTO, value: boolean | number | string): string {
   if (typeof value === 'boolean') return value ? 'true' : 'false'
+  if (typeof value === 'string') return value
   return renderInteger(item, value)
 }
 

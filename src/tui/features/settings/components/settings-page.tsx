@@ -29,8 +29,9 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
   const rows = useMemo<SettingsRow[]>(() => (data ? buildSettingsRows(data.items) : []), [data])
   const groups = useMemo(() => groupRowsByCategory(rows), [rows])
   const focusedRow = rows[cursor]
-  const hintMode: 'browse' | 'edit' | 'edit-error' | 'saving' =
-    mode === 'edit' && rowError !== undefined ? 'edit-error' : mode
+  const isEnumEdit = mode === 'edit' && focusedRow?.type === 'enum'
+  const hintMode: 'browse' | 'edit' | 'edit-enum' | 'edit-error' | 'saving' =
+    mode === 'edit' && rowError !== undefined ? 'edit-error' : isEnumEdit ? 'edit-enum' : mode
 
   // Restart warning fires only when at least one dirty key actually
   // requires a daemon restart. Boolean toggles (e.g. update.checkForUpdates,
@@ -170,6 +171,27 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
 
       if (key.return) {
         commitEdit(rows[cursor], editBuffer).catch(() => {})
+        return
+      }
+
+      const focused = rows[cursor]
+      if (focused?.type === 'enum' && focused.options !== undefined) {
+        const {options} = focused
+        const currentIndex = options.indexOf(editBuffer)
+        if (key.leftArrow) {
+          const previousIndex = currentIndex <= 0 ? options.length - 1 : currentIndex - 1
+          setEditBuffer(options[previousIndex])
+          setRowError(undefined)
+          return
+        }
+
+        if (key.rightArrow) {
+          const nextIndex = currentIndex < 0 || currentIndex >= options.length - 1 ? 0 : currentIndex + 1
+          setEditBuffer(options[nextIndex])
+          setRowError(undefined)
+          return
+        }
+
         return
       }
 

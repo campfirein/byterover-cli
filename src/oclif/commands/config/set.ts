@@ -1,8 +1,7 @@
 import {Args, Command, Flags} from '@oclif/core'
 
-import type {BrvConfig, BrvConfigLanguage} from '../../../server/core/domain/entities/brv-config.js'
+import type {BrvConfig} from '../../../server/core/domain/entities/brv-config.js'
 
-import {LANGUAGE_NAMES} from '../../../server/core/domain/render/language-clause.js'
 import {ProjectConfigStore} from '../../../server/infra/config/file-config-store.js'
 import {resolveProjectRoot} from '../../lib/curate-session.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
@@ -10,31 +9,27 @@ import {writeJsonResponse} from '../../lib/json-response.js'
 /**
  * `brv config set <key> <value>` — mutate one field in `.brv/config.json`.
  *
- * Today only the language-selection keys are handled (`language.mode` and
- * `language.code`); the dispatcher is keyed by string so adding the next
- * project-config key is a one-line addition to `SETTERS`.
+ * Currently a stub: the language keys (`language.mode`, `language.code`) are
+ * intercepted upstream and redirected to `brv settings set` (they moved to
+ * global daemon settings in ENG-2974). No other project-config keys are
+ * user-settable today. The dispatcher infrastructure (`SETTERS`,
+ * `applyConfigSet`) is kept so the next project-config key can be added by
+ * a one-line entry rather than rebuilding the surface from scratch.
  *
- * Daemon-side runtime settings (`agentPool.maxSize`, `llm.iterationBudgetMs`,
- * etc.) live behind `brv settings set` instead — those are mutable at
- * runtime via transport events. Project config is a flat-file mutation;
- * there is no daemon involvement.
+ * For runtime daemon settings (concurrency, LLM budgets, language, etc.),
+ * use `brv settings set` instead.
  */
 export default class ConfigSet extends Command {
   public static args = {
-    key: Args.string({description: 'Project config key (e.g. language.mode, language.code)', required: true}),
+    key: Args.string({description: 'Project config key', required: true}),
     value: Args.string({description: 'New value', required: true}),
   }
-  public static description = 'Set a project configuration value in .brv/config.json'
+  public static description =
+    'Set a project configuration value in .brv/config.json. For global daemon settings see `brv settings set`.'
   public static examples = [
-    '# Force the calling agent\'s LLM to author in Russian on every curate',
-    '<%= config.bin %> <%= command.id %> language.code ru',
-    '<%= config.bin %> <%= command.id %> language.mode fixed',
-    '',
-    '# Restore auto-detect (the default — match the user\'s input language)',
-    '<%= config.bin %> <%= command.id %> language.mode auto',
-    '',
-    '# Read in JSON for scripting',
-    '<%= config.bin %> <%= command.id %> language.code ja --format json',
+    '# Language settings moved to global config — use `brv settings set` instead',
+    '<%= config.bin %> settings set language.mode fixed',
+    '<%= config.bin %> settings set language.code ja',
   ]
   public static flags = {
     format: Flags.string({
@@ -47,6 +42,15 @@ export default class ConfigSet extends Command {
   public async run(): Promise<void> {
     const {args, flags} = await this.parse(ConfigSet)
     const format = flags.format as 'json' | 'text'
+
+    if (args.key === 'language.mode' || args.key === 'language.code') {
+      this.fail(
+        format,
+        'deprecated-key',
+        `'${args.key}' has moved to global settings. Run: brv settings set ${args.key} ${args.value}`,
+      )
+      return
+    }
 
     const projectRoot = resolveProjectRoot()
     const store = new ProjectConfigStore()
@@ -95,75 +99,30 @@ export type ConfigSetResult =
 
 type ConfigSetter = (config: BrvConfig, value: string) => ConfigSetResult
 
-const SETTERS: Record<string, ConfigSetter> = {
-  'language.code': setLanguageCode,
-  'language.mode': setLanguageMode,
-}
+/**
+ * Project-config dispatcher. Empty today — the language keys that used to
+ * live here moved to global daemon settings (see `brv settings set`). New
+ * project-config keys are wired by adding a one-line entry here pointing
+ * at a `(config, value) => ConfigSetResult` setter function.
+ */
+const SETTERS: Record<string, ConfigSetter> = {}
 
 /**
  * Dispatch a `<key> <value>` set onto a loaded BrvConfig. Pure function so
- * the CLI command and the unit tests share one validation path — no
- * filesystem or oclif coupling here.
+ * the CLI command and unit tests share one validation path — no filesystem
+ * or oclif coupling. With no live setters today, every call returns
+ * `unknown-key`; the command's deprecation interceptor catches the legacy
+ * `language.*` keys before reaching this function.
  */
 export function applyConfigSet(config: BrvConfig, key: string, value: string): ConfigSetResult {
   const setter = SETTERS[key]
   if (setter === undefined) {
-    const supported = Object.keys(SETTERS).sort().join(', ')
     return {
       code: 'unknown-key',
       kind: 'error',
-      message: `Unknown config key '${key}'. Supported keys: ${supported}.`,
+      message: `Unknown config key '${key}'. No project-config keys are settable today; runtime settings live behind \`brv settings set\`.`,
     }
   }
 
   return setter(config, value)
-}
-
-function setLanguageMode(config: BrvConfig, value: string): ConfigSetResult {
-  if (value !== 'auto' && value !== 'fixed') {
-    return {
-      code: 'invalid-value',
-      kind: 'error',
-      message: `language.mode must be 'auto' or 'fixed', got '${value}'.`,
-    }
-  }
-
-  // Reject `fixed` without a code so the on-disk config can never reach an
-  // invalid intermediate state (`{mode: 'fixed'}` would be rejected by
-  // `isBrvConfigJson` on next load). Point the user at the unblocking step.
-  if (value === 'fixed' && config.language?.code === undefined) {
-    return {
-      code: 'missing-language-code',
-      kind: 'error',
-      message:
-        'language.mode \'fixed\' requires language.code to be set first. Run: brv config set language.code <iso>',
-    }
-  }
-
-  const next: BrvConfigLanguage =
-    value === 'fixed'
-      ? {code: config.language!.code!, mode: 'fixed'}
-      : config.language?.code === undefined
-        ? {mode: 'auto'}
-        : {code: config.language.code, mode: 'auto'}
-
-  return {config: config.withLanguage(next), kind: 'ok'}
-}
-
-function setLanguageCode(config: BrvConfig, code: string): ConfigSetResult {
-  if (!(code in LANGUAGE_NAMES)) {
-    const supported = Object.keys(LANGUAGE_NAMES).sort().join(', ')
-    return {
-      code: 'unknown-iso-code',
-      kind: 'error',
-      message: `Unknown ISO 639-1 code '${code}'. Supported codes: ${supported}.`,
-    }
-  }
-
-  // Preserve mode if already set; default to auto when language is being
-  // initialized for the first time. The combination `{mode: 'auto', code}`
-  // is intentional — code is vestigial in auto mode but harmless, and
-  // makes the eventual `set language.mode fixed` a no-roundtrip activation.
-  const mode = config.language?.mode ?? 'auto'
-  return {config: config.withLanguage({code, mode}), kind: 'ok'}
 }
