@@ -1,6 +1,6 @@
-import {Box, Text, useInput} from 'ink'
+import {Box, Text, useInput, useStdout} from 'ink'
 import Spinner from 'ink-spinner'
-import React, {useCallback, useMemo, useState} from 'react'
+import React, {useCallback, useEffect, useMemo, useState} from 'react'
 
 import type {SettingsRow} from '../../../../shared/types/settings-row.js'
 import type {CustomDialogCallbacks} from '../../../types/commands.js'
@@ -32,7 +32,22 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
   const [rowError, setRowError] = useState<string | undefined>()
   const [dirtyKeys, setDirtyKeys] = useState<ReadonlySet<string>>(new Set())
   const [disclosureText, setDisclosureText] = useState<string | undefined>()
+  const [disclosureScroll, setDisclosureScroll] = useState(0)
   const [pendingDisclosureRow, setPendingDisclosureRow] = useState<SettingsRow | undefined>()
+
+  // Tracks terminal height so the disclosure overlay can slice the
+  // markdown to fit a short window. Falls back to a sensible default
+  // when stdout has no row count (e.g. piped output, tests).
+  const {stdout} = useStdout()
+  const [terminalRows, setTerminalRows] = useState<number>(stdout?.rows ?? 24)
+  useEffect(() => {
+    if (!stdout) return
+    const handler = (): void => setTerminalRows(stdout.rows ?? 24)
+    stdout.on('resize', handler)
+    return () => {
+      stdout.off('resize', handler)
+    }
+  }, [stdout])
 
   const rows = useMemo<SettingsRow[]>(() => (data ? buildSettingsRows(data.items) : []), [data])
   const groups = useMemo(() => groupRowsByCategory(rows), [rows])
@@ -146,6 +161,7 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
       if (row.key === ANALYTICS_ENABLED_KEY && row.current === false) {
         setRowError(undefined)
         setPendingDisclosureRow(row)
+        setDisclosureScroll(0)
         try {
           const text = await loadAnalyticsDisclosureText()
           setDisclosureText(text)
@@ -246,10 +262,26 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
   )
 
   // Disclosure confirm: Enter accepts and flips the flag, Esc cancels
-  // without flipping. Up/Down do nothing — the disclosure is a single
-  // modal-ish overlay; navigation resumes after the choice.
+  // without flipping. Up/Down + PgUp/PgDn scroll the markdown when it
+  // doesn't fit in the terminal height.
+  const disclosureLines = useMemo(
+    () => (disclosureText === undefined ? [] : disclosureText.split('\n')),
+    [disclosureText],
+  )
+  // Reserved chrome (defensive — includes the REPL's own bottom status
+  // bar that wraps this slash-command, and a margin for stray line
+  // wraps): header (1) + header-gap (1) + top-overflow (1) +
+  // bottom-overflow (1) + footer-gap (1) + footer (1) + REPL chrome (1)
+  // + wrap safety (5) = 12 rows.
+  const disclosureViewportRows = Math.max(2, terminalRows - 12)
+  const maxScroll = Math.max(0, disclosureLines.length - disclosureViewportRows)
+  const clampedScroll = Math.min(disclosureScroll, maxScroll)
+  const visibleLines = disclosureLines.slice(clampedScroll, clampedScroll + disclosureViewportRows)
+  const hasMoreAbove = clampedScroll > 0
+  const hasMoreBelow = clampedScroll < maxScroll
+
   useInput(
-    (_input, key) => {
+    (input, key) => {
       if (key.escape) {
         setMode('browse')
         setPendingDisclosureRow(undefined)
@@ -260,6 +292,27 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
         const row = pendingDisclosureRow
         setPendingDisclosureRow(undefined)
         if (row !== undefined) performToggle(row, true).catch(() => {})
+        return
+      }
+
+      if (key.upArrow) {
+        setDisclosureScroll((s) => Math.max(0, s - 1))
+        return
+      }
+
+      if (key.downArrow) {
+        setDisclosureScroll((s) => Math.min(maxScroll, s + 1))
+        return
+      }
+
+      // Page-scroll via PgUp/PgDn or space/b (mirroring `less`).
+      if (key.pageUp || input === 'b') {
+        setDisclosureScroll((s) => Math.max(0, s - disclosureViewportRows))
+        return
+      }
+
+      if (key.pageDown || input === ' ') {
+        setDisclosureScroll((s) => Math.min(maxScroll, s + disclosureViewportRows))
       }
     },
     {isActive: mode === 'confirm-disclosure'},
@@ -279,13 +332,15 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
     )
   }
 
-  // Disclosure overlay. Renders the full markdown text + prompt; the
-  // surrounding row list is hidden so the user focuses on the
-  // disclosure. Enter confirms, Esc cancels.
+  // Disclosure overlay. Renders the markdown sliced to fit the terminal
+  // height so a short window still shows the Enter/Esc footer. Up/Down
+  // and PgUp/PgDn scroll through the body. The body Box uses an explicit
+  // height + flexShrink=1 so wrapped markdown lines cannot push the
+  // sticky footer off-screen.
   if (mode === 'confirm-disclosure') {
     return (
       <Box flexDirection="column">
-        <Box marginBottom={1}>
+        <Box flexShrink={0} marginBottom={1}>
           <Text>ANALYTICS DISCLOSURE</Text>
         </Box>
         {disclosureText === undefined ? (
@@ -293,12 +348,23 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
             <Spinner type="dots" /> Loading disclosure...
           </Text>
         ) : (
-          <Box flexDirection="column">
-            <Text>{disclosureText}</Text>
+          <Box flexDirection="column" flexShrink={1}>
+            <Text color="yellow">{hasMoreAbove ? '↑ more above' : ' '}</Text>
+            {visibleLines.map((line, idx) => (
+              // Each body line gets its own Text with truncate-end so a long
+              // markdown line in a narrow terminal stays one visual row and
+              // cannot push the sticky footer off-screen.
+              <Text key={`${clampedScroll}:${idx}`} wrap="truncate-end">
+                {line.length === 0 ? ' ' : line}
+              </Text>
+            ))}
+            <Text color="yellow">{hasMoreBelow ? '↓ more below' : ' '}</Text>
           </Box>
         )}
-        <Box marginTop={1}>
-          <Text color={colors.primary}>Enter: enable analytics | Esc: cancel</Text>
+        <Box flexShrink={0} marginTop={1}>
+          <Text bold color={colors.primary}>
+            Enter: enable analytics | Esc: cancel | ↑↓ scroll
+          </Text>
         </Box>
       </Box>
     )
