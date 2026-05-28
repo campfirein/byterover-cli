@@ -21,6 +21,7 @@ import {isAnalyticsEventName} from '../../../../shared/analytics/events/index.js
 import {McpSessionEndedSchema} from '../../../../shared/analytics/events/mcp-session-ended.js'
 import {McpSessionStartSchema} from '../../../../shared/analytics/events/mcp-session-start.js'
 import {McpToolCalledSchema} from '../../../../shared/analytics/events/mcp-tool-called.js'
+import {MigrateRunSchema} from '../../../../shared/analytics/events/migrate-run.js'
 import {OnboardingAutoSetupStartedSchema} from '../../../../shared/analytics/events/onboarding-auto-setup-started.js'
 import {OnboardingCompletedSchema} from '../../../../shared/analytics/events/onboarding-completed.js'
 import {QueryCompletedSchema} from '../../../../shared/analytics/events/query-completed.js'
@@ -231,6 +232,13 @@ export class AnalyticsHandler {
         const props = McpToolCalledSchema.safeParse(rawProperties ?? {})
         if (!props.success) return
         this.analyticsClient.track(AnalyticsEventNames.MCP_TOOL_CALLED, props.data)
+        break
+      }
+
+      case AnalyticsEventNames.MIGRATE_RUN: {
+        const props = MigrateRunSchema.safeParse(rawProperties ?? {})
+        if (!props.success) return
+        this.analyticsClient.track(AnalyticsEventNames.MIGRATE_RUN, props.data)
         break
       }
 

@@ -173,7 +173,7 @@ describe('AnalyticsHandler', () => {
   describe('per-event dispatch coverage — every new event name reaches track()', () => {
     const validHashHex = 'a'.repeat(64)
     // Per-event minimal payloads that satisfy each schema. Lifecycle events
-    // (33 of 36) carry `outcome: 'success'`; 3 observation events stay
+    // (34 of 37) carry `outcome: 'success'`; 3 observation events stay
     // outcome-less. Payloads are intentionally narrow — broader fixture
     // coverage lives in privacy-fixture.test.ts.
     const cases: Array<{event: AnalyticsEventName; properties?: Record<string, unknown>}> = [
@@ -206,6 +206,10 @@ describe('AnalyticsHandler', () => {
         properties: {is_default: true, outcome: 'success', registry_kind: 'byterover'},
       },
       {event: AnalyticsEventNames.HUB_REGISTRY_REMOVED, properties: {outcome: 'success', registry_kind: 'byterover'}},
+      {
+        event: AnalyticsEventNames.MIGRATE_RUN,
+        properties: {dry_run: false, mode: 'forward', outcome: 'success'},
+      },
       {event: AnalyticsEventNames.ONBOARDING_AUTO_SETUP_STARTED, properties: {mode: 'auto', outcome: 'success'}},
       {event: AnalyticsEventNames.ONBOARDING_COMPLETED, properties: {outcome: 'success'}},
       {
@@ -320,8 +324,8 @@ describe('AnalyticsHandler', () => {
       })
     }
 
-    it('coverage matches schema count (36 new events covered)', () => {
-      expect(cases.length, 'must enumerate all 36 new event names').to.equal(36)
+    it('coverage matches schema count (37 new events covered)', () => {
+      expect(cases.length, 'must enumerate all 37 new event names').to.equal(37)
     })
   })
 })

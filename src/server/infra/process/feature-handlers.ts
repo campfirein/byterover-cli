@@ -444,7 +444,7 @@ export async function setupFeatureHandlers({
     transport,
   }).setup()
 
-  new MigrateHandler({resolveProjectPath, transport}).setup()
+  new MigrateHandler({analyticsClient, resolveProjectPath, transport}).setup()
 
   new ResetHandler({
     analyticsClient,

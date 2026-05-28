@@ -3,7 +3,7 @@ import {expect} from 'chai'
 import {type AnalyticsEventName, AnalyticsEventNames} from '../../../../src/shared/analytics/event-names.js'
 
 describe('AnalyticsEventNames', () => {
-  it('should expose exactly the forty-six shipped event names', () => {
+  it('should expose exactly the forty-seven shipped event names', () => {
     expect(Object.keys(AnalyticsEventNames).sort()).to.deep.equal([
       'ANALYTICS_DISABLED',
       'AUTH_LOGIN',
@@ -22,6 +22,7 @@ describe('AnalyticsEventNames', () => {
       'MCP_SESSION_ENDED',
       'MCP_SESSION_START',
       'MCP_TOOL_CALLED',
+      'MIGRATE_RUN',
       'ONBOARDING_AUTO_SETUP_STARTED',
       'ONBOARDING_COMPLETED',
       'QUERY_COMPLETED',

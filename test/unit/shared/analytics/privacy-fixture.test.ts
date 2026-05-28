@@ -59,10 +59,15 @@ const FIXTURE_SENTINEL_NAMES: ReadonlySet<string> = new Set([
 
 /**
  * Recursively collect every field name reachable from a Zod schema, including
- * fields inside nested ZodObject, ZodOptional / ZodNullable wrappers, and
- * ZodArray element schemas. The privacy fixture must audit nested shapes
- * because adding `{error: {message, code}}` should surface `message` as a
- * forbidden name even though the top level only declares `error`.
+ * fields inside nested ZodObject, ZodOptional / ZodNullable wrappers,
+ * ZodArray element schemas, and ZodUnion / ZodDiscriminatedUnion members.
+ * The privacy fixture must audit nested shapes because adding
+ * `{error: {message, code}}` should surface `message` as a forbidden name
+ * even though the top level only declares `error`.
+ *
+ * Discriminated unions (used by `migrate_run` to enforce per-mode counter
+ * separation) must be walked across every member or a forbidden field
+ * declared only on the rollback variant would slip past audit.
  */
 function getShapeFieldNames(schema: z.ZodTypeAny, seen: Set<z.ZodTypeAny> = new Set()): string[] {
   if (seen.has(schema)) return []
@@ -80,6 +85,15 @@ function getShapeFieldNames(schema: z.ZodTypeAny, seen: Set<z.ZodTypeAny> = new 
     const out: string[] = []
     for (const [key, value] of Object.entries(schema.shape as Record<string, z.ZodTypeAny>)) {
       out.push(key, ...getShapeFieldNames(value, seen))
+    }
+
+    return out
+  }
+
+  if (schema instanceof z.ZodDiscriminatedUnion || schema instanceof z.ZodUnion) {
+    const out: string[] = []
+    for (const option of schema.options as z.ZodTypeAny[]) {
+      out.push(...getShapeFieldNames(option, seen))
     }
 
     return out
@@ -133,6 +147,7 @@ describe('analytics privacy fixture (smoke)', () => {
       'mcp_session_ended',
       'mcp_session_start',
       'mcp_tool_called',
+      'migrate_run',
       'onboarding_auto_setup_started',
       'onboarding_completed',
       'query_completed',
@@ -196,6 +211,30 @@ describe('analytics privacy fixture (smoke)', () => {
       })
       expect(getShapeFieldNames(optionalBad)).to.include('token')
       expect(getShapeFieldNames(nullableBad)).to.include('api_key')
+    })
+
+    it('should walk every member of a ZodDiscriminatedUnion', () => {
+      // Forbidden names live on different variants — the walker MUST visit
+      // both, or migrate_run-style discriminated schemas would let a PII
+      // field declared only on one variant slip past privacy audit.
+      const unionBad = z.discriminatedUnion('kind', [
+        z.object({email: z.string(), kind: z.literal('a')}),
+        // eslint-disable-next-line camelcase
+        z.object({api_key: z.string(), kind: z.literal('b')}),
+      ])
+      const fields = getShapeFieldNames(unionBad)
+      expect(fields).to.include('email')
+      expect(fields).to.include('api_key')
+    })
+
+    it('should walk every option of a plain ZodUnion', () => {
+      const unionBad = z.union([
+        z.object({password: z.string()}),
+        z.object({token: z.string()}),
+      ])
+      const fields = getShapeFieldNames(unionBad)
+      expect(fields).to.include('password')
+      expect(fields).to.include('token')
     })
   })
 })

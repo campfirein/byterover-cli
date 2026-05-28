@@ -18,6 +18,7 @@ import {type HubRegistryRemovedProps, HubRegistryRemovedSchema} from './hub-regi
 import {type McpSessionEndedProps, McpSessionEndedSchema} from './mcp-session-ended.js'
 import {type McpSessionStartProps, McpSessionStartSchema} from './mcp-session-start.js'
 import {type McpToolCalledProps, McpToolCalledSchema} from './mcp-tool-called.js'
+import {type MigrateRunProps, MigrateRunSchema} from './migrate-run.js'
 import {type OnboardingAutoSetupStartedProps, OnboardingAutoSetupStartedSchema} from './onboarding-auto-setup-started.js'
 import {type OnboardingCompletedProps, OnboardingCompletedSchema} from './onboarding-completed.js'
 import {type QueryCompletedProps, QueryCompletedSchema} from './query-completed.js'
@@ -82,6 +83,7 @@ export const ALL_EVENT_SCHEMAS = {
   [AnalyticsEventNames.MCP_SESSION_ENDED]: McpSessionEndedSchema,
   [AnalyticsEventNames.MCP_SESSION_START]: McpSessionStartSchema,
   [AnalyticsEventNames.MCP_TOOL_CALLED]: McpToolCalledSchema,
+  [AnalyticsEventNames.MIGRATE_RUN]: MigrateRunSchema,
   [AnalyticsEventNames.ONBOARDING_AUTO_SETUP_STARTED]: OnboardingAutoSetupStartedSchema,
   [AnalyticsEventNames.ONBOARDING_COMPLETED]: OnboardingCompletedSchema,
   [AnalyticsEventNames.QUERY_COMPLETED]: QueryCompletedSchema,
@@ -137,6 +139,7 @@ export type AnyAnalyticsEvent =
   | {name: typeof AnalyticsEventNames.MCP_SESSION_ENDED; properties: McpSessionEndedProps}
   | {name: typeof AnalyticsEventNames.MCP_SESSION_START; properties: McpSessionStartProps}
   | {name: typeof AnalyticsEventNames.MCP_TOOL_CALLED; properties: McpToolCalledProps}
+  | {name: typeof AnalyticsEventNames.MIGRATE_RUN; properties: MigrateRunProps}
   | {name: typeof AnalyticsEventNames.ONBOARDING_AUTO_SETUP_STARTED; properties: OnboardingAutoSetupStartedProps}
   | {name: typeof AnalyticsEventNames.ONBOARDING_COMPLETED; properties: OnboardingCompletedProps}
   | {name: typeof AnalyticsEventNames.QUERY_COMPLETED; properties: QueryCompletedProps}
