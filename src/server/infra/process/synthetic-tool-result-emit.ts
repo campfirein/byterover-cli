@@ -1,7 +1,7 @@
+import type {ITransportClient} from '@campfirein/brv-transport-client'
+
 import {randomUUID} from 'node:crypto'
 import {join} from 'node:path'
-
-import type {ITransportClient} from '@campfirein/brv-transport-client'
 
 import type {CurateLogOperation} from '../../core/domain/entities/curate-log-entry.js'
 import type {
@@ -35,6 +35,20 @@ import {LlmEventNames} from '../../core/domain/transport/schemas.js'
 const SYNTHETIC_SESSION_ID = ''
 
 /**
+ * Marker stamped on every synthetic event's `metadata`. `TaskRouter.routeLlmEvent`
+ * inspects this and SKIPS the per-client `sendTo()` + `broadcastToProjectRoom()`
+ * for synthetic events. Without the skip, the synthetic tool-call envelopes
+ * leak into the CLI's streamed JSON output, the TUI live view, every MCP
+ * client subscribed to the project, and the webui — surfacing internal
+ * analytics plumbing as user-facing progress events.
+ *
+ * The internal accumulator + `onToolResult` hook chain still run (they're
+ * gated separately in `routeLlmEvent`), so AnalyticsHook / CurateLogHandler /
+ * QueryLogHandler get their inputs unchanged.
+ */
+export const SYNTHETIC_EVENT_METADATA = {_synthetic: true} as const
+
+/**
  * Fire a synthetic `llmservice:toolResult` mirroring the legacy curate-tool
  * envelope (`{applied: CurateLogOperation[]}`).
  *
@@ -54,6 +68,7 @@ export function emitSyntheticCurateToolResult(opts: {
   if (operations.length === 0) return
   try {
     transport.request(LlmEventNames.TOOL_RESULT, {
+      metadata: SYNTHETIC_EVENT_METADATA,
       result: JSON.stringify({applied: operations}),
       sessionId: SYNTHETIC_SESSION_ID,
       success: true,
@@ -107,6 +122,7 @@ export function emitSyntheticQueryToolCalls(opts: {
         totalFound: metadata.totalFound,
       },
       callId: randomUUID(),
+      metadata: SYNTHETIC_EVENT_METADATA,
       sessionId: SYNTHETIC_SESSION_ID,
       taskId,
       toolName: 'search_knowledge',
@@ -116,6 +132,7 @@ export function emitSyntheticQueryToolCalls(opts: {
       transport.request(LlmEventNames.TOOL_CALL, {
         args: {filePath: join(contextTreeRoot, doc.path)},
         callId: randomUUID(),
+        metadata: SYNTHETIC_EVENT_METADATA,
         sessionId: SYNTHETIC_SESSION_ID,
         taskId,
         toolName: 'read_file',

@@ -1,8 +1,8 @@
 /* eslint-disable camelcase */
+import type {ITransportClient} from '@campfirein/brv-transport-client'
+
 import {expect} from 'chai'
 import sinon from 'sinon'
-
-import type {ITransportClient} from '@campfirein/brv-transport-client'
 
 import type {CurateLogOperation} from '../../../../../src/server/core/domain/entities/curate-log-entry.js'
 import type {
@@ -22,6 +22,25 @@ const buildTransport = (): {requestStub: sinon.SinonStub; transport: ITransportC
   const transport = {request: requestStub} as unknown as ITransportClient
   return {requestStub, transport}
 }
+
+const buildMatchedDoc = (overrides: Partial<QueryToolModeMatchedDoc> = {}): QueryToolModeMatchedDoc => ({
+  format: 'markdown',
+  path: 'topics/intro.md',
+  rendered_md: '## stub',
+  score: 0.5,
+  title: 'Intro',
+  ...overrides,
+})
+
+const buildMetadata = (overrides: Partial<QueryToolModeMetadata> = {}): QueryToolModeMetadata => ({
+  cacheHit: null,
+  durationMs: 12,
+  skippedSharedCount: 0,
+  tier: 2,
+  topScore: 0.72,
+  totalFound: 1,
+  ...overrides,
+})
 
 describe('synthetic-tool-result-emit (M16 tool-mode gap fix)', () => {
   describe('emitSyntheticCurateToolResult', () => {
@@ -47,6 +66,9 @@ describe('synthetic-tool-result-emit (M16 tool-mode gap fix)', () => {
       expect(payload.toolName).to.equal('curate')
       expect(payload.success).to.equal(true)
       expect(payload.taskId).to.equal('task-1')
+      // M16: marker tells TaskRouter to skip the per-client broadcast so
+      // synthetic envelopes never surface in CLI / TUI / MCP / webui.
+      expect(payload.metadata).to.deep.equal({_synthetic: true})
 
       // The result must round-trip through the parser AnalyticsHook uses,
       // otherwise the synthetic envelope is dead-on-arrival downstream.
@@ -104,25 +126,6 @@ describe('synthetic-tool-result-emit (M16 tool-mode gap fix)', () => {
   })
 
   describe('emitSyntheticQueryToolCalls', () => {
-    const buildMatchedDoc = (overrides: Partial<QueryToolModeMatchedDoc> = {}): QueryToolModeMatchedDoc => ({
-      format: 'markdown',
-      path: 'topics/intro.md',
-      rendered_md: '## stub',
-      score: 0.5,
-      title: 'Intro',
-      ...overrides,
-    })
-
-    const buildMetadata = (overrides: Partial<QueryToolModeMetadata> = {}): QueryToolModeMetadata => ({
-      cacheHit: null,
-      durationMs: 12,
-      skippedSharedCount: 0,
-      tier: 2,
-      topScore: 0.72,
-      totalFound: 1,
-      ...overrides,
-    })
-
     it('fires one search_knowledge toolCall plus one read_file toolCall per matched doc', () => {
       const {requestStub, transport} = buildTransport()
 
@@ -139,6 +142,12 @@ describe('synthetic-tool-result-emit (M16 tool-mode gap fix)', () => {
 
       expect(requestStub.callCount).to.equal(3)
       const [first, ...reads] = requestStub.getCalls()
+
+      // Every call carries the synthetic marker so TaskRouter skips the
+      // per-client broadcast (M16 — see SYNTHETIC_EVENT_METADATA docblock).
+      for (const call of requestStub.getCalls()) {
+        expect(call.args[1].metadata).to.deep.equal({_synthetic: true})
+      }
 
       // First call: the search_knowledge envelope with retrieval metadata.
       expect(first.args[0]).to.equal(LlmEventNames.TOOL_CALL)
