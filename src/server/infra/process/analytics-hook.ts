@@ -19,6 +19,7 @@ import {TaskTypes} from '../../../shared/analytics/task-types.js'
 import {parseFrontmatter} from '../../core/domain/knowledge/markdown-writer.js'
 import {extractCurateOperations} from '../../utils/curate-result-parser.js'
 import {processLog} from '../../utils/process-logger.js'
+import {readHtmlTopicSync} from '../render/reader/html-reader.js'
 import {CURATE_TASK_TYPES} from './curate-log-handler.js'
 import {QUERY_TASK_TYPES} from './query-log-handler.js'
 
@@ -643,6 +644,19 @@ export class AnalyticsHook implements ITaskLifecycleHook {
     if (!this.isEnabled()) return {}
     try {
       const content = await this.readFile(filePath, 'utf8')
+      // M16 follow-up: HTML topic files (curate-tool-mode writes) carry the
+      // frontmatter as attributes on `<bv-topic>`, NOT as YAML. parseFrontmatter
+      // returns null for them. Branch on extension so both formats produce
+      // the same FrontmatterFields shape downstream.
+      if (filePath.toLowerCase().endsWith('.html')) {
+        const htmlAttrs = readHtmlTopicSync(content).topicAttributes
+        return {
+          keywords: capStringArray(splitTopicAttrList(htmlAttrs.keywords)),
+          related: capStringArray(splitTopicAttrList(htmlAttrs.related)),
+          tags: capStringArray(splitTopicAttrList(htmlAttrs.tags)),
+        }
+      }
+
       const parsed = parseFrontmatter(content)
       if (parsed === null) return {}
       return {
@@ -651,9 +665,25 @@ export class AnalyticsHook implements ITaskLifecycleHook {
         tags: capStringArray(parsed.frontmatter.tags),
       }
     } catch {
-      // ENOENT, EACCES, permission, malformed YAML — all silently treated
-      // as "no frontmatter". No retry, no log noise.
+      // ENOENT, EACCES, permission, malformed YAML / HTML — all silently
+      // treated as "no frontmatter". No retry, no log noise.
       return {}
     }
   }
+}
+
+/**
+ * Split a `<bv-topic>` attribute value into a string array. The HTML writer
+ * emits these as comma-separated lists (e.g. `tags="analytics, m16, tool-mode"`)
+ * to mirror the YAML array semantics. Whitespace around each entry is
+ * trimmed; empty entries are dropped so a trailing comma never produces
+ * a zero-length tag.
+ */
+function splitTopicAttrList(value: string | undefined): string[] | undefined {
+  if (typeof value !== 'string' || value.trim().length === 0) return undefined
+  const parts = value
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+  return parts.length > 0 ? parts : undefined
 }
