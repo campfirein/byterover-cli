@@ -33,6 +33,7 @@ import {readCliVersion} from '../../utils/read-cli-version.js'
 import {AnalyticsBackoffPolicy} from '../analytics/analytics-backoff-policy.js'
 import {AnalyticsClient} from '../analytics/analytics-client.js'
 import {BoundedQueue} from '../analytics/bounded-queue.js'
+import {buildAnalyticsStatusSnapshot} from '../analytics/build-status-snapshot.js'
 import {IdentityResolver} from '../analytics/identity-resolver.js'
 import {JsonlAnalyticsStore} from '../analytics/jsonl-analytics-store.js'
 import {SuperPropertiesResolver} from '../analytics/super-properties-resolver.js'
@@ -290,8 +291,23 @@ export async function setupFeatureHandlers({
 
   // Global SettingsHandler (no project context). Deferred from line 180 so
   // analyticsClient is in scope for M15.4 `setting_changed` / `setting_reset`
-  // emits.
-  new SettingsHandler({analyticsClient, store: settingsStore, transport}).setup()
+  // emits. M16.3 wires the `analytics.status` readonly-info provider so
+  // `brv settings get analytics.status` returns the same operational
+  // snapshot as the legacy `brv analytics status` command.
+  const analyticsStatusSnapshotDeps = {
+    analyticsClient,
+    backoffPolicy: analyticsBackoffPolicy,
+    endpoint: envConfig.analyticsBaseUrl ?? '',
+    isAnalyticsEnabled: () => globalConfigHandler.getCachedAnalytics(),
+  }
+  new SettingsHandler({
+    analyticsClient,
+    infoProviders: new Map([
+      ['analytics.status', async () => buildAnalyticsStatusSnapshot(analyticsStatusSnapshotDeps)],
+    ]),
+    store: settingsStore,
+    transport,
+  }).setup()
 
   // M11.2: webui-facing read API. Shares the same JsonlAnalyticsStore instance
   // as the AnalyticsClient so reads see exactly what trackAsync persisted.

@@ -11,7 +11,7 @@ export const SettingResetSchema = z
     failure_kind: z.string().min(1).max(64).optional(),
     outcome: z.enum(['success', 'failure']),
     setting_key: z.string().min(1),
-    value_kind: z.enum(['integer', 'boolean']),
+    value_kind: z.enum(['integer', 'boolean', 'readonly-info']),
   })
   .strict()
 

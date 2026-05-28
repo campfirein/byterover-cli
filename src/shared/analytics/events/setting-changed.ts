@@ -15,7 +15,7 @@ export const SettingChangedSchema = z
     outcome: z.enum(['success', 'failure']),
     setting_key: z.string().min(1),
     value_changed_from_default: z.boolean().optional(),
-    value_kind: z.enum(['integer', 'boolean']),
+    value_kind: z.enum(['integer', 'boolean', 'readonly-info']),
   })
   .strict()
 

@@ -1,6 +1,7 @@
 import {expect} from 'chai'
 import {createSandbox, type SinonSandbox, type SinonStub} from 'sinon'
 
+import type {SettingDescriptor} from '../../../../../src/server/core/domain/entities/settings.js'
 import type {IAnalyticsClient} from '../../../../../src/server/core/interfaces/analytics/i-analytics-client.js'
 import type {ISettingsStore} from '../../../../../src/server/core/interfaces/storage/i-settings-store.js'
 import type {ITransportServer, RequestHandler} from '../../../../../src/server/core/interfaces/transport/i-transport-server.js'
@@ -147,5 +148,72 @@ describe('SettingsHandler analytics emits', () => {
     new SettingsHandler({store, transport: transportLocal}).setup()
     await local[SettingsEvents.SET]({key: SETTINGS_KEYS.AGENT_POOL_MAX_SIZE, value: 1}, 'c1')
     expect(analyticsClient.trackSpy.called).to.equal(false)
+  })
+
+  describe('readonly-info variant (M16.1)', () => {
+    const readonlyInfoRegistry: readonly SettingDescriptor[] = [
+      {
+        category: 'updates',
+        description: 'live operational snapshot for tests',
+        key: '_test.snapshot',
+        restartRequired: false,
+        type: 'readonly-info',
+      },
+    ]
+
+    let isolatedRequestHandlers: Record<string, RequestHandler>
+    let isolatedAnalytics: IAnalyticsClient & {trackSpy: SinonStub}
+
+    beforeEach(() => {
+      isolatedRequestHandlers = {}
+      const isolatedTransport = {
+        ...transport,
+        onRequest: sandbox.stub().callsFake((event: string, handler: RequestHandler) => {
+          isolatedRequestHandlers[event] = handler
+        }),
+      } as never
+      isolatedAnalytics = makeFakeAnalyticsClient()
+      new SettingsHandler({
+        analyticsClient: isolatedAnalytics,
+        registry: readonlyInfoRegistry,
+        store,
+        transport: isolatedTransport,
+      }).setup()
+    })
+
+    it('emits setting_changed failure_kind=read_only with value_kind=readonly-info on SET attempt', async () => {
+      const handler = isolatedRequestHandlers[SettingsEvents.SET]
+      await handler({key: '_test.snapshot', value: 1}, 'c1')
+      const calls = isolatedAnalytics.trackSpy.getCalls().filter((c) => c.args[0] === AnalyticsEventNames.SETTING_CHANGED)
+      expect(calls.length).to.equal(1)
+      const props = calls[0].args[1] as {failure_kind?: string; outcome: string; setting_key: string; value_kind: string}
+      expect(props.outcome).to.equal('failure')
+      expect(props.failure_kind).to.equal('read_only')
+      expect(props.setting_key).to.equal('_test.snapshot')
+      expect(props.value_kind).to.equal('readonly-info')
+    })
+
+    it('emits setting_reset failure_kind=read_only with value_kind=readonly-info on RESET attempt', async () => {
+      const handler = isolatedRequestHandlers[SettingsEvents.RESET]
+      await handler({key: '_test.snapshot'}, 'c1')
+      const calls = isolatedAnalytics.trackSpy.getCalls().filter((c) => c.args[0] === AnalyticsEventNames.SETTING_RESET)
+      expect(calls.length).to.equal(1)
+      const props = calls[0].args[1] as {failure_kind?: string; outcome: string; setting_key: string; value_kind: string}
+      expect(props.outcome).to.equal('failure')
+      expect(props.failure_kind).to.equal('read_only')
+      expect(props.value_kind).to.equal('readonly-info')
+    })
+
+    it('does NOT call store.set when the SET is gated as read_only', async () => {
+      const handler = isolatedRequestHandlers[SettingsEvents.SET]
+      await handler({key: '_test.snapshot', value: 1}, 'c1')
+      expect(store.set.called).to.equal(false)
+    })
+
+    it('does NOT call store.reset when the RESET is gated as read_only', async () => {
+      const handler = isolatedRequestHandlers[SettingsEvents.RESET]
+      await handler({key: '_test.snapshot'}, 'c1')
+      expect(store.reset.called).to.equal(false)
+    })
   })
 })

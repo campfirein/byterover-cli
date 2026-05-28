@@ -12,7 +12,7 @@ import {
  * and TUI render output (uppercased). Web docs / WebUI consume this
  * field to render the same groupings independently of key naming.
  */
-export type SettingCategory = 'concurrency' | 'llm' | 'task-history' | 'updates'
+export type SettingCategory = 'analytics' | 'concurrency' | 'llm' | 'task-history' | 'updates'
 
 /**
  * Value-kind for dispatch between the duration formatter / parser
@@ -49,23 +49,44 @@ export type BooleanSettingDescriptor = BaseSettingDescriptor & {
 }
 
 /**
- * Descriptor for a single user-configurable setting. Discriminated on
- * `type` so consumers narrow with a single check before reading
- * type-specific fields (`min`/`max` on integers, etc).
+ * Descriptor for a read-only operational snapshot key (e.g. `analytics.status`).
+ * Carries no default, refuses `set` / `reset`, and is never persisted to
+ * `settings.json`. The live value is supplied by an info provider injected
+ * into `SettingsHandler` at construction time — descriptors stay pure data
+ * so the registry never crosses the `core/domain -> infra` import boundary.
  *
- * Defaults reference the existing constants module so a constant change
- * automatically updates the setting's default.
+ * `restartRequired` is pinned to literal `false` because a snapshot can
+ * never demand a daemon restart: there is no override to apply.
  */
-export type SettingDescriptor = BooleanSettingDescriptor | IntegerSettingDescriptor
+export type ReadonlyInfoSettingDescriptor = BaseSettingDescriptor & {
+  readonly restartRequired: false
+  readonly type: 'readonly-info'
+}
+
+/**
+ * Descriptor for a single registered setting. Discriminated on `type` so
+ * consumers narrow with a single check before reading type-specific
+ * fields (`min`/`max` on integers, `default` on writable variants, etc).
+ *
+ * Defaults on writable variants reference the existing constants module
+ * so a constant change automatically updates the setting's default.
+ */
+export type SettingDescriptor =
+  | BooleanSettingDescriptor
+  | IntegerSettingDescriptor
+  | ReadonlyInfoSettingDescriptor
 
 /**
  * View of one setting: the key, the user's current override (or the default
  * if none is set), and the registered default. Carries the union of value
  * shapes; consumers narrow on the corresponding descriptor's `type`.
+ *
+ * Readonly-info keys carry no `default` (snapshots have no default state)
+ * and may carry a structured `current` payload supplied by the provider.
  */
 export type SettingItem = {
-  readonly current: boolean | number
-  readonly default: boolean | number
+  readonly current: boolean | number | Readonly<Record<string, unknown>> | undefined
+  readonly default?: boolean | number
   readonly key: string
   readonly restartRequired: boolean
 }
@@ -79,6 +100,7 @@ export type SettingItem = {
 export const SETTINGS_KEYS = {
   AGENT_POOL_MAX_CONCURRENT_TASKS: 'agentPool.maxConcurrentTasksPerProject',
   AGENT_POOL_MAX_SIZE: 'agentPool.maxSize',
+  ANALYTICS_STATUS: 'analytics.status',
   LLM_ITERATION_BUDGET_MS: 'llm.iterationBudgetMs',
   LLM_REQUEST_TIMEOUT_MS: 'llm.requestTimeoutMs',
   TASK_HISTORY_MAX_ENTRIES: 'taskHistory.maxEntries',
@@ -145,6 +167,13 @@ export const SETTINGS_REGISTRY: readonly SettingDescriptor[] = [
     key: SETTINGS_KEYS.UPDATE_CHECK_FOR_UPDATES,
     restartRequired: false,
     type: 'boolean',
+  },
+  {
+    category: 'analytics',
+    description: 'Live analytics shipping snapshot (queue, last flush, backoff, endpoint)',
+    key: SETTINGS_KEYS.ANALYTICS_STATUS,
+    restartRequired: false,
+    type: 'readonly-info',
   },
 ]
 
