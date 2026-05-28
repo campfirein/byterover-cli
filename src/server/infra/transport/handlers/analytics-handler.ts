@@ -18,6 +18,7 @@ import {HubPackageInstalledSchema} from '../../../../shared/analytics/events/hub
 import {HubRegistryAddedSchema} from '../../../../shared/analytics/events/hub-registry-added.js'
 import {HubRegistryRemovedSchema} from '../../../../shared/analytics/events/hub-registry-removed.js'
 import {isAnalyticsEventName} from '../../../../shared/analytics/events/index.js'
+import {McpSessionEndedSchema} from '../../../../shared/analytics/events/mcp-session-ended.js'
 import {McpSessionStartSchema} from '../../../../shared/analytics/events/mcp-session-start.js'
 import {McpToolCalledSchema} from '../../../../shared/analytics/events/mcp-tool-called.js'
 import {OnboardingAutoSetupStartedSchema} from '../../../../shared/analytics/events/onboarding-auto-setup-started.js'
@@ -209,6 +210,13 @@ export class AnalyticsHandler {
         const props = HubRegistryRemovedSchema.safeParse(rawProperties ?? {})
         if (!props.success) return
         this.analyticsClient.track(AnalyticsEventNames.HUB_REGISTRY_REMOVED, props.data)
+        break
+      }
+
+      case AnalyticsEventNames.MCP_SESSION_ENDED: {
+        const props = McpSessionEndedSchema.safeParse(rawProperties ?? {})
+        if (!props.success) return
+        this.analyticsClient.track(AnalyticsEventNames.MCP_SESSION_ENDED, props.data)
         break
       }
 

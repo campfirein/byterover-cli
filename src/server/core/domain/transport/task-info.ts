@@ -1,4 +1,5 @@
 import type {ReasoningContentItem, ToolCallEvent} from '../../../../shared/transport/events/task-events.js'
+import type {ClientType} from '../client/client-info.js'
 import type {TaskErrorData, TaskListItemStatus, TaskType} from './schemas.js'
 
 /**
@@ -14,6 +15,21 @@ export type TaskInfo = {
   /** Client's working directory for file validation */
   clientCwd?: string
   clientId: string
+  /**
+   * M15.8: snapshot of submitting client's IDE product name (e.g. "Cursor")
+   * captured at handleTaskCreate. Used by AnalyticsHook to emit
+   * mcp_tool_called with `client_name` even after the originating MCP
+   * client disconnects mid-task. Undefined for non-MCP submissions or
+   * when the MCP handshake had not delivered a name by task-create time.
+   */
+  clientName?: string
+  /**
+   * M15.8: snapshot of submitting client's transport kind. Lets
+   * AnalyticsHook gate MCP-only emits on `clientType === 'mcp'`
+   * without re-querying ClientManager (which may have disconnected
+   * the client by task completion).
+   */
+  clientType?: ClientType
   /** Set when task reaches a terminal state */
   completedAt?: number
   content: string

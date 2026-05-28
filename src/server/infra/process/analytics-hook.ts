@@ -53,6 +53,17 @@ function toAnalyticsTaskType(daemonType: string): TaskType {
 }
 
 /**
+ * M15.8 — map a daemon task type to its MCP tool name. Returns undefined
+ * for any task that is not an MCP tool-mode flavor; callers gate emit on
+ * the returned value being defined.
+ */
+function mcpToolNameForTaskType(daemonType: string): 'brv-curate' | 'brv-query' | undefined {
+  if (daemonType === TaskTypes.QUERY_TOOL_MODE) return 'brv-query'
+  if (daemonType === TaskTypes.CURATE_TOOL_MODE) return 'brv-curate'
+  return undefined
+}
+
+/**
  * Stable sentinel for paths that can't be safely emitted as project-
  * relative — either outside the project root or the project root itself
  * is unknown. The backend can group these without leaking host layout.
@@ -234,6 +245,11 @@ export class AnalyticsHook implements ITaskLifecycleHook {
   async onTaskCancelled(taskId: string, task: TaskInfo): Promise<void> {
     await this.dispatchTerminal(taskId, task, 'cancelled')
     this.emitTaskFailed(taskId, task, 'cancelled')
+    // M15.8 — surface MCP cancellation in the dedicated funnel. The schema
+    // has only `success: boolean`; user-cancel is a not-completed call, so
+    // it shares the failure bucket with onTaskError. Without this emit the
+    // MCP funnel would under-count by the cancellation rate.
+    this.emitMcpToolCalled(task, false)
   }
 
   async onTaskCompleted(taskId: string, _result: string, task: TaskInfo): Promise<void> {
@@ -266,6 +282,10 @@ export class AnalyticsHook implements ITaskLifecycleHook {
       task_id: taskId,
       task_type: toAnalyticsTaskType(task.type),
     })
+
+    // M15.8 — dedicated MCP funnel emit. Fires alongside (not instead of)
+    // TASK_COMPLETED; MCP volume is low so the dual-event cost is accepted.
+    this.emitMcpToolCalled(task, true)
   }
 
   async onTaskCreate(task: TaskInfo): Promise<void> {
@@ -297,6 +317,8 @@ export class AnalyticsHook implements ITaskLifecycleHook {
   async onTaskError(taskId: string, errorMessage: string, task: TaskInfo): Promise<void> {
     await this.dispatchTerminal(taskId, task, 'error')
     this.emitTaskFailed(taskId, task, classifyFailureKind(errorMessage))
+    // M15.8 — surface MCP failure path in the dedicated funnel.
+    this.emitMcpToolCalled(task, false)
   }
 
   async onToolResult(taskId: string, payload: LlmToolResultEvent): Promise<void> {
@@ -489,6 +511,26 @@ export class AnalyticsHook implements ITaskLifecycleHook {
     } catch (error) {
       processLog(`AnalyticsHook: ${event} track failed: ${error instanceof Error ? error.message : String(error)}`)
     }
+  }
+
+  /**
+   * M15.8 — emit `mcp_tool_called` for MCP-originated tool-mode tasks.
+   * Gated on `clientType === 'mcp'` AND task type being a tool-mode flavor.
+   * Falls back to `'unknown'` when the MCP handshake had not delivered a
+   * client name by `handleTaskCreate` time (rare race; section 3 of M15.8
+   * guarantees the name in steady-state).
+   */
+  private emitMcpToolCalled(task: TaskInfo, success: boolean): void {
+    if (task.clientType !== 'mcp') return
+    const toolName = mcpToolNameForTaskType(task.type)
+    if (toolName === undefined) return
+
+    this.emit(AnalyticsEventNames.MCP_TOOL_CALLED, {
+      client_name: task.clientName ?? 'unknown',
+      duration_ms: this.durationMs(task),
+      success,
+      tool_name: toolName,
+    })
   }
 
   /**

@@ -28,6 +28,7 @@ export const AnalyticsEventNames = {
   HUB_PACKAGE_INSTALLED: 'hub_package_installed',
   HUB_REGISTRY_ADDED: 'hub_registry_added',
   HUB_REGISTRY_REMOVED: 'hub_registry_removed',
+  MCP_SESSION_ENDED: 'mcp_session_ended',
   MCP_SESSION_START: 'mcp_session_start',
   MCP_TOOL_CALLED: 'mcp_tool_called',
   ONBOARDING_AUTO_SETUP_STARTED: 'onboarding_auto_setup_started',

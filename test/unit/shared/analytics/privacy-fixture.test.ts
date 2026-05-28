@@ -130,6 +130,7 @@ describe('analytics privacy fixture (smoke)', () => {
       'hub_package_installed',
       'hub_registry_added',
       'hub_registry_removed',
+      'mcp_session_ended',
       'mcp_session_start',
       'mcp_tool_called',
       'onboarding_auto_setup_started',
