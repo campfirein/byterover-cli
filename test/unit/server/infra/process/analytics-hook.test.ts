@@ -81,6 +81,12 @@ const defer = <T>(): Deferred<T> => {
 
 const buildFrontmatterDoc = (tag: string): string => `---\ntags: ["${tag}"]\n---\nbody\n`
 
+const findEmit = (stub: sinon.SinonStub, event: string): Record<string, unknown> => {
+  const call = stub.getCalls().find((c) => c.args[0] === event)
+  if (!call) throw new Error(`expected ${event} emit not found`)
+  return call.args[1] as Record<string, unknown>
+}
+
 const stubReadFileFromQueue =
   (...queue: Array<Promise<string>>): ((p: string) => Promise<string>) =>
   () => {
@@ -810,6 +816,149 @@ describe('AnalyticsHook', () => {
       // Re-creating the task after cleanup must NOT replay either; it only
       // adds another TASK_CREATED (filtered out below).
       expect(filterM12(bundle.trackStub), 'no replay after cleanup').to.have.lengthOf(2)
+    })
+  })
+
+  describe('identity stamping (space_id + team_id)', () => {
+    it('stamps both space_id and team_id on curate_run_completed when getIdentity returns them', async () => {
+      const bundle = buildAnalyticsClient()
+      const spacedHook = new AnalyticsHook({getIdentity: async () => ({spaceId: 'space-abc', teamId: 'team-abc'})})
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildCurateTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskCompleted(task.taskId, '', task)
+
+      const curateProps = findEmit(bundle.trackStub, AnalyticsEventNames.CURATE_RUN_COMPLETED)
+      expect(curateProps.space_id).to.equal('space-abc')
+      expect(curateProps.team_id).to.equal('team-abc')
+    })
+
+    it('stamps both space_id and team_id on query_completed when getIdentity returns them', async () => {
+      const bundle = buildAnalyticsClient()
+      const spacedHook = new AnalyticsHook({getIdentity: async () => ({spaceId: 'space-xyz', teamId: 'team-xyz'})})
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildQueryTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskCompleted(task.taskId, '', task)
+
+      const queryProps = findEmit(bundle.trackStub, AnalyticsEventNames.QUERY_COMPLETED)
+      expect(queryProps.space_id).to.equal('space-xyz')
+      expect(queryProps.team_id).to.equal('team-xyz')
+    })
+
+    it('stamps team_id alone when spaceId is absent (mid-onboarding state)', async () => {
+      const bundle = buildAnalyticsClient()
+      const spacedHook = new AnalyticsHook({getIdentity: async () => ({teamId: 'team-only'})})
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildCurateTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskCompleted(task.taskId, '', task)
+
+      const curateProps = findEmit(bundle.trackStub, AnalyticsEventNames.CURATE_RUN_COMPLETED)
+      expect(curateProps.team_id).to.equal('team-only')
+      expect(curateProps).to.not.have.property('space_id')
+    })
+
+    it('stamps space_id alone when teamId is absent', async () => {
+      const bundle = buildAnalyticsClient()
+      const spacedHook = new AnalyticsHook({getIdentity: async () => ({spaceId: 'space-only'})})
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildQueryTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskCompleted(task.taskId, '', task)
+
+      const queryProps = findEmit(bundle.trackStub, AnalyticsEventNames.QUERY_COMPLETED)
+      expect(queryProps.space_id).to.equal('space-only')
+      expect(queryProps).to.not.have.property('team_id')
+    })
+
+    it('omits both fields when getIdentity returns {} (standalone project)', async () => {
+      const bundle = buildAnalyticsClient()
+      const spacedHook = new AnalyticsHook({getIdentity: async () => ({})})
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildCurateTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskCompleted(task.taskId, '', task)
+
+      const curateProps = findEmit(bundle.trackStub, AnalyticsEventNames.CURATE_RUN_COMPLETED)
+      expect(curateProps).to.not.have.property('space_id')
+      expect(curateProps).to.not.have.property('team_id')
+    })
+
+    it('normalizes empty strings to omitted fields', async () => {
+      const bundle = buildAnalyticsClient()
+      const spacedHook = new AnalyticsHook({getIdentity: async () => ({spaceId: '', teamId: ''})})
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildQueryTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskCompleted(task.taskId, '', task)
+
+      const queryProps = findEmit(bundle.trackStub, AnalyticsEventNames.QUERY_COMPLETED)
+      expect(queryProps).to.not.have.property('space_id')
+      expect(queryProps).to.not.have.property('team_id')
+    })
+
+    it('omits both fields and still emits when getIdentity throws', async () => {
+      const bundle = buildAnalyticsClient()
+      const spacedHook = new AnalyticsHook({
+        async getIdentity() {
+          throw new Error('config disk unreadable')
+        },
+      })
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildCurateTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskCompleted(task.taskId, '', task)
+
+      const curateProps = findEmit(bundle.trackStub, AnalyticsEventNames.CURATE_RUN_COMPLETED)
+      expect(curateProps).to.not.have.property('space_id')
+      expect(curateProps).to.not.have.property('team_id')
+      // Funnel emit still lands — getIdentity failure must not block the run-completion emit.
+      expect(curateProps.task_type).to.equal('curate')
+    })
+
+    it('also stamps both fields on the failure-path emits (onTaskError)', async () => {
+      const bundle = buildAnalyticsClient()
+      const spacedHook = new AnalyticsHook({getIdentity: async () => ({spaceId: 'space-fail', teamId: 'team-fail'})})
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildCurateTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskError(task.taskId, 'boom', task)
+
+      const curateProps = findEmit(bundle.trackStub, AnalyticsEventNames.CURATE_RUN_COMPLETED)
+      expect(curateProps.outcome).to.equal('error')
+      expect(curateProps.space_id).to.equal('space-fail')
+      expect(curateProps.team_id).to.equal('team-fail')
+    })
+
+    it('does not invoke getIdentity when analytics is disabled (short-circuit)', async () => {
+      const bundle = buildAnalyticsClient()
+      let calls = 0
+      const spacedHook = new AnalyticsHook({
+        async getIdentity() {
+          calls++
+          return {spaceId: 'should-not-stamp', teamId: 'should-not-stamp'}
+        },
+        isEnabled: () => false,
+      })
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildCurateTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskCompleted(task.taskId, '', task)
+
+      expect(calls, 'getIdentity skipped when analytics disabled').to.equal(0)
+      const curateProps = findEmit(bundle.trackStub, AnalyticsEventNames.CURATE_RUN_COMPLETED)
+      expect(curateProps).to.not.have.property('space_id')
+      expect(curateProps).to.not.have.property('team_id')
     })
   })
 })
