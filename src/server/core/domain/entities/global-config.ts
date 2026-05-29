@@ -130,4 +130,24 @@ export class GlobalConfig {
       version: this.version,
     })
   }
+
+  /**
+   * Returns a new GlobalConfig with the deviceId replaced. The analytics flag
+   * and version are preserved. The original instance is not mutated.
+   *
+   * @param deviceId - The new device identifier (must be non-empty)
+   * @returns A new GlobalConfig instance
+   * @throws Error if deviceId is empty or whitespace-only
+   */
+  public withDeviceId(deviceId: string): GlobalConfig {
+    if (deviceId.trim().length === 0) {
+      throw new Error('Device ID cannot be empty')
+    }
+
+    return new GlobalConfig({
+      analytics: this.analytics,
+      deviceId,
+      version: this.version,
+    })
+  }
 }

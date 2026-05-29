@@ -335,6 +335,10 @@ export async function setupFeatureHandlers({
     authStateStore,
     browserLauncher: new SystemBrowserLauncher(),
     callbackHandler: new CallbackHandler(),
+    // The handler doubles as the device_id rotator (it owns the same
+    // writeChain that serializes analytics-flag toggles, so rotation
+    // cannot race a concurrent enable/disable into a stale config).
+    globalConfigRotator: globalConfigHandler,
     projectConfigStore,
     providerConfigStore,
     resolveProjectPath,

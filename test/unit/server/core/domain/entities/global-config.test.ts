@@ -218,6 +218,51 @@ describe('GlobalConfig', () => {
     })
   })
 
+  describe('withDeviceId()', () => {
+    const newDeviceId = '11111111-2222-3333-4444-555555555555'
+
+    it('should produce a new instance with the given deviceId, preserving analytics + version', () => {
+      const original = GlobalConfig.fromJson({
+        analytics: true,
+        deviceId: validDeviceId,
+        version: '0.0.1',
+      })
+      if (!original) throw new Error('fromJson returned undefined for valid input')
+
+      const updated = original.withDeviceId(newDeviceId)
+
+      expect(updated.deviceId).to.equal(newDeviceId)
+      expect(updated.analytics).to.equal(true)
+      expect(updated.version).to.equal('0.0.1')
+    })
+
+    it('should not mutate the original instance', () => {
+      const original = GlobalConfig.create(validDeviceId)
+      original.withDeviceId(newDeviceId)
+
+      expect(original.deviceId).to.equal(validDeviceId)
+    })
+
+    it('should return a new instance object', () => {
+      const original = GlobalConfig.create(validDeviceId)
+      const updated = original.withDeviceId(newDeviceId)
+
+      expect(updated).to.not.equal(original)
+    })
+
+    it('should throw when deviceId is empty', () => {
+      const original = GlobalConfig.create(validDeviceId)
+
+      expect(() => original.withDeviceId('')).to.throw('Device ID cannot be empty')
+    })
+
+    it('should throw when deviceId is only whitespace', () => {
+      const original = GlobalConfig.create(validDeviceId)
+
+      expect(() => original.withDeviceId('   ')).to.throw('Device ID cannot be empty')
+    })
+  })
+
   describe('immutability', () => {
     it('should have readonly properties', () => {
       const config = GlobalConfig.create(validDeviceId)

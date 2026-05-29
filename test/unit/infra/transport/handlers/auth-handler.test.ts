@@ -11,6 +11,7 @@ import type {IProviderConfigStore} from '../../../../../src/server/core/interfac
 import type {IBrowserLauncher} from '../../../../../src/server/core/interfaces/services/i-browser-launcher.js'
 import type {IUserService} from '../../../../../src/server/core/interfaces/services/i-user-service.js'
 import type {IAuthStateStore} from '../../../../../src/server/core/interfaces/state/i-auth-state-store.js'
+import type {IGlobalConfigRotator} from '../../../../../src/server/core/interfaces/state/i-global-config-rotator.js'
 import type {IProjectConfigStore} from '../../../../../src/server/core/interfaces/storage/i-project-config-store.js'
 import type {ITransportServer} from '../../../../../src/server/core/interfaces/transport/i-transport-server.js'
 
@@ -109,6 +110,34 @@ function assertFailureKindDiscipline(value: unknown, label: string): void {
   expect(tag.length, `${label}: failure_kind must be non-empty`).to.be.greaterThan(0)
   expect(tag.length, `${label}: failure_kind must be ≤64 chars (got ${tag.length})`).to.be.lessThanOrEqual(64)
   expect(tag, `${label}: failure_kind must be snake_case (a-z + _), got "${tag}"`).to.match(/^[a-z][a-z_]*$/)
+}
+
+function makeRotatorStub(rotated = true): IGlobalConfigRotator & {rotateSpy: ReturnType<typeof stub>} {
+  const rotateSpy = stub().resolves(rotated)
+  return {
+    rotateDeviceId: rotateSpy,
+    rotateSpy,
+  } as unknown as IGlobalConfigRotator & {rotateSpy: ReturnType<typeof stub>}
+}
+
+function makeTokenForUser(userId: string): AuthToken {
+  return new AuthToken({
+    accessToken: 'access',
+    expiresAt: new Date(Date.now() + 3_600_000),
+    refreshToken: 'refresh',
+    sessionKey: 'session',
+    tokenType: 'Bearer',
+    userEmail: `${userId}@example.com`,
+    userId,
+  })
+}
+
+function tokenStoreWithPrevious(previous?: AuthToken): ITokenStore {
+  return {
+    clear: stub().resolves(),
+    load: stub().resolves(previous),
+    save: stub().resolves(),
+  } as unknown as ITokenStore
 }
 
 function makeValidTokenStoreFixture(): ITokenStore {
@@ -699,6 +728,543 @@ describe('AuthHandler — setupExternalAuthSync', () => {
       const props = trackCalls[0].args[1] as {failure_kind?: string; outcome: string}
       expect(props.outcome).to.equal('failure')
       assertFailureKindDiscipline(props.failure_kind, 'auth_login API-key failure emit')
+    })
+  })
+
+  describe('setupRefresh — failure path treats as full sign-out', () => {
+    // eslint-disable-next-line unicorn/consistent-function-scoping
+    function makeRefreshHarness(opts: {
+      previousToken: AuthToken | undefined
+      refreshThrows: boolean
+      rotator: IGlobalConfigRotator
+    }): {
+      analyticsClient: ReturnType<typeof makeFakeAnalyticsClient>
+      callOrder: string[]
+      callRefresh: () => Promise<unknown>
+      tokenStore: ITokenStore & {clearSpy: ReturnType<typeof stub>}
+    } {
+      const callOrder: string[] = []
+      const analyticsClient = makeFakeAnalyticsClient()
+      analyticsClient.trackSpy.callsFake((event: string) => {
+        callOrder.push(`track:${event}`)
+      })
+      const clearSpy = stub().callsFake(async () => {
+        callOrder.push('tokenStore.clear')
+      })
+      const tokenStore = {
+        clear: clearSpy,
+        clearSpy,
+        load: stub().resolves(opts.previousToken),
+        save: stub().resolves(),
+      } as unknown as ITokenStore & {clearSpy: ReturnType<typeof stub>}
+
+      const refreshStub = opts.refreshThrows
+        ? stub().rejects(new Error('refresh denied'))
+        : stub().resolves({
+            accessToken: 'new-a',
+            expiresAt: new Date(Date.now() + 3_600_000),
+            refreshToken: 'new-r',
+            sessionKey: 'new-s',
+            tokenType: 'Bearer',
+          })
+
+      const localTransport = createMockTransport()
+      const localBroadcast = stub().callsFake((event: string) => {
+        if (event === AuthEvents.STATE_CHANGED) callOrder.push('broadcast:STATE_CHANGED')
+      })
+      ;(localTransport as unknown as {broadcast: typeof localBroadcast}).broadcast = localBroadcast
+
+      new AuthHandler({
+        analyticsClient,
+        authService: {
+          exchangeCodeForToken: stub(),
+          initiateAuthorization: stub(),
+          refreshToken: refreshStub,
+        } as unknown as IAuthService,
+        authStateStore,
+        browserLauncher: {open: stub()} as unknown as IBrowserLauncher,
+        callbackHandler: {
+          getPort: stub().returns(3000),
+          start: stub().resolves(),
+          stop: stub().resolves(),
+          waitForCallback: stub().resolves({code: 'test'}),
+        } as unknown as ICallbackHandler,
+        globalConfigRotator: opts.rotator,
+        projectConfigStore,
+        providerConfigStore,
+        resolveProjectPath: stub().returns('/test/project'),
+        tokenStore,
+        transport: localTransport,
+        userService,
+      }).setup()
+
+      return {
+        analyticsClient,
+        callOrder,
+        async callRefresh() {
+          const handler = localTransport._handlers.get(AuthEvents.REFRESH)!
+          return handler(undefined, 'client-1')
+        },
+        tokenStore,
+      }
+    }
+
+    it('clears the token, emits auth_logout {failure_kind:"refresh_failed"}, rotates, and broadcasts STATE_CHANGED', async () => {
+      const rotator = makeRotatorStub()
+      const harness = makeRefreshHarness({
+        previousToken: createValidToken(),
+        refreshThrows: true,
+        rotator,
+      })
+
+      const result = await harness.callRefresh()
+
+      expect(result).to.deep.equal({success: false})
+      expect(harness.tokenStore.clearSpy.calledOnce, 'token cleared on refresh failure').to.be.true
+      expect(rotator.rotateSpy.calledOnce, 'device_id rotated on refresh failure').to.be.true
+
+      const trackCalls = harness.analyticsClient.trackSpy
+        .getCalls()
+        .filter((c: {args: unknown[]}) => c.args[0] === AnalyticsEventNames.AUTH_LOGOUT)
+      expect(trackCalls.length, 'auth_logout fires once on refresh-fail sign-out').to.equal(1)
+      const props = trackCalls[0].args[1] as {failure_kind?: string; outcome: string}
+      expect(props.outcome).to.equal('failure')
+      expect(props.failure_kind).to.equal('refresh_failed')
+      assertFailureKindDiscipline(props.failure_kind, 'refresh-fail sign-out emit')
+
+      expect(harness.callOrder, 'STATE_CHANGED broadcast fired on refresh-fail').to.include('broadcast:STATE_CHANGED')
+    })
+
+    it('does NOT rotate when the previous token is expired (no live identity)', async () => {
+      const expired = new AuthToken({
+        accessToken: 'a',
+        expiresAt: new Date(Date.now() - 60_000),
+        refreshToken: 'r',
+        sessionKey: 's',
+        tokenType: 'Bearer',
+        userEmail: 'old@example.com',
+        userId: 'user-OLD',
+      })
+      const rotator = makeRotatorStub()
+      const harness = makeRefreshHarness({previousToken: expired, refreshThrows: true, rotator})
+
+      await harness.callRefresh()
+
+      expect(rotator.rotateSpy.called, 'expired token before refresh means no live identity to retire').to.be.false
+    })
+
+    it('early-returns success=false without emitting or rotating when no token is loaded', async () => {
+      const rotator = makeRotatorStub()
+      const harness = makeRefreshHarness({previousToken: undefined, refreshThrows: false, rotator})
+
+      const result = await harness.callRefresh()
+
+      expect(result).to.deep.equal({success: false})
+      expect(rotator.rotateSpy.called, 'no rotation when there was nothing to refresh').to.be.false
+      const trackCalls = harness.analyticsClient.trackSpy
+        .getCalls()
+        .filter((c: {args: unknown[]}) => c.args[0] === AnalyticsEventNames.AUTH_LOGOUT)
+      expect(trackCalls.length, 'no auth_logout emit on the early-return branch').to.equal(0)
+    })
+
+    it('does NOT rotate or emit on successful refresh (same user, token replaced)', async () => {
+      const rotator = makeRotatorStub()
+      const harness = makeRefreshHarness({
+        previousToken: createValidToken(),
+        refreshThrows: false,
+        rotator,
+      })
+
+      const result = await harness.callRefresh()
+
+      expect(result).to.deep.equal({success: true})
+      expect(rotator.rotateSpy.called, 'successful refresh keeps the same identity').to.be.false
+      const trackCalls = harness.analyticsClient.trackSpy
+        .getCalls()
+        .filter((c: {args: unknown[]}) => c.args[0] === AnalyticsEventNames.AUTH_LOGOUT)
+      expect(trackCalls.length, 'no auth_logout on successful refresh').to.equal(0)
+    })
+
+    it('disconnects the byterover provider (symmetric with logout success + onAuthExpired)', async () => {
+      providerConfigStore = createMockProviderConfigStore({isConnected: true})
+      const rotator = makeRotatorStub()
+      const harness = makeRefreshHarness({
+        previousToken: createValidToken(),
+        refreshThrows: true,
+        rotator,
+      })
+
+      await harness.callRefresh()
+
+      expect(providerConfigStore.disconnectProvider.calledOnceWith('byterover'), 'byterover must be disconnected on refresh-fail sign-out').to.be.true
+    })
+
+    it('does NOT throw when rotation fails on the refresh sign-out path', async () => {
+      const rotator = makeRotatorStub()
+      rotator.rotateSpy.rejects(new Error('disk full'))
+      const harness = makeRefreshHarness({
+        previousToken: createValidToken(),
+        refreshThrows: true,
+        rotator,
+      })
+
+      const result = await harness.callRefresh()
+
+      expect(result).to.deep.equal({success: false})
+    })
+  })
+
+  describe('device_id rotation on login — account switch', () => {
+    describe('API-key path', () => {
+      it('does NOT rotate on fresh login (no previous token)', async () => {
+        const rotator = makeRotatorStub()
+
+        createHandler({
+          globalConfigRotator: rotator,
+          tokenStore: tokenStoreWithPrevious(),
+        })
+
+        const handler = transport._handlers.get(AuthEvents.LOGIN_WITH_API_KEY)!
+        await handler({apiKey: 'k'}, 'client-1')
+
+        expect(rotator.rotateSpy.called, 'fresh login does not retire a non-existent identity').to.be.false
+      })
+
+      it('does NOT rotate when re-asserting the same user', async () => {
+        const rotator = makeRotatorStub()
+
+        createHandler({
+          globalConfigRotator: rotator,
+          tokenStore: tokenStoreWithPrevious(makeTokenForUser('user-123')),
+        })
+
+        const handler = transport._handlers.get(AuthEvents.LOGIN_WITH_API_KEY)!
+        await handler({apiKey: 'k'}, 'client-1')
+
+        expect(rotator.rotateSpy.called, 'same userId means no switch').to.be.false
+      })
+
+      it('rotates AFTER the auth_login emit when previous user differs from new user', async () => {
+        const callOrder: string[] = []
+        const analyticsClient = makeFakeAnalyticsClient()
+        analyticsClient.trackSpy.callsFake((event: string) => {
+          callOrder.push(`track:${event}`)
+        })
+        const rotator = makeRotatorStub()
+        rotator.rotateSpy.callsFake(async () => {
+          callOrder.push('rotate')
+          return true
+        })
+
+        createHandler({
+          analyticsClient,
+          globalConfigRotator: rotator,
+          tokenStore: tokenStoreWithPrevious(makeTokenForUser('user-OLD')),
+        })
+
+        const handler = transport._handlers.get(AuthEvents.LOGIN_WITH_API_KEY)!
+        await handler({apiKey: 'k'}, 'client-1')
+
+        expect(rotator.rotateSpy.calledOnce, 'rotation runs exactly once on switch').to.be.true
+        expect(callOrder.indexOf(`track:${AnalyticsEventNames.AUTH_LOGIN}`), 'emit happens before rotation').to.be.lessThan(
+          callOrder.indexOf('rotate'),
+        )
+      })
+
+      it('does NOT rotate when the previous token is expired (not a live identity)', async () => {
+        const expired = new AuthToken({
+          accessToken: 'a',
+          expiresAt: new Date(Date.now() - 60_000),
+          refreshToken: 'r',
+          sessionKey: 's',
+          tokenType: 'Bearer',
+          userEmail: 'old@example.com',
+          userId: 'user-OLD',
+        })
+        const rotator = makeRotatorStub()
+
+        createHandler({
+          globalConfigRotator: rotator,
+          tokenStore: tokenStoreWithPrevious(expired),
+        })
+
+        const handler = transport._handlers.get(AuthEvents.LOGIN_WITH_API_KEY)!
+        await handler({apiKey: 'k'}, 'client-1')
+
+        expect(rotator.rotateSpy.called, 'expired token does not count as a live previous identity').to.be.false
+      })
+
+      it('does NOT fail the login RPC when rotation throws', async () => {
+        const rotator = makeRotatorStub()
+        rotator.rotateSpy.rejects(new Error('disk full'))
+
+        createHandler({
+          globalConfigRotator: rotator,
+          tokenStore: tokenStoreWithPrevious(makeTokenForUser('user-OLD')),
+        })
+
+        const handler = transport._handlers.get(AuthEvents.LOGIN_WITH_API_KEY)!
+        const result = await handler({apiKey: 'k'}, 'client-1')
+
+        expect(result.success).to.equal(true)
+      })
+
+      it('does NOT rotate on the login failure branch (no token committed)', async () => {
+        const rotator = makeRotatorStub()
+        userService.getCurrentUser = stub().rejects(
+          new Error('invalid key'),
+        ) as unknown as typeof userService.getCurrentUser
+
+        createHandler({
+          globalConfigRotator: rotator,
+          tokenStore: tokenStoreWithPrevious(makeTokenForUser('user-OLD')),
+        })
+
+        const handler = transport._handlers.get(AuthEvents.LOGIN_WITH_API_KEY)!
+        const result = await handler({apiKey: 'bad'}, 'client-1')
+
+        expect(result.success).to.equal(false)
+        expect(rotator.rotateSpy.called, 'failed login never claims the device for the new user').to.be.false
+      })
+    })
+
+    describe('OAuth (processLoginCallback) path', () => {
+      // eslint-disable-next-line unicorn/consistent-function-scoping
+      function setupOAuthHandler(opts: {previousToken: AuthToken | undefined; rotator: IGlobalConfigRotator}): {
+        callOrder: string[]
+        run: () => Promise<void>
+      } {
+        const callOrder: string[] = []
+        const oauthTransport = createMockTransport()
+        const oauthAuthStateStore = {
+          getToken: stub(),
+          loadToken: stub().callsFake(async () => {
+            callOrder.push('loadToken')
+          }),
+          onAuthChanged: stub(),
+          onAuthExpired: stub(),
+          startPolling: stub(),
+          stopPolling: stub(),
+        } as unknown as SinonStubbedInstance<IAuthStateStore>
+
+        const analyticsClient = makeFakeAnalyticsClient()
+        analyticsClient.trackSpy.callsFake((event: string) => {
+          callOrder.push(`track:${event}`)
+        })
+
+        new AuthHandler({
+          analyticsClient,
+          authService: {
+            exchangeCodeForToken: stub().resolves({
+              accessToken: 'a',
+              expiresAt: new Date(Date.now() + 3_600_000),
+              refreshToken: 'r',
+              sessionKey: 's',
+              tokenType: 'Bearer',
+            }),
+            initiateAuthorization: stub().returns({authUrl: 'https://auth.test', state: 'st'}),
+            refreshToken: stub(),
+          } as unknown as IAuthService,
+          authStateStore: oauthAuthStateStore,
+          browserLauncher: {open: stub().resolves()} as unknown as IBrowserLauncher,
+          callbackHandler: {
+            getPort: stub().returns(3000),
+            start: stub().resolves(),
+            stop: stub().resolves(),
+            waitForCallback: stub().resolves({code: 'c'}),
+          } as unknown as ICallbackHandler,
+          globalConfigRotator: opts.rotator,
+          projectConfigStore,
+          providerConfigStore: createMockProviderConfigStore(),
+          resolveProjectPath: stub().returns('/test'),
+          tokenStore: {
+            clear: stub().resolves(),
+            load: stub().resolves(opts.previousToken),
+            save: stub().callsFake(async () => {
+              callOrder.push('tokenStore.save')
+            }),
+          } as unknown as ITokenStore,
+          transport: oauthTransport,
+          userService,
+        }).setup()
+
+        return {
+          callOrder,
+          async run() {
+            const handler = oauthTransport._handlers.get(AuthEvents.START_LOGIN)!
+            await handler({}, 'client-1')
+            // Wait for fire-and-forget processLoginCallback to finish.
+            await new Promise((resolve) => {
+              setTimeout(resolve, 50)
+            })
+          },
+        }
+      }
+
+      it('does NOT rotate on fresh OAuth login (no previous token)', async () => {
+        const rotator = makeRotatorStub()
+        const harness = setupOAuthHandler({previousToken: undefined, rotator})
+
+        await harness.run()
+
+        expect(rotator.rotateSpy.called).to.be.false
+      })
+
+      it('does NOT rotate when OAuth re-issues for the same user', async () => {
+        const rotator = makeRotatorStub()
+        const sameUserToken = new AuthToken({
+          accessToken: 'a',
+          expiresAt: new Date(Date.now() + 3_600_000),
+          refreshToken: 'r',
+          sessionKey: 's',
+          tokenType: 'Bearer',
+          userEmail: 'test@example.com',
+          userId: 'user-123',
+        })
+        const harness = setupOAuthHandler({previousToken: sameUserToken, rotator})
+
+        await harness.run()
+
+        expect(rotator.rotateSpy.called).to.be.false
+      })
+
+      it('rotates AFTER the auth_login emit when OAuth switches users', async () => {
+        const rotator = makeRotatorStub()
+        const otherUserToken = new AuthToken({
+          accessToken: 'a',
+          expiresAt: new Date(Date.now() + 3_600_000),
+          refreshToken: 'r',
+          sessionKey: 's',
+          tokenType: 'Bearer',
+          userEmail: 'old@example.com',
+          userId: 'user-OLD',
+        })
+        const harness = setupOAuthHandler({previousToken: otherUserToken, rotator})
+        rotator.rotateSpy.callsFake(async () => {
+          harness.callOrder.push('rotate')
+          return true
+        })
+
+        await harness.run()
+
+        expect(rotator.rotateSpy.calledOnce).to.be.true
+        expect(harness.callOrder.indexOf(`track:${AnalyticsEventNames.AUTH_LOGIN}`)).to.be.lessThan(
+          harness.callOrder.indexOf('rotate'),
+        )
+      })
+    })
+  })
+
+  describe('device_id rotation on logout', () => {
+    it('rotates device_id AFTER the auth_logout emit when previously authenticated', async () => {
+      const callOrder: string[] = []
+      const analyticsClient = makeFakeAnalyticsClient()
+      analyticsClient.trackSpy.callsFake((event: string) => {
+        callOrder.push(`track:${event}`)
+      })
+      const rotator = makeRotatorStub()
+      rotator.rotateSpy.callsFake(async () => {
+        callOrder.push('rotate')
+        return true
+      })
+
+      createHandler({
+        analyticsClient,
+        globalConfigRotator: rotator,
+        tokenStore: makeValidTokenStoreFixture(),
+      })
+
+      const handler = transport._handlers.get(AuthEvents.LOGOUT)!
+      const result = await handler(undefined, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+      expect(rotator.rotateSpy.calledOnce, 'rotateDeviceId called once on authenticated logout').to.be.true
+      expect(callOrder.indexOf(`track:${AnalyticsEventNames.AUTH_LOGOUT}`), 'emit happens before rotation').to.be.lessThan(
+        callOrder.indexOf('rotate'),
+      )
+    })
+
+    it('does NOT rotate when token store returns undefined (already-anonymous logout)', async () => {
+      const rotator = makeRotatorStub()
+
+      createHandler({
+        globalConfigRotator: rotator,
+        tokenStore: makeMissingTokenStoreFixture(),
+      })
+
+      const handler = transport._handlers.get(AuthEvents.LOGOUT)!
+      const result = await handler(undefined, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+      expect(rotator.rotateSpy.called, 'no rotation on already-anonymous logout').to.be.false
+    })
+
+    it('does NOT rotate when the stored token is expired (treated as already-anonymous)', async () => {
+      const rotator = makeRotatorStub()
+
+      createHandler({
+        globalConfigRotator: rotator,
+        tokenStore: makeExpiredTokenStoreFixture(),
+      })
+
+      const handler = transport._handlers.get(AuthEvents.LOGOUT)!
+      const result = await handler(undefined, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+      expect(rotator.rotateSpy.called, 'expired token means no live identity to retire').to.be.false
+    })
+
+    it('does NOT fail the logout RPC when rotation throws', async () => {
+      const rotator = makeRotatorStub()
+      rotator.rotateSpy.rejects(new Error('disk full'))
+
+      createHandler({
+        globalConfigRotator: rotator,
+        tokenStore: makeValidTokenStoreFixture(),
+      })
+
+      const handler = transport._handlers.get(AuthEvents.LOGOUT)!
+      const result = await handler(undefined, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+    })
+
+    it('does NOT rotate on the logout failure branch (indeterminate identity)', async () => {
+      const rotator = makeRotatorStub()
+      const tokenStore = {
+        clear: stub().rejects(new Error('disk full')),
+        load: stub().resolves(createValidToken()),
+        save: stub().resolves(),
+      } as unknown as ITokenStore
+
+      createHandler({globalConfigRotator: rotator, tokenStore})
+
+      const handler = transport._handlers.get(AuthEvents.LOGOUT)!
+      const result = await handler(undefined, 'client-1')
+
+      expect(result).to.deep.equal({success: false})
+      expect(rotator.rotateSpy.called, 'rotation skipped when logout flow failed mid-way').to.be.false
+    })
+
+    it('is a no-op when no globalConfigRotator is injected (optional dep)', async () => {
+      // Mirrors the existing optional-analyticsClient backward-compat pattern.
+      createHandler({tokenStore: makeValidTokenStoreFixture()})
+
+      const handler = transport._handlers.get(AuthEvents.LOGOUT)!
+      const result = await handler(undefined, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+    })
+  })
+
+  describe('opportunistic token expiry — onAuthExpired callback', () => {
+    it('does NOT rotate device_id (passive expiry is not a sign-out trigger)', () => {
+      const rotator = makeRotatorStub()
+      createHandler({globalConfigRotator: rotator})
+
+      capturedAuthExpired!(createValidToken())
+
+      expect(rotator.rotateSpy.called, 'polling-observed expiry is out of scope for rotation').to.be.false
     })
   })
 
