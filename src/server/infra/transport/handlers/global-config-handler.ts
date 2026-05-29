@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto'
 
 import type {IAnalyticsClient} from '../../../core/interfaces/analytics/i-analytics-client.js'
+import type {IGlobalConfigRotator} from '../../../core/interfaces/storage/i-global-config-rotator.js'
 import type {IGlobalConfigStore} from '../../../core/interfaces/storage/i-global-config-store.js'
 import type {ITransportServer} from '../../../core/interfaces/transport/i-transport-server.js'
 
@@ -50,7 +51,7 @@ export interface GlobalConfigHandlerDeps {
  * existing on-disk config. Transport responses still read fresh from
  * disk — the cache is purely an in-process bridge for sync consumers.
  */
-export class GlobalConfigHandler {
+export class GlobalConfigHandler implements IGlobalConfigRotator {
   private analyticsClient: IAnalyticsClient | undefined
   private cachedAnalytics: boolean | undefined
   private readonly globalConfigStore: IGlobalConfigStore
@@ -124,6 +125,29 @@ export class GlobalConfigHandler {
   }
 
   /**
+   * Rotates the on-disk `deviceId` with a fresh UUID. Preserves the
+   * analytics flag + version. No-ops if no config file exists (analytics
+   * never enabled → nothing to retire). Goes through the same
+   * `writeChain` as `setAnalytics` so a concurrent enable/disable cannot
+   * race the rotation onto a stale read.
+   *
+   * Does NOT emit an analytics event — rotation is implied by the next
+   * tracked event carrying the new `device_id`.
+   *
+   * Does NOT touch `cachedAnalytics` — the flag is unchanged.
+   *
+   * @returns `true` if a rotation occurred, `false` on the no-config no-op.
+   */
+  public async rotateDeviceId(): Promise<boolean> {
+    const next = this.writeChain.then(async () => this.doRotateDeviceId())
+    this.writeChain = next.then(
+      () => {},
+      () => {},
+    )
+    return next
+  }
+
+  /**
    * M4.4: late-bound analytics client setter. The composition root
    * constructs `GlobalConfigHandler` BEFORE `AnalyticsClient` exists
    * (the cached-analytics flag must be populated before the client
@@ -153,6 +177,17 @@ export class GlobalConfigHandler {
       GlobalConfigEvents.SET_ANALYTICS,
       async (data) => this.setAnalytics(data.analytics),
     )
+  }
+
+  private async doRotateDeviceId(): Promise<boolean> {
+    const existing = await this.globalConfigStore.read()
+    if (!existing) {
+      return false
+    }
+
+    const updated = existing.withDeviceId(randomUUID())
+    await this.globalConfigStore.write(updated)
+    return true
   }
 
   private async doSetAnalytics(analytics: boolean): Promise<GlobalConfigSetAnalyticsResponse> {

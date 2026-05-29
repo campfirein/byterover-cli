@@ -369,6 +369,106 @@ describe('GlobalConfigHandler', () => {
     })
   })
 
+  describe('rotateDeviceId', () => {
+    it('returns false and does NOT write when no config file exists', async () => {
+      store.read.resolves()
+
+      const rotated = await handler.rotateDeviceId()
+
+      expect(rotated).to.be.false
+      expect(store.write.called, 'must not seed a config just to rotate').to.be.false
+    })
+
+    it('writes a new deviceId, preserves analytics flag + version, and returns true', async () => {
+      const before = GlobalConfig.create('device-old').withAnalytics(true)
+      store.read.resolves(before)
+
+      const rotated = await handler.rotateDeviceId()
+
+      expect(rotated).to.be.true
+      expect(store.write.calledOnce).to.be.true
+      const written = store.write.firstCall.args[0]
+      expect(written.deviceId).to.not.equal('device-old')
+      // Pin UUID v4 shape so a regression that swaps in a non-UUID source
+      // (e.g. Date.now().toString()) fails loudly at the test boundary.
+      expect(written.deviceId, 'rotated to a UUID v4').to.match(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      )
+      expect(written.analytics, 'analytics flag preserved').to.equal(before.analytics)
+      expect(written.version, 'version preserved').to.equal(before.version)
+    })
+
+    it('serializes concurrent rotate + setAnalytics through writeChain', async () => {
+      // Pre-existing config so neither call hits the idempotent no-op path.
+      const before = GlobalConfig.create('device-A').withAnalytics(false)
+      store.read.resolves(before)
+
+      const writeOrder: string[] = []
+      let resolveFirst!: () => void
+      const firstWriteGate = new Promise<void>((resolve) => {
+        resolveFirst = resolve
+      })
+
+      // First write call (rotation) gates on firstWriteGate so we can
+      // observe whether the second call (setAnalytics) waits for it.
+      // Label by call ordinal (operation identity), NOT by `cfg.analytics`
+      // — the seed could change in the future and a content-based label
+      // would silently mislabel.
+      store.write.callsFake(async (_cfg: GlobalConfig) => {
+        const ordinal = store.write.callCount
+        if (ordinal === 1) {
+          await firstWriteGate
+        }
+
+        writeOrder.push(ordinal === 1 ? 'rotate' : 'setAnalytics')
+        store.read.resolves(_cfg)
+      })
+
+      const rotatePromise = handler.rotateDeviceId()
+      const setPromise = (async () => {
+        const fn = transport._handlers.get(GlobalConfigEvents.SET_ANALYTICS)
+        if (!fn) throw new Error('SET_ANALYTICS handler not registered')
+        return fn({analytics: true}, 'client-1')
+      })()
+
+      // Give the event loop a tick so both calls enter the chain.
+      await new Promise((resolve) => {
+        setImmediate(resolve)
+      })
+
+      expect(writeOrder, 'second write must NOT have started while first is gated').to.have.lengthOf(0)
+      resolveFirst()
+
+      await Promise.all([rotatePromise, setPromise])
+
+      expect(writeOrder).to.deep.equal(['rotate', 'setAnalytics'])
+    })
+
+    it('does NOT mutate cachedAnalytics', async () => {
+      const before = GlobalConfig.create('device-1').withAnalytics(true)
+      store.read.resolves(before)
+      await handler.refreshCache()
+      expect(handler.getCachedAnalytics(), 'cache starts true').to.be.true
+
+      await handler.rotateDeviceId()
+
+      expect(handler.getCachedAnalytics(), 'rotation must leave the cached flag untouched').to.be.true
+    })
+
+    it('does NOT emit any analytics event', async () => {
+      const analyticsClient = makeTrackingClient()
+      const handlerWithClient = new GlobalConfigHandler({analyticsClient, globalConfigStore: store, transport})
+      handlerWithClient.setup()
+
+      const before = GlobalConfig.create('device-old').withAnalytics(true)
+      store.read.resolves(before)
+
+      await handlerWithClient.rotateDeviceId()
+
+      expect(analyticsClient.track.called, 'rotation is implicit — no analytics event fires').to.be.false
+    })
+  })
+
   describe('analytics_disabled emit', () => {
     it('emits analytics_disabled exactly once on enable→disable transition', async () => {
       const analyticsClient = makeTrackingClient()

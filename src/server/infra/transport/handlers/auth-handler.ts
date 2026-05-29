@@ -10,6 +10,7 @@ import type {IProviderConfigStore} from '../../../core/interfaces/i-provider-con
 import type {IBrowserLauncher} from '../../../core/interfaces/services/i-browser-launcher.js'
 import type {IUserService} from '../../../core/interfaces/services/i-user-service.js'
 import type {IAuthStateStore} from '../../../core/interfaces/state/i-auth-state-store.js'
+import type {IGlobalConfigRotator} from '../../../core/interfaces/storage/i-global-config-rotator.js'
 import type {IProjectConfigStore} from '../../../core/interfaces/storage/i-project-config-store.js'
 import type {ITransportServer} from '../../../core/interfaces/transport/i-transport-server.js'
 import type {ProjectPathResolver} from './handler-types.js'
@@ -60,6 +61,14 @@ export interface AuthHandlerDeps {
   authStateStore: IAuthStateStore
   browserLauncher: IBrowserLauncher
   callbackHandler: ICallbackHandler
+  /**
+   * Optional. When provided, the handler rotates the global `device_id`
+   * on user-initiated identity transitions: explicit logout (if previously
+   * authenticated), account-switch on login (userA → userB), and
+   * refresh-failure sign-out. Optional so existing test harnesses don't
+   * have to thread the dep through. Wired in `feature-handlers.ts`.
+   */
+  globalConfigRotator?: IGlobalConfigRotator
   projectConfigStore: IProjectConfigStore
   providerConfigStore: IProviderConfigStore
   resolveProjectPath: ProjectPathResolver
@@ -78,6 +87,7 @@ export class AuthHandler {
   private readonly authStateStore: IAuthStateStore
   private readonly browserLauncher: IBrowserLauncher
   private readonly callbackHandler: ICallbackHandler
+  private readonly globalConfigRotator: IGlobalConfigRotator | undefined
   private readonly projectConfigStore: IProjectConfigStore
   private readonly providerConfigStore: IProviderConfigStore
   private readonly resolveProjectPath: ProjectPathResolver
@@ -91,6 +101,7 @@ export class AuthHandler {
     this.authStateStore = deps.authStateStore
     this.browserLauncher = deps.browserLauncher
     this.callbackHandler = deps.callbackHandler
+    this.globalConfigRotator = deps.globalConfigRotator
     this.projectConfigStore = deps.projectConfigStore
     this.providerConfigStore = deps.providerConfigStore
     this.resolveProjectPath = deps.resolveProjectPath
@@ -171,6 +182,16 @@ export class AuthHandler {
       const {code} = await this.callbackHandler.waitForCallback(authContext.state, 5 * 60 * 1000)
       const tokenData = await this.authService.exchangeCodeForToken(code, authContext, redirectUri)
       const user = await this.userService.getCurrentUser(tokenData.sessionKey)
+
+      // Snapshot the previous live identity BEFORE save — drives the
+      // account-switch rotation rule below. Expired previous tokens do not
+      // count (the device was not actively claimed at switch time).
+      // safeLoadToken treats a read failure as "no previous identity": a
+      // transient token-store error must NOT discard a freshly-exchanged
+      // OAuth token.
+      const previousToken = await this.safeLoadToken()
+      const previousUserId = previousToken?.isValid() ? previousToken.userId : undefined
+
       const authToken = new AuthToken({
         accessToken: tokenData.accessToken,
         expiresAt: tokenData.expiresAt,
@@ -195,6 +216,13 @@ export class AuthHandler {
       // success}`).
       this.emitAnalytics(AnalyticsEventNames.AUTH_LOGIN, {outcome: 'success'})
 
+      // Rotate AFTER emit so this auth_login row carries the OLD device_id
+      // — the switch is attributed to the departing user's history. Only
+      // rotates on true account switch (live previous identity ≠ new).
+      if (previousUserId !== undefined && previousUserId !== user.id) {
+        await this.safeRotateDeviceId()
+      }
+
       this.transport.broadcast(AuthEvents.LOGIN_COMPLETED, {
         success: true,
         user: toUserDTO(user),
@@ -217,6 +245,46 @@ export class AuthHandler {
       })
     } finally {
       await this.callbackHandler.stop()
+    }
+  }
+
+  /**
+   * Reads the stored token, swallowing any error to `undefined`. Used by
+   * the auth RPC handlers to snapshot the pre-transition identity for
+   * rotation decisions; a transient read failure here must NOT abort the
+   * RPC (e.g. discard a freshly-exchanged OAuth token, or fail a logout).
+   * The default `FileTokenStore` already swallows internally, but custom
+   * stores might not — this keeps the handlers defensive.
+   */
+  private async safeLoadToken(): Promise<AuthToken | undefined> {
+    try {
+      return await this.tokenStore.load()
+    } catch (error) {
+      processLog(`[Auth] token load failed: ${getErrorMessage(error)}`)
+      // TRADE-OFF: returning undefined on a transient token-store error
+      // means the caller treats the prior identity as absent — so an
+      // account-switch login or logout on a flaky disk will silently
+      // skip the device_id rotation. We accept this because the
+      // alternative (rejecting the RPC) would discard a freshly-exchanged
+      // OAuth token or fail a user-initiated logout, which are worse.
+      // Disk errors are rare; the processLog above gives forensic
+      // breadcrumbs.
+      return undefined
+    }
+  }
+
+  /**
+   * Rotates `device_id` without failing the calling RPC. Rotation MUST NOT
+   * block or fail an auth transition — it is post-hoc bookkeeping so the
+   * next analytics event ships under a fresh anonymous identity.
+   */
+  private async safeRotateDeviceId(): Promise<void> {
+    const rotator = this.globalConfigRotator
+    if (!rotator) return
+    try {
+      await rotator.rotateDeviceId()
+    } catch (error) {
+      processLog(`[Auth] device_id rotation failed: ${getErrorMessage(error)}`)
     }
   }
 
@@ -297,6 +365,15 @@ export class AuthHandler {
       async (data) => {
         try {
           const user = await this.userService.getCurrentUser(data.apiKey)
+
+          // Snapshot the previous live identity BEFORE save — drives the
+          // account-switch rotation rule below. Expired tokens do not count
+          // (the device was not actively claimed at switch time).
+          // safeLoadToken swallows read failures to undefined so a
+          // transient token-store error does not fail the login RPC.
+          const previousToken = await this.safeLoadToken()
+          const previousUserId = previousToken?.isValid() ? previousToken.userId : undefined
+
           const authToken = new AuthToken({
             accessToken: 'unnecessary',
             expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
@@ -313,6 +390,12 @@ export class AuthHandler {
 
           // Emit AFTER loadToken (same identity-stamping rationale as the OAuth path).
           this.emitAnalytics(AnalyticsEventNames.AUTH_LOGIN, {outcome: 'success'})
+
+          // Rotate AFTER emit so this auth_login row carries the OLD device_id.
+          // Only rotates when a live previous identity is replaced by a different user.
+          if (previousUserId !== undefined && previousUserId !== user.id) {
+            await this.safeRotateDeviceId()
+          }
 
           this.transport.broadcast(AuthEvents.STATE_CHANGED, {
             isAuthorized: true,
@@ -335,6 +418,14 @@ export class AuthHandler {
 
   private setupLogout(): void {
     this.transport.onRequest<void, AuthLogoutResponse>(AuthEvents.LOGOUT, async () => {
+      // Snapshot identity BEFORE clearing — drives the "skip rotation when
+      // already anonymous" rule. An expired token is treated as anonymous
+      // (the device has not been actively claimed by a live session).
+      // safeLoadToken swallows read failures so a transient token-store
+      // error does not reject the logout RPC.
+      const previousToken = await this.safeLoadToken()
+      const wasAuthenticated = previousToken !== undefined && previousToken.isValid()
+
       try {
         await this.tokenStore.clear()
         await this.disconnectByteRoverProvider()
@@ -353,6 +444,14 @@ export class AuthHandler {
         // `device_id`.
         this.emitAnalytics(AnalyticsEventNames.AUTH_LOGOUT, {outcome: 'success'})
 
+        // Rotate AFTER the emit so this auth_logout row still carries the
+        // OLD device_id (the one the departing user's history is keyed on).
+        // Subsequent track() calls will pick up the new id automatically —
+        // identity-resolver re-reads the config per event.
+        if (wasAuthenticated) {
+          await this.safeRotateDeviceId()
+        }
+
         this.transport.broadcast(AuthEvents.STATE_CHANGED, {isAuthorized: false})
         return {success: true}
       } catch {
@@ -361,6 +460,9 @@ export class AuthHandler {
         // logged-in (clear failed first) or anonymous (clear succeeded but a
         // later step failed); both are valid for diagnostic purposes.
         // `failure_kind` is a coarse tag — never raw `error.message`.
+        // Do NOT rotate on the failure branch: state is indeterminate (we
+        // may not actually be signed out) and rotating now could burn a
+        // device_id while the user is still effectively the previous identity.
         // eslint-disable-next-line camelcase
         this.emitAnalytics(AnalyticsEventNames.AUTH_LOGOUT, {failure_kind: 'logout_flow', outcome: 'failure'})
 
@@ -371,13 +473,59 @@ export class AuthHandler {
 
   private setupRefresh(): void {
     this.transport.onRequest<void, AuthRefreshResponse>(AuthEvents.REFRESH, async () => {
+      // safeLoadToken so a read failure short-circuits to {success:false}
+      // instead of rejecting the RPC.
+      const token = await this.safeLoadToken()
+      if (!token) {
+        return {success: false}
+      }
+
+      // Narrow the sign-out catch to refreshToken() ONLY. A failure here
+      // means the auth server rejected the refresh (revoked, expired
+      // refresh token, network 401/403) — a definitive sign-out. Failures
+      // AFTER refresh succeeded (user-fetch 5xx, save() disk error) are
+      // post-refresh application failures: they should NOT burn a
+      // device_id rotation or be attributed as `refresh_failed` in the
+      // analytics funnel.
+      let refreshedTokenData
       try {
-        const token = await this.tokenStore.load()
-        if (!token) {
-          return {success: false}
+        refreshedTokenData = await this.authService.refreshToken(token.refreshToken)
+      } catch (error) {
+        processLog(`[Auth] refreshToken exchange failed: ${getErrorMessage(error)}`)
+        // Sign-out side effects mirror the logout success branch (clear →
+        // disconnect → reload → emit → rotate → broadcast). Each wrapped
+        // so a cascading failure does not skip the rest. Returning
+        // {success:false} preserves the prior contract.
+        await this.tokenStore.clear().catch((clearError: unknown) => {
+          processLog(`[Auth] token clear failed during refresh sign-out: ${getErrorMessage(clearError)}`)
+        })
+        await this.disconnectByteRoverProvider()
+        await this.authStateStore.loadToken().catch((loadError: unknown) => {
+          processLog(`[Auth] authStateStore reload failed during refresh sign-out: ${getErrorMessage(loadError)}`)
+        })
+
+        // eslint-disable-next-line camelcase
+        this.emitAnalytics(AnalyticsEventNames.AUTH_LOGOUT, {failure_kind: 'refresh_failed', outcome: 'failure'})
+
+        if (token.isValid()) {
+          // Only retire the device when the pre-refresh identity was live.
+          // An already-expired token observed by the refresh RPC is not an
+          // active claim on the device.
+          await this.safeRotateDeviceId()
         }
 
-        const refreshedTokenData = await this.authService.refreshToken(token.refreshToken)
+        // Explicit STATE_CHANGED broadcast (symmetric with the logout
+        // success branch). The onAuthChanged listener also broadcasts
+        // after loadToken transitions the cached token, but the explicit
+        // call here delivers synchronously before this RPC returns.
+        this.transport.broadcast(AuthEvents.STATE_CHANGED, {isAuthorized: false})
+        return {success: false}
+      }
+
+      // Refresh exchange succeeded. Anything below is a post-refresh
+      // application failure (user fetch, save, etc.) — return
+      // {success:false} silently, do NOT trigger sign-out semantics.
+      try {
         const user = await this.userService.getCurrentUser(refreshedTokenData.sessionKey)
         const newToken = new AuthToken({
           accessToken: refreshedTokenData.accessToken,
@@ -399,7 +547,8 @@ export class AuthHandler {
         })
 
         return {success: true}
-      } catch {
+      } catch (error) {
+        processLog(`[Auth] post-refresh application failed (token NOT applied, no sign-out): ${getErrorMessage(error)}`)
         return {success: false}
       }
     })
