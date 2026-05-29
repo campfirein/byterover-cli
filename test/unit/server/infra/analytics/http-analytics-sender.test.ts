@@ -22,6 +22,7 @@ const validDeviceId = '550e8400-e29b-41d4-a716-446655440000'
 function makeRecord(overrides: Partial<StoredAnalyticsRecord> = {}): StoredAnalyticsRecord {
   return {
     attempts: 0,
+    created_at: '2023-11-14T22:13:20+00:00',
     id: overrides.id ?? '11111111-1111-1111-1111-111111111111',
     identity: {device_id: validDeviceId, user_id: 'user-123'},
     name: 'daemon_start',
