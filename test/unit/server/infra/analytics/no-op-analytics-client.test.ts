@@ -51,12 +51,12 @@ describe('NoOpAnalyticsClient', () => {
   })
 
   describe('flush()', () => {
-    it('should resolve to an empty batch with schema_version: 1', async () => {
+    it('should resolve to an empty batch with schema_version: 2', async () => {
       const client = new NoOpAnalyticsClient()
 
       const batch = await client.flush()
 
-      expect(batch.schema_version).to.equal(1)
+      expect(batch.schema_version).to.equal(2)
       expect(batch.events).to.deep.equal([])
     })
 

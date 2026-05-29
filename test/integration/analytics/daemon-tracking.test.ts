@@ -142,7 +142,7 @@ describe('daemon analytics tracking integration (ticket scenario 6)', () => {
     const restored = AnalyticsBatch.fromJson(batch.toJson())
 
     expect(restored).to.not.be.undefined
-    expect(restored?.schema_version).to.equal(1)
+    expect(restored?.schema_version).to.equal(2)
     expect(restored?.events).to.have.lengthOf(1)
     expect(restored?.events[0].name).to.equal('daemon_start')
     expect(restored?.events[0].identity.device_id).to.equal(validDeviceId)

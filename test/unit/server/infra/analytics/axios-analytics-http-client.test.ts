@@ -55,7 +55,7 @@ describe('AxiosAnalyticsHttpClient', () => {
       expect(result).to.deep.equal({ok: true})
       expect(scope.isDone()).to.equal(true)
       // Body matches the AnalyticsBatch.toJson() wire shape.
-      expect(receivedBody).to.have.property('schema_version', 1)
+      expect(receivedBody).to.have.property('schema_version', 2)
       expect(receivedBody).to.have.nested.property('events.0.name', 'event_0')
     })
 
