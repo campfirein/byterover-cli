@@ -142,9 +142,7 @@ describe('AnalyticsBatch', () => {
 
     it('should return undefined when identity has empty device_id', () => {
       const json = {
-        events: [
-          {created_at: '2023-11-14T22:13:20+00:00', identity: {device_id: ''}, name: 'x', properties: {}},
-        ],
+        events: [{created_at: '2023-11-14T22:13:20+00:00', identity: {device_id: ''}, name: 'x', properties: {}}],
         schema_version: 2,
       }
       expect(AnalyticsBatch.fromJson(json)).to.be.undefined
@@ -205,9 +203,7 @@ describe('AnalyticsBatch', () => {
 
     it('should return undefined when an event has non-object properties', () => {
       const json = {
-        events: [
-          {created_at: '2023-11-14T22:13:20+00:00', identity: validIdentity, name: 'x', properties: 'foo'},
-        ],
+        events: [{created_at: '2023-11-14T22:13:20+00:00', identity: validIdentity, name: 'x', properties: 'foo'}],
         schema_version: 2,
       }
       expect(AnalyticsBatch.fromJson(json)).to.be.undefined
