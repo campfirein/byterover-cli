@@ -1,3 +1,4 @@
+import {formatISO} from 'date-fns'
 import {randomUUID} from 'node:crypto'
 
 import type {AnalyticsEventName} from '../../../shared/analytics/event-names.js'
@@ -236,9 +237,15 @@ export class AnalyticsClient implements IAnalyticsClient {
     // user action happened, not when the async resolver chain settled. Under
     // burst load (many tracks queued before the first resolver completes) this
     // preserves the inter-event durations downstream consumers care about.
-    const timestamp = Date.now()
+    //
+    // A single `new Date()` read drives both fields so the local numeric
+    // sort key (`timestamp`, epoch ms) and the wire-bound ISO 8601 string
+    // (`created_at`) always describe the same instant.
+    const now = new Date()
+    const timestamp = now.getTime()
+    const createdAt = formatISO(now)
     const [properties] = rest
-    const pending = this.trackAsync(event, properties, timestamp)
+    const pending = this.trackAsync({createdAt, event, properties, timestamp})
     this.pendingTracks.add(pending)
     // Remove from the in-flight set once the track settles either way.
     // `void` keeps `track()` synchronous per the IAnalyticsClient contract.
@@ -346,10 +353,14 @@ export class AnalyticsClient implements IAnalyticsClient {
   }
 
   private async trackAsync<E extends AnalyticsEventName>(
-    event: E,
-    properties: PropsForEvent<E> | undefined,
-    timestamp: number,
+    input: Readonly<{
+      createdAt: string
+      event: E
+      properties: PropsForEvent<E> | undefined
+      timestamp: number
+    }>,
   ): Promise<void> {
+    const {createdAt, event, properties, timestamp} = input
     try {
       const [identity, superProps] = await Promise.all([
         this.deps.identityResolver.resolve(),
@@ -361,6 +372,8 @@ export class AnalyticsClient implements IAnalyticsClient {
       // fast in-memory mirror for status display / future webui hot path.
       const record: StoredAnalyticsRecord = {
         attempts: 0,
+        // eslint-disable-next-line camelcase
+        created_at: createdAt,
         id: randomUUID(),
         identity,
         name: event,

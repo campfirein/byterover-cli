@@ -198,21 +198,37 @@ const isCurateLiteral = (value: string): value is CurateTaskTypeLiteral =>
   CURATE_TASK_TYPE_SET.has(value)
 
 /**
- * Lifecycle hook that emits per-task analytics (curate_operation_applied,
- * curate_run_completed, query_completed) into the daemon's
- * `IAnalyticsClient`. Pure in-memory state keyed by `taskId`; no I/O of its own.
- *
- * Wired as a peer to `CurateLogHandler` / `QueryLogHandler` /
- * `TaskHistoryHook` inside `TaskRouter.lifecycleHooks[]`. Does NOT modify the
- * other handlers — read paths and curate-op accumulators are recomputed here
- * via the shared `extractCurateOperations` parser and `task.toolCalls[]`
- * shape, so analytics emit is decoupled from log persistence.
- *
- * M12.2 emits skeleton payloads (no frontmatter harvest). M12.3 layers
- * `tags` / `keywords` / `related` arrays onto the curate-op and per-read-path
- * payloads via a daemon-side post-op file read.
+ * Bundle of project-scoped identity fields stamped on terminal emits.
+ * Each field is independently optional — a project may have a teamId
+ * without a spaceId (mid-onboarding) or neither (standalone).
  */
+type ProjectIdentity = {
+  spaceId?: string
+  teamId?: string
+}
+
 type AnalyticsHookDeps = {
+  /**
+   * Look up the Context Hub identity (space_id + team_id) for `projectPath`
+   * at emit time. Returns `{}` when the project is unconnected, the lookup
+   * fails, or the daemon couldn't resolve a project path — missing identity
+   * fields NEVER block an emit. Production wires through
+   * `projectStateLoader.getProjectConfig` in `brv-server.ts`; tests default
+   * to a no-op that always returns `{}`.
+   *
+   * Bundled (instead of one accessor per field) so a single config read
+   * serves both stamps at terminal time.
+   *
+   * Staleness contract: `projectStateLoader` caches the config in-process
+   * and only invalidates when `GET_PROJECT_CONFIG` fires (agent-process
+   * startup). If `.brv/config.json` is rewritten mid-session by `brv login`
+   * or `brv space switch`, this accessor will keep returning the
+   * last-known-good identity until the next invalidation. That is the
+   * accepted contract for funnel analytics — last-known-good is fine.
+   * Do NOT reuse this accessor for billing or audit attribution without
+   * routing through `shouldInvalidate`.
+   */
+  getIdentity?: (projectPath: string | undefined) => Promise<ProjectIdentity>
   /**
    * Returns the daemon's cached analytics-enabled flag. Used by M12.3 to
    * short-circuit frontmatter file reads when analytics is disabled (avoids
@@ -229,9 +245,25 @@ type AnalyticsHookDeps = {
   readFile?: (filePath: string, encoding: 'utf8') => Promise<string>
 }
 
+/**
+ * Lifecycle hook that emits per-task analytics (curate_operation_applied,
+ * curate_run_completed, query_completed) into the daemon's
+ * `IAnalyticsClient`. Pure in-memory state keyed by `taskId`; no I/O of its own.
+ *
+ * Wired as a peer to `CurateLogHandler` / `QueryLogHandler` /
+ * `TaskHistoryHook` inside `TaskRouter.lifecycleHooks[]`. Does NOT modify the
+ * other handlers — read paths and curate-op accumulators are recomputed here
+ * via the shared `extractCurateOperations` parser and `task.toolCalls[]`
+ * shape, so analytics emit is decoupled from log persistence.
+ *
+ * M12.2 emits skeleton payloads (no frontmatter harvest). M12.3 layers
+ * `tags` / `keywords` / `related` arrays onto the curate-op and per-read-path
+ * payloads via a daemon-side post-op file read.
+ */
 export class AnalyticsHook implements ITaskLifecycleHook {
   /** Lazy-injected by the daemon after `setupFeatureHandlers` constructs the client. */
   private analyticsClient?: IAnalyticsClient
+  private readonly getIdentity: (projectPath: string | undefined) => Promise<ProjectIdentity>
   private readonly isEnabled: () => boolean
   /**
    * Per-task FIFO of in-flight `onToolResult` processing. Without this the
@@ -248,6 +280,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
   private readonly tasks = new Map<string, TaskAnalyticsState>()
 
   constructor(deps: AnalyticsHookDeps = {}) {
+    this.getIdentity = deps.getIdentity ?? (async (): Promise<ProjectIdentity> => ({}))
     this.isEnabled = deps.isEnabled ?? (() => true)
     this.readFile = deps.readFile ?? readFileAsync
   }
@@ -277,14 +310,16 @@ export class AnalyticsHook implements ITaskLifecycleHook {
 
       if (state.flavor === 'curate') {
         const outcome = state.counters.failed > 0 ? 'partial' : 'completed'
+        const identity = await this.resolveIdentity(task.projectPath ?? state.projectPath)
         this.emit(
           AnalyticsEventNames.CURATE_RUN_COMPLETED,
-          this.buildCurateRunPayload({outcome, state, task, taskId}),
+          this.buildCurateRunPayload({identity, outcome, state, task, taskId}),
         )
       } else {
+        const identity = await this.resolveIdentity(task.projectPath)
         this.emit(
           AnalyticsEventNames.QUERY_COMPLETED,
-          await this.buildQueryCompletedPayload({outcome: 'completed', state, task, taskId}),
+          await this.buildQueryCompletedPayload({identity, outcome: 'completed', state, task, taskId}),
         )
       }
     }
@@ -378,11 +413,13 @@ export class AnalyticsHook implements ITaskLifecycleHook {
   }
 
   private buildCurateRunPayload({
+    identity,
     outcome,
     state,
     task,
     taskId,
   }: {
+    identity: ProjectIdentity
     outcome: 'cancelled' | 'completed' | 'error' | 'partial'
     state: CurateTaskAnalyticsState
     task: TaskInfo
@@ -398,17 +435,21 @@ export class AnalyticsHook implements ITaskLifecycleHook {
       outcome,
       pending_review_count: state.counters.pendingReview,
       ...projectPathHashOptional(task.projectPath ?? state.projectPath),
+      ...(identity.spaceId === undefined ? {} : {space_id: identity.spaceId}),
       task_id: taskId,
       task_type: toAnalyticsTaskType(state.taskType),
+      ...(identity.teamId === undefined ? {} : {team_id: identity.teamId}),
     }
   }
 
   private async buildQueryCompletedPayload({
+    identity,
     outcome,
     state,
     task,
     taskId,
   }: {
+    identity: ProjectIdentity
     outcome: 'cancelled' | 'completed' | 'error'
     state: QueryTaskAnalyticsState
     task: TaskInfo
@@ -491,8 +532,10 @@ export class AnalyticsHook implements ITaskLifecycleHook {
       ...(readPathsWithMetadata.length > 0 ? {read_paths_with_metadata: readPathsWithMetadata} : {}),
       read_tool_call_count: readToolCallCount,
       search_call_count: searchCallCount,
+      ...(identity.spaceId === undefined ? {} : {space_id: identity.spaceId}),
       task_id: taskId,
       task_type: toAnalyticsTaskType(task.type),
+      ...(identity.teamId === undefined ? {} : {team_id: identity.teamId}),
       ...(tier === undefined ? {} : {tier}),
     }
   }
@@ -506,14 +549,16 @@ export class AnalyticsHook implements ITaskLifecycleHook {
     await this.pendingByTask.get(taskId)
 
     if (state.flavor === 'curate') {
+      const identity = await this.resolveIdentity(task.projectPath ?? state.projectPath)
       this.emit(
         AnalyticsEventNames.CURATE_RUN_COMPLETED,
-        this.buildCurateRunPayload({outcome, state, task, taskId}),
+        this.buildCurateRunPayload({identity, outcome, state, task, taskId}),
       )
     } else {
+      const identity = await this.resolveIdentity(task.projectPath)
       this.emit(
         AnalyticsEventNames.QUERY_COMPLETED,
-        await this.buildQueryCompletedPayload({outcome, state, task, taskId}),
+        await this.buildQueryCompletedPayload({identity, outcome, state, task, taskId}),
       )
     }
   }
@@ -687,6 +732,32 @@ export class AnalyticsHook implements ITaskLifecycleHook {
     } catch {
       // ENOENT, EACCES, permission, malformed YAML / HTML — all silently
       // treated as "no frontmatter". No retry, no log noise.
+      return {}
+    }
+  }
+
+  /**
+   * Resolve the project identity (spaceId + teamId) without ever throwing —
+   * a getIdentity rejection (config-load failure, projectStateLoader race,
+   * etc.) MUST NOT take down the terminal emit. Empty strings normalize to
+   * `undefined` per-field so the payload spread omits each independently.
+   *
+   * Short-circuits on `!isEnabled()` so the daemon doesn't touch the
+   * project-state loader on every task termination when analytics is off.
+   * Mirrors the `readFrontmatterFields` precedent.
+   */
+  private async resolveIdentity(projectPath: string | undefined): Promise<ProjectIdentity> {
+    if (!this.isEnabled()) return {}
+    try {
+      const raw = await this.getIdentity(projectPath)
+      return {
+        spaceId: typeof raw.spaceId === 'string' && raw.spaceId.length > 0 ? raw.spaceId : undefined,
+        teamId: typeof raw.teamId === 'string' && raw.teamId.length > 0 ? raw.teamId : undefined,
+      }
+    } catch (error) {
+      processLog(
+        `AnalyticsHook: getIdentity failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
       return {}
     }
   }

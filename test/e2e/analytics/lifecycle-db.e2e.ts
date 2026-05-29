@@ -278,7 +278,7 @@ async function fireCreateAndCancel(
  * point, not a per-test re-check.
  */
 function assertRowShape(row: RawEventRow): void {
-  expect(row.schema_version, `${row.event_name}.schema_version`).to.equal(1)
+  expect(row.schema_version, `${row.event_name}.schema_version`).to.equal(2)
   expect(row.cli_version, `${row.event_name}.cli_version`).to.match(/^\d+\.\d+\.\d+/)
   expect(row.os, `${row.event_name}.os`).to.be.oneOf(['darwin', 'linux', 'win32'])
   expect(row.node_version, `${row.event_name}.node_version`).to.match(/^v\d+\./)
@@ -332,7 +332,7 @@ describe('analytics lifecycle DB roundtrip e2e (M14 / M15.6)', function () {
     scenario = makeScenarioEnv()
     cleanupDirs.push(scenario.dataDir, scenario.home)
 
-    expect(runBrv(['analytics', 'enable', '--yes'], scenario.env), 'analytics enable').to.deep.include({ok: true})
+    expect(runBrv(['settings', 'set', 'analytics.enabled', 'true', '--yes'], scenario.env), 'analytics enable').to.deep.include({ok: true})
     expect(runBrv(['status'], scenario.env), 'daemon boot via status').to.deep.include({ok: true})
   })
 

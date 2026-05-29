@@ -7,9 +7,8 @@ export const GlobalConfigEvents = {
 } as const
 
 /**
- * M13.2 Group C — `globalConfig:get` is a no-payload oclif call today (verified at
- * `src/oclif/commands/analytics/status.ts:34`). Define the Request interface so
- * M13.3 can attach `cli_metadata`.
+ * M13.2 Group C — `globalConfig:get` is a no-payload request. Define the
+ * Request interface so M13.3 can attach `cli_metadata`.
  */
 export interface GlobalConfigGetRequest {
   cli_metadata?: CliMetadata

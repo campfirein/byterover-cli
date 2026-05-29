@@ -7,6 +7,7 @@ import {type AuthLogoutProps, AuthLogoutSchema} from './auth-logout.js'
 import {type BrvInitProps, BrvInitSchema} from './brv-init.js'
 import {type CliInvocationProps, CliInvocationSchema} from './cli-invocation.js'
 import {type ConnectorInstalledProps, ConnectorInstalledSchema} from './connector-installed.js'
+import {type ContentMigratedProps, ContentMigratedSchema} from './content-migrated.js'
 import {type ContextTreeFileEditedProps, ContextTreeFileEditedSchema} from './context-tree-file-edited.js'
 import {type CurateOperationAppliedProps, CurateOperationAppliedSchema} from './curate-operation-applied.js'
 import {type CurateRunCompletedProps, CurateRunCompletedSchema} from './curate-run-completed.js'
@@ -30,6 +31,9 @@ import {type SettingResetProps, SettingResetSchema} from './setting-reset.js'
 import {type SourceAddedProps, SourceAddedSchema} from './source-added.js'
 import {type SourceRemovedProps, SourceRemovedSchema} from './source-removed.js'
 import {type SpaceSwitchedProps, SpaceSwitchedSchema} from './space-switched.js'
+import {type SwarmOnboardedProps, SwarmOnboardedSchema} from './swarm-onboarded.js'
+import {type SwarmQueryCompletedProps, SwarmQueryCompletedSchema} from './swarm-query-completed.js'
+import {type SwarmStoreCompletedProps, SwarmStoreCompletedSchema} from './swarm-store-completed.js'
 import {type TaskCompletedProps, TaskCompletedSchema} from './task-completed.js'
 import {type TaskCreatedProps, TaskCreatedSchema} from './task-created.js'
 import {type TaskFailedProps, TaskFailedSchema} from './task-failed.js'
@@ -72,6 +76,7 @@ export const ALL_EVENT_SCHEMAS = {
   [AnalyticsEventNames.BRV_INIT]: BrvInitSchema,
   [AnalyticsEventNames.CLI_INVOCATION]: CliInvocationSchema,
   [AnalyticsEventNames.CONNECTOR_INSTALLED]: ConnectorInstalledSchema,
+  [AnalyticsEventNames.CONTENT_MIGRATED]: ContentMigratedSchema,
   [AnalyticsEventNames.CONTEXT_TREE_FILE_EDITED]: ContextTreeFileEditedSchema,
   [AnalyticsEventNames.CURATE_OPERATION_APPLIED]: CurateOperationAppliedSchema,
   [AnalyticsEventNames.CURATE_RUN_COMPLETED]: CurateRunCompletedSchema,
@@ -95,6 +100,9 @@ export const ALL_EVENT_SCHEMAS = {
   [AnalyticsEventNames.SOURCE_ADDED]: SourceAddedSchema,
   [AnalyticsEventNames.SOURCE_REMOVED]: SourceRemovedSchema,
   [AnalyticsEventNames.SPACE_SWITCHED]: SpaceSwitchedSchema,
+  [AnalyticsEventNames.SWARM_ONBOARDED]: SwarmOnboardedSchema,
+  [AnalyticsEventNames.SWARM_QUERY_COMPLETED]: SwarmQueryCompletedSchema,
+  [AnalyticsEventNames.SWARM_STORE_COMPLETED]: SwarmStoreCompletedSchema,
   [AnalyticsEventNames.TASK_COMPLETED]: TaskCompletedSchema,
   [AnalyticsEventNames.TASK_CREATED]: TaskCreatedSchema,
   [AnalyticsEventNames.TASK_FAILED]: TaskFailedSchema,
@@ -128,6 +136,7 @@ export type AnyAnalyticsEvent =
   | {name: typeof AnalyticsEventNames.BRV_INIT; properties: BrvInitProps}
   | {name: typeof AnalyticsEventNames.CLI_INVOCATION; properties: CliInvocationProps}
   | {name: typeof AnalyticsEventNames.CONNECTOR_INSTALLED; properties: ConnectorInstalledProps}
+  | {name: typeof AnalyticsEventNames.CONTENT_MIGRATED; properties: ContentMigratedProps}
   | {name: typeof AnalyticsEventNames.CONTEXT_TREE_FILE_EDITED; properties: ContextTreeFileEditedProps}
   | {name: typeof AnalyticsEventNames.CURATE_OPERATION_APPLIED; properties: CurateOperationAppliedProps}
   | {name: typeof AnalyticsEventNames.CURATE_RUN_COMPLETED; properties: CurateRunCompletedProps}
@@ -151,6 +160,9 @@ export type AnyAnalyticsEvent =
   | {name: typeof AnalyticsEventNames.SOURCE_ADDED; properties: SourceAddedProps}
   | {name: typeof AnalyticsEventNames.SOURCE_REMOVED; properties: SourceRemovedProps}
   | {name: typeof AnalyticsEventNames.SPACE_SWITCHED; properties: SpaceSwitchedProps}
+  | {name: typeof AnalyticsEventNames.SWARM_ONBOARDED; properties: SwarmOnboardedProps}
+  | {name: typeof AnalyticsEventNames.SWARM_QUERY_COMPLETED; properties: SwarmQueryCompletedProps}
+  | {name: typeof AnalyticsEventNames.SWARM_STORE_COMPLETED; properties: SwarmStoreCompletedProps}
   | {name: typeof AnalyticsEventNames.TASK_COMPLETED; properties: TaskCompletedProps}
   | {name: typeof AnalyticsEventNames.TASK_CREATED; properties: TaskCreatedProps}
   | {name: typeof AnalyticsEventNames.TASK_FAILED; properties: TaskFailedProps}

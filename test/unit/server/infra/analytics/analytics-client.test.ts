@@ -224,11 +224,12 @@ describe('AnalyticsClient', () => {
       const queue = new BoundedQueue()
       const identity = makeRegisteredIdentity()
       const superProps = makeSuperProps()
+      const jsonlStore = makeFakeJsonlStore()
 
       const client = new AnalyticsClient({
         identityResolver: makeStubIdentityResolver(identity),
         isEnabled: () => true,
-        jsonlStore: makeFakeJsonlStore(),
+        jsonlStore,
         queue,
         sender: makeFakeSender(),
         superPropsResolver: makeStubSuperPropsResolver(superProps),
@@ -246,8 +247,16 @@ describe('AnalyticsClient', () => {
       const [event] = batch.events
       expect(event.name).to.equal(AnalyticsEventNames.CURATE_OPERATION_APPLIED)
       expect(event.identity).to.deep.equal(identity)
-      expect(event.timestamp).to.be.at.least(before)
-      expect(event.timestamp).to.be.at.most(after)
+      // Local numeric `timestamp` is captured at call-site at millisecond precision.
+      expect(jsonlStore.records[0].timestamp).to.be.at.least(before)
+      expect(jsonlStore.records[0].timestamp).to.be.at.most(after)
+      // Wire `created_at` is the ISO 8601 string derived from the same `new Date()`
+      // read. `formatISO` drops millis, so it describes the same instant floored
+      // to the second.
+      expect(event.created_at).to.be.a('string')
+      expect(Date.parse(event.created_at)).to.equal(
+        Math.floor(jsonlStore.records[0].timestamp / 1000) * 1000,
+      )
 
       // user properties merged through
       expect(event.properties.relative_path).to.equal('tmp/merge-fixture.md')
@@ -424,10 +433,11 @@ describe('AnalyticsClient', () => {
           }),
       }
 
+      const jsonlStore = makeFakeJsonlStore()
       const client = new AnalyticsClient({
         identityResolver: slowIdentityResolver,
         isEnabled: () => true,
-        jsonlStore: makeFakeJsonlStore(),
+        jsonlStore,
         queue,
         sender: makeFakeSender(),
         superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
@@ -449,11 +459,18 @@ describe('AnalyticsClient', () => {
 
       const batch = await client.flush()
       expect(batch.events).to.have.lengthOf(1)
-      // Captured-at-call: timestamp falls within the call-site window…
-      expect(batch.events[0].timestamp).to.be.at.least(before)
-      expect(batch.events[0].timestamp).to.be.at.most(after)
+      // Captured-at-call: local numeric `timestamp` (millisecond precision)
+      // falls within the call-site window…
+      const stored = jsonlStore.records[0]
+      expect(stored.timestamp).to.be.at.least(before)
+      expect(stored.timestamp).to.be.at.most(after)
       // …and is BEFORE the resolver settled (proving capture-at-call, not capture-at-settle).
-      expect(batch.events[0].timestamp).to.be.lessThan(settleStart)
+      expect(stored.timestamp).to.be.lessThan(settleStart)
+      // The wire-bound `created_at` is derived from the same `new Date()` read,
+      // floored to the second by formatISO.
+      expect(Date.parse(batch.events[0].created_at)).to.equal(
+        Math.floor(stored.timestamp / 1000) * 1000,
+      )
     })
   })
 
@@ -847,13 +864,14 @@ describe('AnalyticsClient', () => {
       expect(batch.events).to.have.lengthOf(1)
       const [event] = batch.events
       expect(event).to.have.property('name', AnalyticsEventNames.DAEMON_START)
-      expect(event).to.have.property('timestamp')
+      expect(event).to.have.property('created_at')
       expect(event).to.have.property('properties')
       expect(event).to.have.property('identity')
       // Local-only fields stripped on the wire.
       expect(event).to.not.have.property('id')
       expect(event).to.not.have.property('attempts')
       expect(event).to.not.have.property('status')
+      expect(event).to.not.have.property('timestamp')
     })
   })
 

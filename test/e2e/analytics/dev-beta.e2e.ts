@@ -25,6 +25,7 @@
  */
 
 import {expect} from 'chai'
+import {formatISO} from 'date-fns'
 import {spawnSync} from 'node:child_process'
 import {randomUUID} from 'node:crypto'
 import {existsSync, mkdtempSync, readFileSync} from 'node:fs'
@@ -109,11 +110,11 @@ function bootDaemon(env: NodeJS.ProcessEnv): {ok: boolean; reason?: string} {
 }
 
 function enableAnalytics(env: NodeJS.ProcessEnv): {ok: boolean; reason?: string} {
-  return runBrv(['analytics', 'enable', '--yes'], env)
+  return runBrv(['settings', 'set', 'analytics.enabled', 'true', '--yes'], env)
 }
 
 function disableAnalytics(env: NodeJS.ProcessEnv): {ok: boolean; reason?: string} {
-  return runBrv(['analytics', 'disable'], env)
+  return runBrv(['settings', 'set', 'analytics.enabled', 'false'], env)
 }
 
 function jsonlPath(dataDir: string): string {
@@ -146,11 +147,7 @@ async function waitFor(predicate: () => boolean, timeoutMs: number, intervalMs =
   return predicate()
 }
 
-async function waitForStatus(
-  path: string,
-  target: 'failed' | 'pending' | 'sent',
-  timeoutMs: number,
-): Promise<boolean> {
+async function waitForStatus(path: string, target: 'failed' | 'pending' | 'sent', timeoutMs: number): Promise<boolean> {
   return waitFor(() => {
     const rows = readRows(path)
     const last = rows.at(-1)
@@ -267,7 +264,7 @@ async function startAcceptProxy(port: number): Promise<{close: () => Promise<voi
 }
 
 function analyticsStatusJson(env: NodeJS.ProcessEnv): Record<string, unknown> | undefined {
-  const result = spawnSync(process.execPath, [BRV_BIN, 'analytics', 'status', '--format', 'json'], {
+  const result = spawnSync(process.execPath, [BRV_BIN, 'settings', 'get', 'analytics.status', '--format', 'json'], {
     env,
     timeout: 15_000,
   })
@@ -289,14 +286,16 @@ function readBackoffFailures(env: NodeJS.ProcessEnv): {failures: number; state: 
 }
 
 async function preflightBackend(url: string): Promise<{ok: boolean; reason?: string}> {
-  // Mirrors scripts/e2e-analytics.sh:170-195 — send one known-good M4.x
-  // wire-format batch and check that the backend accepts it. If the
-  // deployment is still on the old ISO timestamp schema, all scenarios
-  // would FAIL with retry-cap exhaustion; better to skip the suite
-  // up-front with a clear reason.
+  // Wire format: per-event `created_at` (ISO 8601 with offset),
+  // `schema_version: 2`, no numeric `timestamp` field. If the backend
+  // still validates against the legacy v1 `{timestamp: number}` shape or
+  // rejects this shape via `forbidNonWhitelisted`, every scenario would
+  // FAIL with retry-cap exhaustion; better to skip the suite up-front
+  // with a clear reason.
   const body = JSON.stringify({
     events: [
       {
+        created_at: formatISO(new Date()),
         identity: {device_id: 'e2e-preflight'},
         name: 'daemon_start',
         properties: {
@@ -305,10 +304,9 @@ async function preflightBackend(url: string): Promise<{ok: boolean; reason?: str
           node_version: process.version,
           os: process.platform,
         },
-        timestamp: Date.now(),
       },
     ],
-    schema_version: 1,
+    schema_version: 2,
   })
   try {
     const ctrl = new AbortController()
@@ -325,7 +323,7 @@ async function preflightBackend(url: string): Promise<{ok: boolean; reason?: str
     if (res.status === 400) {
       return {
         ok: false,
-        reason: `backend at ${url} returned 400 to the M4.x wire format - likely still on the older ISO-8601 timestamp schema`,
+        reason: `backend at ${url} returned 400 to the created_at wire format - likely not yet deployed`,
       }
     }
 
@@ -457,9 +455,10 @@ describe('M4.7 analytics e2e (real CLI, real daemon, real backend)', function ()
       // Wait for that to settle before emitting the authed event.
       await sleep(10_000)
       expect((await emitEvents(1, scenario.env)).failed).to.equal(0)
-      expect(await waitForStatus(jsonlPath(scenario.dataDir), 'sent', 45_000), 'post-login event did not ship').to.equal(
-        true,
-      )
+      expect(
+        await waitForStatus(jsonlPath(scenario.dataDir), 'sent', 45_000),
+        'post-login event did not ship',
+      ).to.equal(true)
       const rows = readRows(jsonlPath(scenario.dataDir))
       const last = rows.at(-1)
       const userId = last?.identity?.user_id ?? ''

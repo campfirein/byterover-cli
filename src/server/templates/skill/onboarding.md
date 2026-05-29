@@ -281,6 +281,32 @@ The persona you saved becomes seed knowledge for every future session. From here
 
 If the user invokes the tour again later, run it again — there is no state tracking, no "you've already seen this." A second tour is a re-orientation, not an error. The new persona save replaces (or augments) the previous one through normal curate behavior.
 
+## Share Analytics (Opt-In)
+
+After the tour closes, ask **once** whether the user wants to share anonymous usage analytics with ByteRover. Sharing is opt-in: it defaults to off, and we do not flip it without an explicit yes. Do not volunteer details about local-only collection — that's an implementation detail, and surfacing it unprompted invites questions the tour shouldn't have to answer. If the user asks what's collected locally, answer plainly; otherwise stay scoped to the sharing decision.
+
+Place the ask _after_ the "Either way, you're set" close, as a single follow-up message — not bundled into Message 3:
+
+> "One optional ask before you go: if you'd like to help us improve ByteRover, you can opt in to share anonymous usage telemetry — things like which commands ran and how long they took. No query content, file contents, or memory is ever sent. You can change your mind anytime with `brv settings set analytics.enabled false`.
+>
+> Want to opt in? Either answer is fine."
+
+Handling the response:
+
+- **Yes** → run `brv settings set analytics.enabled true --yes` (or instruct the user to run it if you cannot), then confirm in one line: "Done — thanks. `brv settings set analytics.enabled false` reverses it anytime."
+- **No / silence / "maybe later"** → one-line acknowledgement ("No problem — `brv settings set analytics.enabled true` is there whenever.") and stop. Do not re-ask in future sessions.
+
+Why this beat exists:
+
+- **Trust separation.** Local collection and shared telemetry are two different promises. Conflating them ("analytics is on") would undo the trust the tour just built.
+- **One ask, never a nag.** One sentence, one question, one line of follow-up. If declined or skipped, the agent never raises it again — the user has the command if they change their mind.
+- **Tour-adjacent, not tour-blocking.** The tour itself still ends at Message 3. A user who's done can disengage at the close without ever seeing this ask.
+
+Skip the ask entirely if:
+
+- Sharing is already enabled (`brv settings get analytics.enabled` returns true).
+- The user signaled disengagement at the close ("ok", "got it", "thanks", no further input). Don't pull a yes/no out of someone who's already left.
+
 ## What NOT To Do
 
 - Do NOT extend past 3 messages.
@@ -291,6 +317,6 @@ If the user invokes the tour again later, run it again — there is no state tra
 - Do NOT prompt for an LLM provider, login, or any configuration. The tour runs with zero setup.
 - Do NOT skip the persona-shaped tailoring in Message 2 in favor of a generic "here's how retrieve works" explanation. The tailored example IS the value demo.
 - Do NOT tailor with hollow phrases like "As a Rust developer, you'll love…" or "Since you work on a CLI, you might want to…" — these read as templated personalization and erode trust faster than no tailoring at all. The tailored example must reference something **specific** the user said, paired with a **specific** action the agent will take.
-- Do NOT turn the visible artifact in Message 1 into a confirmation step. No "Does this look right?" prompts. The artifact is shown so the user *feels* what was captured, not so they validate it.
+- Do NOT turn the visible artifact in Message 1 into a confirmation step. No "Does this look right?" prompts. The artifact is shown so the user _feels_ what was captured, not so they validate it.
 - Do NOT manufacture a pain if the user didn't share one. Skip the pain-naming paragraph and the pain-ending demonstration in that case. A thinner tour is better than a fake one.
 - Do NOT overpromise on pains outside the context-memory family. If the user names a pain ByteRover doesn't solve (hallucinations, model speed, bad code generation), acknowledge briefly and redirect to the in-scope pain. Do NOT claim ByteRover fixes things it doesn't.

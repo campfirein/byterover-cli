@@ -98,8 +98,12 @@ describe('daemon analytics tracking integration (ticket scenario 6)', () => {
     const [event] = batch.events
 
     expect(event.name).to.equal('daemon_start')
-    expect(event.timestamp).to.be.at.least(before)
-    expect(event.timestamp).to.be.at.most(after)
+    // The wire event carries `created_at` (ISO 8601 string); the numeric
+    // sort key `timestamp` lives only on the stored record. `formatISO`
+    // drops millis, so compare against floor-to-second bounds.
+    expect(event.created_at).to.be.a('string')
+    expect(Date.parse(event.created_at)).to.be.at.least(Math.floor((before - 1000) / 1000) * 1000)
+    expect(Date.parse(event.created_at)).to.be.at.most(Math.floor(after / 1000) * 1000)
 
     // Anonymous identity: device_id only (no token in the stub reader)
     expect(event.identity).to.deep.equal({device_id: validDeviceId})
@@ -139,7 +143,7 @@ describe('daemon analytics tracking integration (ticket scenario 6)', () => {
     const restored = AnalyticsBatch.fromJson(batch.toJson())
 
     expect(restored).to.not.be.undefined
-    expect(restored?.schema_version).to.equal(1)
+    expect(restored?.schema_version).to.equal(2)
     expect(restored?.events).to.have.lengthOf(1)
     expect(restored?.events[0].name).to.equal('daemon_start')
     expect(restored?.events[0].identity.device_id).to.equal(validDeviceId)
