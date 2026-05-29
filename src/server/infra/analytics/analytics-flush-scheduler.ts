@@ -10,7 +10,7 @@ export interface AnalyticsFlushSchedulerDeps {
   flush: () => Promise<unknown>
   /**
    * Lazy analytics-enabled gate. Re-checked on every trigger so a runtime
-   * `brv analytics disable` (M1.4) immediately suspends scheduled flushes
+   * `brv settings set analytics.enabled false` (M1.4) immediately suspends scheduled flushes
    * without restarting the daemon.
    */
   isEnabled: () => boolean

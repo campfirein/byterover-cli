@@ -77,7 +77,7 @@ export class HttpAnalyticsSender implements IAnalyticsSender {
           ...(sessionKey !== undefined && sessionKey !== '' ? {sessionId: sessionKey} : {}),
           userAgent: this.deps.userAgent,
         },
-        // M4.4: forward the cancellation signal so `brv analytics disable`
+        // M4.4: forward the cancellation signal so `brv settings set analytics.enabled false`
         // (or shutdown) can abort an in-flight POST. The http client
         // classifies aborted requests as `network`, which maps here to
         // an all-failed result — same as any other transport failure.

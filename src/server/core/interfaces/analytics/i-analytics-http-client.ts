@@ -53,7 +53,7 @@ export type AnalyticsHttpSendResult =
  */
 /**
  * Optional per-call controls. `signal` is the M4.4 cancellation hook
- * used by `brv analytics disable` (and by the daemon shutdown path) to
+ * used by `brv settings set analytics.enabled false` (and by the daemon shutdown path) to
  * abort an in-flight send so the daemon doesn't half-ship a batch
  * across an enable/disable boundary.
  */

@@ -65,7 +65,8 @@ describe('daemon analytics tracking integration (ticket scenario 6)', () => {
 
   it('should land daemon_start in the queue with full identity + super properties when analytics is enabled', async () => {
     // Pre-seed the on-disk config so analytics is enabled and deviceId is stable
-    // for assertions. This mirrors what M1.3 `brv analytics enable` writes.
+    // for assertions. This mirrors what M1.3's `brv analytics enable`
+    // (now `brv settings set analytics.enabled true`) writes.
     const seeded = GlobalConfig.fromJson({analytics: true, deviceId: validDeviceId, version: '0.0.1'})
     if (!seeded) throw new Error('test fixture: seeded GlobalConfig must be valid')
     await store.write(seeded)

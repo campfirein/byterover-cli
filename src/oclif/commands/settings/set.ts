@@ -43,12 +43,14 @@ export default class SettingsSet extends Command {
       description: 'Output format (text or json)',
       options: ['text', 'json'],
     }),
-    // Skip the analytics disclosure prompt (CI / non-interactive).
-    // No-op for non-analytics keys.
+    // Accepts the analytics disclosure non-interactively. Only meaningful when
+    // setting `analytics.enabled true` (the one consent-gated key). Passing it
+    // for any other key emits `this.warn(...)` so the user does not silently
+    // rely on a flag that has no behavioural effect for their command.
     yes: Flags.boolean({
       char: 'y',
       default: false,
-      description: 'Skip the analytics disclosure prompt (CI / non-interactive)',
+      description: 'Accept the analytics disclosure non-interactively (only meaningful for analytics.enabled)',
     }),
   }
 
@@ -63,6 +65,15 @@ export default class SettingsSet extends Command {
   public async run(): Promise<void> {
     const {args, flags} = await this.parse(SettingsSet)
     const format = flags.format as 'json' | 'text'
+
+    // `--yes` is only meaningful for the one consent-gated key. Warn (don't
+    // refuse) for any other key so automation scripts don't silently rely on
+    // a flag that has no behavioural effect.
+    if (flags.yes && args.key !== SETTINGS_KEYS.ANALYTICS_ENABLED) {
+      this.warn(
+        `--yes is only meaningful for ${SETTINGS_KEYS.ANALYTICS_ENABLED}; ignored for '${args.key}'.`,
+      )
+    }
 
     try {
       const descriptor = await this.fetchDescriptor(args.key)
@@ -119,11 +130,41 @@ export default class SettingsSet extends Command {
         parsed.value === true &&
         descriptor.current !== true
       ) {
-        const accepted = await collectConsent({
-          onError: (msg) => this.error(msg),
-          onLog: (msg) => this.log(msg),
-          yesFlag: flags.yes,
-        })
+        // JSON output mode cannot host an interactive consent prompt: the
+        // disclosure markdown (and inquirer's own prompt frame) would land
+        // on stdout BEFORE the final JSON envelope, breaking parseability
+        // for any caller piping the output. Refuse with a structured error
+        // envelope instructing the caller to pass `--yes` (which both
+        // confirms consent and skips the markdown print).
+        if (format === 'json' && !flags.yes) {
+          process.exitCode = 1
+          writeJsonResponse({
+            command: 'settings set',
+            data: {
+              error: {
+                code: 'requires_consent',
+                key: args.key,
+                message:
+                  `Enabling ${SETTINGS_KEYS.ANALYTICS_ENABLED} requires accepting the disclosure. ` +
+                  'Re-run with --yes to accept non-interactively, or omit --format json to see the disclosure.',
+              },
+            },
+            success: false,
+          })
+          return
+        }
+
+        // In JSON+--yes mode the consent gate is already satisfied. Skip
+        // `collectConsent` entirely so its `onLog(disclosureMarkdown)` does
+        // not pollute the JSON envelope on stdout.
+        const accepted =
+          format === 'json' && flags.yes
+            ? true
+            : await collectConsent({
+                onError: (msg) => this.error(msg),
+                onLog: (msg) => this.log(msg),
+                yesFlag: flags.yes,
+              })
 
         if (!accepted) {
           if (format === 'json') {

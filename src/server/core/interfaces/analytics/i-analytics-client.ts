@@ -18,7 +18,7 @@ import type {AnalyticsBatch} from '../../domain/analytics/batch.js'
 export interface IAnalyticsClient {
   /**
    * Cancel any in-flight `flush()`'s HTTP request. M4.4: invoked by
-   * `GlobalConfigHandler` when `brv analytics disable` flips the flag
+   * `GlobalConfigHandler` when `brv settings set analytics.enabled false` flips the flag
    * so the daemon doesn't half-ship a batch across an enable/disable
    * boundary. No-op when no flush is in flight.
    */
@@ -31,7 +31,7 @@ export interface IAnalyticsClient {
   flush: () => Promise<AnalyticsBatch>
 
   /**
-   * M4.6: client-owned runtime state for the `brv analytics status`
+   * M4.6: client-owned runtime state for the `brv settings get analytics.status`
    * command. Returns the timestamp of the last successful flush (or
    * `undefined` if none has run this daemon-lifetime), the count of
    * records currently pending in JSONL, and the cumulative count of

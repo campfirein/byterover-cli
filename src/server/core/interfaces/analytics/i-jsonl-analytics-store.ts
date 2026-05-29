@@ -82,20 +82,20 @@ export interface IJsonlAnalyticsStore {
    * a clear in progress blocks subsequent appends. Atomic via tmp+rename.
    *
    * Counters (`droppedFullCount`, `droppedSentCount`) are NOT reset,
-   * they're cumulative lifetime stats surfaced by `brv analytics status`.
+   * they're cumulative lifetime stats surfaced by `brv settings get analytics.status`.
    */
   clear: () => Promise<void>
 
   /**
    * Cumulative count of `append` calls dropped because the cap was full
    * with no `'sent'` rows to evict (file saturated with pending+failed).
-   * Never reset; surfaced for `brv analytics status` (M4.6).
+   * Never reset; surfaced for `brv settings get analytics.status` (M4.6).
    */
   droppedFullCount: () => number
 
   /**
    * Cumulative count of `'sent'` rows dropped by compaction across the
-   * store's lifetime. Never reset; surfaced for `brv analytics status`
+   * store's lifetime. Never reset; surfaced for `brv settings get analytics.status`
    * (M4.6).
    */
   droppedSentCount: () => number

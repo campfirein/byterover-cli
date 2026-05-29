@@ -5,6 +5,7 @@ import React, {useCallback, useEffect, useMemo, useState} from 'react'
 import type {SettingsRow} from '../../../../shared/types/settings-row.js'
 import type {CustomDialogCallbacks} from '../../../types/commands.js'
 
+import {ANALYTICS_ENABLED_KEY} from '../../../../shared/constants/settings-keys.js'
 import {buildSettingsRows, parseRowInput} from '../../../../shared/utils/format-settings.js'
 import {loadAnalyticsDisclosureText} from '../../../../shared/utils/load-analytics-disclosure.js'
 import {useTheme} from '../../../hooks/index.js'
@@ -12,11 +13,6 @@ import {useGetSettings, useResetSetting, useSetSetting} from '../api/settings-ap
 import {bottomHintFor, groupRowsByCategory, preFillBufferFor} from '../utils/format-settings.js'
 
 type Mode = 'browse' | 'confirm-disclosure' | 'edit' | 'saving'
-
-// Hardcoded to avoid the `tui/` -> `server/` boundary violation that
-// would happen if we imported SETTINGS_KEYS. The string is a stable
-// contract — a rename would require a config-migration ticket regardless.
-const ANALYTICS_ENABLED_KEY = 'analytics.enabled'
 
 export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): React.ReactNode {
   const {data, error, isLoading} = useGetSettings()
@@ -291,7 +287,18 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
       if (key.return) {
         const row = pendingDisclosureRow
         setPendingDisclosureRow(undefined)
-        if (row !== undefined) performToggle(row, true).catch(() => {})
+        if (row !== undefined) {
+          // `performToggle` itself calls `setRowError` on a non-`ok` response,
+          // but a thrown rejection (e.g. transport disconnect) would otherwise
+          // be swallowed and leave the UI in `browse` mode with no feedback
+          // about the failed enable. Surface the error message and restore
+          // the browse mode explicitly.
+          performToggle(row, true).catch((error_: unknown) => {
+            setRowError(error_ instanceof Error ? error_.message : String(error_))
+            setMode('browse')
+          })
+        }
+
         return
       }
 

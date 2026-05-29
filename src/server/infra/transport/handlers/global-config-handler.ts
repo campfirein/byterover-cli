@@ -18,7 +18,7 @@ import {processLog} from '../../../utils/process-logger.js'
 export interface GlobalConfigHandlerDeps {
   /**
    * M4.4: optional analytics client used to cancel any in-flight HTTP
-   * send when `brv analytics disable` flips the flag from true → false.
+   * send when `brv settings set analytics.enabled false` flips the flag.
    * Disable does NOT drop the queue or clear JSONL — those stay so a
    * future re-enable ships the backlog. Optional for back-compat with
    * test harnesses that don't construct a real analytics client.

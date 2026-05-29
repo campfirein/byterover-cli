@@ -763,6 +763,84 @@ describe('SettingsHandler', () => {
         expect(result.current).to.equal(undefined)
       }
     })
+
+    it('SET on analytics.enabled with NO injected facade returns code=misconfigured (not invalid_value)', async () => {
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({store: localStore, transport: localTransport}).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.SET)
+      if (!handler) throw new Error('SET handler not registered')
+      const result = (await handler({key: 'analytics.enabled', value: true}, 'test-client')) as SettingsSetResponse
+
+      expect(result.ok).to.be.false
+      if (!result.ok) {
+        // Bot review (#7): a missing facade is a daemon wiring problem, not a
+        // user-supplied bad value. Distinct code so logs / WebUI can route
+        // the alert at the right team.
+        expect(result.error.code).to.equal('misconfigured')
+        expect(result.error.key).to.equal('analytics.enabled')
+        expect(result.error.message.toLowerCase()).to.match(/global ?config|facade/)
+      }
+    })
+
+    it('RESET on analytics.enabled with NO injected facade returns code=misconfigured (not invalid_value)', async () => {
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({store: localStore, transport: localTransport}).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.RESET)
+      if (!handler) throw new Error('RESET handler not registered')
+      const result = (await handler({key: 'analytics.enabled'}, 'test-client')) as SettingsResetResponse
+
+      expect(result.ok).to.be.false
+      if (!result.ok) {
+        expect(result.error.code).to.equal('misconfigured')
+        expect(result.error.key).to.equal('analytics.enabled')
+      }
+    })
+
+    it('RESET refuses non-boolean global-config descriptors with code=misconfigured (future-proofing for bot review #6)', async () => {
+      // The facade interface (`setAnalyticsValue(value: boolean)`) is
+      // structurally boolean-only. A future PR that adds an integer
+      // descriptor with `storage: 'global-config'` would otherwise hit
+      // the `: false` fallback in RESET and silently coerce to boolean.
+      // Tighten with a custom registry stub so this is enforced today.
+      const intGlobalDescriptor: SettingDescriptor = {
+        category: 'analytics',
+        default: 42,
+        description: 'fake integer global-config descriptor — test only',
+        key: '_test.integerGlobal',
+        max: 100,
+        min: 0,
+        restartRequired: false,
+        storage: 'global-config',
+        type: 'integer',
+      }
+      const facade = {
+        getCurrentAnalytics: async () => false,
+        setAnalyticsValue: async (value: boolean) => ({current: value, previous: false}),
+      }
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({
+        globalConfigHandler: facade,
+        registry: [intGlobalDescriptor],
+        store: localStore,
+        transport: localTransport,
+      }).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.RESET)
+      if (!handler) throw new Error('RESET handler not registered')
+      const result = (await handler({key: '_test.integerGlobal'}, 'test-client')) as SettingsResetResponse
+
+      expect(result.ok).to.be.false
+      if (!result.ok) {
+        expect(result.error.code).to.equal('misconfigured')
+        expect(result.error.key).to.equal('_test.integerGlobal')
+        expect(result.error.message.toLowerCase()).to.match(/boolean|facade/)
+      }
+    })
   })
 
   describe('analytics.status routing (M16.3 — production registry)', () => {

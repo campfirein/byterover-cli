@@ -208,7 +208,7 @@ export class SettingsHandler {
           if (this.globalConfigHandler === undefined) {
             return {
               error: {
-                code: 'invalid_value',
+                code: 'misconfigured',
                 key: data.key,
                 message: `'${data.key}' is stored in global config, but no globalConfigHandler facade was wired into SettingsHandler.`,
               },
@@ -304,7 +304,7 @@ export class SettingsHandler {
           if (this.globalConfigHandler === undefined) {
             return {
               error: {
-                code: 'invalid_value',
+                code: 'misconfigured',
                 key: data.key,
                 message: `'${data.key}' is stored in global config, but no globalConfigHandler facade was wired into SettingsHandler.`,
               },
@@ -312,8 +312,23 @@ export class SettingsHandler {
             }
           }
 
+          // The facade interface is boolean-only (`setAnalyticsValue(value: boolean)`).
+          // If a future descriptor is added with storage='global-config' and a
+          // non-boolean type, refuse explicitly instead of silently coercing
+          // the default to `false`.
+          if (descriptor.type !== 'boolean') {
+            return {
+              error: {
+                code: 'misconfigured',
+                key: data.key,
+                message: `'${data.key}' has storage='global-config' but type='${descriptor.type}'; the facade only supports boolean global-config keys.`,
+              },
+              ok: false,
+            }
+          }
+
           try {
-            const defaultValue = descriptor.type === 'boolean' ? descriptor.default : false
+            const defaultValue: boolean = descriptor.default
             await this.globalConfigHandler.setAnalyticsValue(defaultValue)
             /* eslint-disable camelcase */
             this.emitAnalytics(AnalyticsEventNames.SETTING_RESET, {

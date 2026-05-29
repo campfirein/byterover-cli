@@ -246,4 +246,3 @@ export class FileSettingsStore implements ISettingsStore {
     await rename(tmpPath, path)
   }
 }
-

@@ -1,3 +1,4 @@
+import {ANALYTICS_ENABLED_KEY} from '../../../../shared/constants/settings-keys.js'
 import {
   AGENT_LLM_ITERATION_BUDGET_MS,
   AGENT_LLM_REQUEST_TIMEOUT_MS,
@@ -117,7 +118,7 @@ export type SettingItem = {
 export const SETTINGS_KEYS = {
   AGENT_POOL_MAX_CONCURRENT_TASKS: 'agentPool.maxConcurrentTasksPerProject',
   AGENT_POOL_MAX_SIZE: 'agentPool.maxSize',
-  ANALYTICS_ENABLED: 'analytics.enabled',
+  ANALYTICS_ENABLED: ANALYTICS_ENABLED_KEY,
   ANALYTICS_STATUS: 'analytics.status',
   LLM_ITERATION_BUDGET_MS: 'llm.iterationBudgetMs',
   LLM_REQUEST_TIMEOUT_MS: 'llm.requestTimeoutMs',

@@ -28,7 +28,8 @@ is permanently linked to your account.
 
 ## How to disable
 
-Lorem ipsum: run `brv analytics disable` at any time to stop collection.
+Lorem ipsum: run `brv settings set analytics.enabled false` at any time to
+stop collection.
 
 ## Privacy policy
 

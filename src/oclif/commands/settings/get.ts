@@ -82,7 +82,8 @@ export default class SettingsGet extends Command {
   private printTextBlock(item: SettingsItemDTO): void {
     if (item.type === 'readonly-info') {
       // Print the snapshot text verbatim so `brv settings get analytics.status`
-      // matches the deleted `brv analytics status` output character-for-character.
+      // matches the deleted `brv analytics status` (its predecessor)
+      // output character-for-character.
       // No `<key>` header / `current:` prefix / `scope:` footer — the chrome
       // is reserved for writable variants where it carries meaningful labels.
       this.log(formatReadonlyInfoValue(item.key, item.current))
@@ -105,7 +106,8 @@ export default class SettingsGet extends Command {
 
   private toJsonPayload(item: SettingsItemDTO): Record<string, unknown> {
     // M16.3: `analytics.status` keeps the legacy snake_case envelope of
-    // the deleted `brv analytics status --format json` so callers that
+    // the deleted `brv analytics status --format json` (now
+    // `brv settings get analytics.status --format json`) so callers that
     // already script against that wire shape are not broken.
     if (item.key === SETTINGS_KEYS.ANALYTICS_STATUS) {
       return {...formatAnalyticsStatusJson(item.current)}

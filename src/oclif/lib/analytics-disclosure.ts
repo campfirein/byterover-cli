@@ -21,9 +21,9 @@ export function isInteractive(): boolean {
 
 export interface CollectConsentDeps {
   /**
-   * Optional override for `loadDisclosure`. Subclass tests in
-   * `brv analytics enable` stub this to inject a fixture string.
-   * Defaults to the lib's `loadDisclosure` (reads from disk).
+   * Optional override for `loadDisclosure`. Tests inject a fixture string
+   * to avoid touching disk. Defaults to the lib's `loadDisclosure`
+   * (reads `analytics-disclosure.md` from disk).
    */
   readonly loadFn?: () => Promise<string>
   /**
@@ -62,7 +62,8 @@ export interface CollectConsentDeps {
  *
  * Extracted from the legacy `brv analytics enable` command in M16.2 so
  * `brv settings set analytics.enabled true` can reuse the exact same
- * consent gate. The legacy command is preserved until M16.4 deletes it.
+ * consent gate. M16.4 then deleted the legacy command; this lib is now
+ * the sole consent surface.
  */
 export async function collectConsent(deps: CollectConsentDeps): Promise<boolean> {
   const load = deps.loadFn ?? loadDisclosure
@@ -80,5 +81,19 @@ export async function collectConsent(deps: CollectConsentDeps): Promise<boolean>
   }
 
   const prompt = deps.promptFn ?? confirmDisclosure
-  return prompt()
+  try {
+    return await prompt()
+  } catch (error) {
+    // Ctrl-C inside `@inquirer/prompts` rejects with `ExitPromptError`. Without
+    // this guard, the rejection surfaces as a raw stack trace from the
+    // caller's `formatConnectionError` fallback. Treat Ctrl-C as a declined
+    // consent so the caller logs "Analytics not enabled" and exits cleanly.
+    // Match by `name` (not `instanceof`) because the running `@inquirer/core`
+    // copy depends on which nested node_modules path resolved at runtime.
+    if (error instanceof Error && error.name === 'ExitPromptError') {
+      return false
+    }
+
+    throw error
+  }
 }
