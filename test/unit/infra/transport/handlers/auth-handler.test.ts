@@ -11,7 +11,7 @@ import type {IProviderConfigStore} from '../../../../../src/server/core/interfac
 import type {IBrowserLauncher} from '../../../../../src/server/core/interfaces/services/i-browser-launcher.js'
 import type {IUserService} from '../../../../../src/server/core/interfaces/services/i-user-service.js'
 import type {IAuthStateStore} from '../../../../../src/server/core/interfaces/state/i-auth-state-store.js'
-import type {IGlobalConfigRotator} from '../../../../../src/server/core/interfaces/state/i-global-config-rotator.js'
+import type {IGlobalConfigRotator} from '../../../../../src/server/core/interfaces/storage/i-global-config-rotator.js'
 import type {IProjectConfigStore} from '../../../../../src/server/core/interfaces/storage/i-project-config-store.js'
 import type {ITransportServer} from '../../../../../src/server/core/interfaces/transport/i-transport-server.js'
 
@@ -109,7 +109,7 @@ function assertFailureKindDiscipline(value: unknown, label: string): void {
   const tag = value as string
   expect(tag.length, `${label}: failure_kind must be non-empty`).to.be.greaterThan(0)
   expect(tag.length, `${label}: failure_kind must be ≤64 chars (got ${tag.length})`).to.be.lessThanOrEqual(64)
-  expect(tag, `${label}: failure_kind must be snake_case (a-z + _), got "${tag}"`).to.match(/^[a-z][a-z_]*$/)
+  expect(tag, `${label}: failure_kind must be snake_case (a-z0-9 + _), got "${tag}"`).to.match(/^[a-z][a-z0-9_]*$/)
 }
 
 function makeRotatorStub(rotated = true): IGlobalConfigRotator & {rotateSpy: ReturnType<typeof stub>} {
@@ -897,6 +897,34 @@ describe('AuthHandler — setupExternalAuthSync', () => {
       await harness.callRefresh()
 
       expect(providerConfigStore.disconnectProvider.calledOnceWith('byterover'), 'byterover must be disconnected on refresh-fail sign-out').to.be.true
+    })
+
+    it('does NOT treat post-refresh user-fetch failure as a refresh-fail sign-out (narrow catch)', async () => {
+      // refreshToken() succeeds; userService.getCurrentUser() then 5xx-s.
+      // This is a post-refresh APPLICATION failure — not a refresh-fail.
+      // The narrowed catch must NOT clear, rotate, emit auth_logout, or
+      // broadcast isAuthorized:false.
+      userService.getCurrentUser = stub().rejects(new Error('5xx')) as unknown as typeof userService.getCurrentUser
+      const rotator = makeRotatorStub()
+      const harness = makeRefreshHarness({
+        previousToken: createValidToken(),
+        refreshThrows: false,
+        rotator,
+      })
+
+      const result = await harness.callRefresh()
+
+      expect(result).to.deep.equal({success: false})
+      expect(harness.tokenStore.clearSpy.called, 'token must NOT be cleared on post-refresh failure').to.be.false
+      expect(rotator.rotateSpy.called, 'device_id must NOT rotate on post-refresh failure').to.be.false
+      const trackCalls = harness.analyticsClient.trackSpy
+        .getCalls()
+        .filter((c: {args: unknown[]}) => c.args[0] === AnalyticsEventNames.AUTH_LOGOUT)
+      expect(trackCalls.length, 'no auth_logout emit on post-refresh failure').to.equal(0)
+      expect(
+        harness.callOrder.includes('broadcast:STATE_CHANGED'),
+        'no isAuthorized:false broadcast on post-refresh failure',
+      ).to.be.false
     })
 
     it('does NOT throw when rotation fails on the refresh sign-out path', async () => {

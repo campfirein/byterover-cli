@@ -389,7 +389,11 @@ describe('GlobalConfigHandler', () => {
       expect(store.write.calledOnce).to.be.true
       const written = store.write.firstCall.args[0]
       expect(written.deviceId).to.not.equal('device-old')
-      expect(written.deviceId.length, 'rotated to a non-empty new id').to.be.greaterThan(0)
+      // Pin UUID v4 shape so a regression that swaps in a non-UUID source
+      // (e.g. Date.now().toString()) fails loudly at the test boundary.
+      expect(written.deviceId, 'rotated to a UUID v4').to.match(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      )
       expect(written.analytics, 'analytics flag preserved').to.equal(before.analytics)
       expect(written.version, 'version preserved').to.equal(before.version)
     })

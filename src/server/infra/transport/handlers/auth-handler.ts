@@ -10,7 +10,7 @@ import type {IProviderConfigStore} from '../../../core/interfaces/i-provider-con
 import type {IBrowserLauncher} from '../../../core/interfaces/services/i-browser-launcher.js'
 import type {IUserService} from '../../../core/interfaces/services/i-user-service.js'
 import type {IAuthStateStore} from '../../../core/interfaces/state/i-auth-state-store.js'
-import type {IGlobalConfigRotator} from '../../../core/interfaces/state/i-global-config-rotator.js'
+import type {IGlobalConfigRotator} from '../../../core/interfaces/storage/i-global-config-rotator.js'
 import type {IProjectConfigStore} from '../../../core/interfaces/storage/i-project-config-store.js'
 import type {ITransportServer} from '../../../core/interfaces/transport/i-transport-server.js'
 import type {ProjectPathResolver} from './handler-types.js'
@@ -261,6 +261,14 @@ export class AuthHandler {
       return await this.tokenStore.load()
     } catch (error) {
       processLog(`[Auth] token load failed: ${getErrorMessage(error)}`)
+      // TRADE-OFF: returning undefined on a transient token-store error
+      // means the caller treats the prior identity as absent — so an
+      // account-switch login or logout on a flaky disk will silently
+      // skip the device_id rotation. We accept this because the
+      // alternative (rejecting the RPC) would discard a freshly-exchanged
+      // OAuth token or fail a user-initiated logout, which are worse.
+      // Disk errors are rare; the processLog above gives forensic
+      // breadcrumbs.
       return undefined
     }
   }
@@ -466,15 +474,58 @@ export class AuthHandler {
   private setupRefresh(): void {
     this.transport.onRequest<void, AuthRefreshResponse>(AuthEvents.REFRESH, async () => {
       // safeLoadToken so a read failure short-circuits to {success:false}
-      // instead of rejecting the RPC (matches the prior contract before
-      // the load was moved outside the try).
+      // instead of rejecting the RPC.
       const token = await this.safeLoadToken()
       if (!token) {
         return {success: false}
       }
 
+      // Narrow the sign-out catch to refreshToken() ONLY. A failure here
+      // means the auth server rejected the refresh (revoked, expired
+      // refresh token, network 401/403) — a definitive sign-out. Failures
+      // AFTER refresh succeeded (user-fetch 5xx, save() disk error) are
+      // post-refresh application failures: they should NOT burn a
+      // device_id rotation or be attributed as `refresh_failed` in the
+      // analytics funnel.
+      let refreshedTokenData
       try {
-        const refreshedTokenData = await this.authService.refreshToken(token.refreshToken)
+        refreshedTokenData = await this.authService.refreshToken(token.refreshToken)
+      } catch (error) {
+        processLog(`[Auth] refreshToken exchange failed: ${getErrorMessage(error)}`)
+        // Sign-out side effects mirror the logout success branch (clear →
+        // disconnect → reload → emit → rotate → broadcast). Each wrapped
+        // so a cascading failure does not skip the rest. Returning
+        // {success:false} preserves the prior contract.
+        await this.tokenStore.clear().catch((clearError: unknown) => {
+          processLog(`[Auth] token clear failed during refresh sign-out: ${getErrorMessage(clearError)}`)
+        })
+        await this.disconnectByteRoverProvider()
+        await this.authStateStore.loadToken().catch((loadError: unknown) => {
+          processLog(`[Auth] authStateStore reload failed during refresh sign-out: ${getErrorMessage(loadError)}`)
+        })
+
+        // eslint-disable-next-line camelcase
+        this.emitAnalytics(AnalyticsEventNames.AUTH_LOGOUT, {failure_kind: 'refresh_failed', outcome: 'failure'})
+
+        if (token.isValid()) {
+          // Only retire the device when the pre-refresh identity was live.
+          // An already-expired token observed by the refresh RPC is not an
+          // active claim on the device.
+          await this.safeRotateDeviceId()
+        }
+
+        // Explicit STATE_CHANGED broadcast (symmetric with the logout
+        // success branch). The onAuthChanged listener also broadcasts
+        // after loadToken transitions the cached token, but the explicit
+        // call here delivers synchronously before this RPC returns.
+        this.transport.broadcast(AuthEvents.STATE_CHANGED, {isAuthorized: false})
+        return {success: false}
+      }
+
+      // Refresh exchange succeeded. Anything below is a post-refresh
+      // application failure (user fetch, save, etc.) — return
+      // {success:false} silently, do NOT trigger sign-out semantics.
+      try {
         const user = await this.userService.getCurrentUser(refreshedTokenData.sessionKey)
         const newToken = new AuthToken({
           accessToken: refreshedTokenData.accessToken,
@@ -496,38 +547,8 @@ export class AuthHandler {
         })
 
         return {success: true}
-      } catch {
-        // Refresh failure is treated as a definitive sign-out: clear the
-        // token, disconnect byterover (symmetric with the explicit logout
-        // and onAuthExpired paths), emit auth_logout (so the funnel sees
-        // the transition), rotate device_id, and broadcast state-cleared
-        // so TUI/WebUI surface a re-login prompt rather than keep the
-        // stale token in their caches. Wrap each side effect so a single
-        // cascading failure does not skip the rest. Returning
-        // {success:false} preserves the prior contract.
-        await this.tokenStore.clear().catch((error: unknown) => {
-          processLog(`[Auth] token clear failed during refresh sign-out: ${getErrorMessage(error)}`)
-        })
-        await this.disconnectByteRoverProvider()
-        await this.authStateStore.loadToken().catch((error: unknown) => {
-          processLog(`[Auth] authStateStore reload failed during refresh sign-out: ${getErrorMessage(error)}`)
-        })
-
-        // eslint-disable-next-line camelcase
-        this.emitAnalytics(AnalyticsEventNames.AUTH_LOGOUT, {failure_kind: 'refresh_failed', outcome: 'failure'})
-
-        if (token.isValid()) {
-          // Only retire the device when the pre-refresh identity was live.
-          // An already-expired token observed by the refresh RPC is not an
-          // active claim on the device.
-          await this.safeRotateDeviceId()
-        }
-
-        // Explicit STATE_CHANGED broadcast (symmetric with the logout
-        // success branch). The onAuthChanged listener also broadcasts
-        // after loadToken transitions the cached token, but the explicit
-        // call here delivers synchronously before this RPC returns.
-        this.transport.broadcast(AuthEvents.STATE_CHANGED, {isAuthorized: false})
+      } catch (error) {
+        processLog(`[Auth] post-refresh application failed (token NOT applied, no sign-out): ${getErrorMessage(error)}`)
         return {success: false}
       }
     })

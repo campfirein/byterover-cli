@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto'
 
 import type {IAnalyticsClient} from '../../../core/interfaces/analytics/i-analytics-client.js'
-import type {IGlobalConfigRotator} from '../../../core/interfaces/state/i-global-config-rotator.js'
+import type {IGlobalConfigRotator} from '../../../core/interfaces/storage/i-global-config-rotator.js'
 import type {IGlobalConfigStore} from '../../../core/interfaces/storage/i-global-config-store.js'
 import type {ITransportServer} from '../../../core/interfaces/transport/i-transport-server.js'
 
