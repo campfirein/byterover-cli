@@ -34,12 +34,18 @@ const IdentityWireSchema = z.object({
   user_id: z.string().optional(),
 })
 
-const AnalyticsEventWithIdentityWireSchema = z.object({
-  identity: IdentityWireSchema,
-  name: z.string(),
-  properties: z.record(z.string(), z.unknown()),
-  timestamp: z.number(),
-})
+// `.strict()` mirrors the backend's `forbidNonWhitelisted` validator
+// (byterover-telemetry PR #21): any residual field from a pre-upgrade
+// producer (notably the legacy numeric `timestamp`) must be rejected at the
+// wire boundary, not silently stripped.
+const AnalyticsEventWithIdentityWireSchema = z
+  .object({
+    created_at: z.string().datetime({offset: true}),
+    identity: IdentityWireSchema,
+    name: z.string(),
+    properties: z.record(z.string(), z.unknown()),
+  })
+  .strict()
 
 const AnalyticsBatchJsonSchema = z.object({
   events: z.array(AnalyticsEventWithIdentityWireSchema),
