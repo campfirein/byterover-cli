@@ -11,10 +11,10 @@ const baseUrl = 'https://telemetry-test.byterover.dev'
 
 function makeEvent(name = 'daemon_start') {
   return {
+    created_at: '2023-11-14T22:13:20+00:00',
     identity: {device_id: validDeviceId, user_id: 'user-123'},
     name,
     properties: {cli_version: '3.12.0'},
-    timestamp: 1_700_000_000_000,
   }
 }
 
