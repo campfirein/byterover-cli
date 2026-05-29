@@ -287,8 +287,8 @@ function readBackoffFailures(env: NodeJS.ProcessEnv): {failures: number; state: 
 
 async function preflightBackend(url: string): Promise<{ok: boolean; reason?: string}> {
   // Wire format: per-event `created_at` (ISO 8601 with offset),
-  // `schema_version: 1`, no numeric `timestamp` field. If the backend
-  // still validates against a legacy `{timestamp: number}` shape or
+  // `schema_version: 2`, no numeric `timestamp` field. If the backend
+  // still validates against the legacy v1 `{timestamp: number}` shape or
   // rejects this shape via `forbidNonWhitelisted`, every scenario would
   // FAIL with retry-cap exhaustion; better to skip the suite up-front
   // with a clear reason.
@@ -306,7 +306,7 @@ async function preflightBackend(url: string): Promise<{ok: boolean; reason?: str
         },
       },
     ],
-    schema_version: 1,
+    schema_version: 2,
   })
   try {
     const ctrl = new AbortController()

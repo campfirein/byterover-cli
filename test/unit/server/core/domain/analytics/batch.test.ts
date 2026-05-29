@@ -26,7 +26,7 @@ describe('AnalyticsBatch', () => {
     it('should create an empty batch', () => {
       const batch = AnalyticsBatch.create([])
 
-      expect(batch.schema_version).to.equal(1)
+      expect(batch.schema_version).to.equal(2)
       expect(batch.events).to.deep.equal([])
     })
 
@@ -43,14 +43,14 @@ describe('AnalyticsBatch', () => {
     it('should serialize an empty batch', () => {
       const batch = AnalyticsBatch.create([])
 
-      expect(batch.toJson()).to.deep.equal({events: [], schema_version: 1})
+      expect(batch.toJson()).to.deep.equal({events: [], schema_version: 2})
     })
 
     it('should serialize a populated batch with all event fields', () => {
       const batch = AnalyticsBatch.create([eventA])
       const json = batch.toJson()
 
-      expect(json.schema_version).to.equal(1)
+      expect(json.schema_version).to.equal(2)
       expect(json.events).to.have.lengthOf(1)
       expect(json.events[0]).to.deep.equal(eventA)
     })
@@ -62,7 +62,7 @@ describe('AnalyticsBatch', () => {
       const restored = AnalyticsBatch.fromJson(original.toJson())
 
       expect(restored).to.not.be.undefined
-      expect(restored?.schema_version).to.equal(1)
+      expect(restored?.schema_version).to.equal(2)
       expect(restored?.events).to.deep.equal([])
     })
 
@@ -96,22 +96,22 @@ describe('AnalyticsBatch', () => {
       expect(AnalyticsBatch.fromJson({events: []})).to.be.undefined
     })
 
-    it('should return undefined when schema_version is not 1', () => {
-      expect(AnalyticsBatch.fromJson({events: [], schema_version: 2})).to.be.undefined
+    it('should return undefined when schema_version is not 2', () => {
+      expect(AnalyticsBatch.fromJson({events: [], schema_version: 1})).to.be.undefined
       expect(AnalyticsBatch.fromJson({events: [], schema_version: 0})).to.be.undefined
-      expect(AnalyticsBatch.fromJson({events: [], schema_version: '1'})).to.be.undefined
+      expect(AnalyticsBatch.fromJson({events: [], schema_version: '2'})).to.be.undefined
     })
 
     it('should return undefined when events is not an array', () => {
-      expect(AnalyticsBatch.fromJson({events: {}, schema_version: 1})).to.be.undefined
-      expect(AnalyticsBatch.fromJson({events: 'foo', schema_version: 1})).to.be.undefined
-      expect(AnalyticsBatch.fromJson({schema_version: 1})).to.be.undefined
+      expect(AnalyticsBatch.fromJson({events: {}, schema_version: 2})).to.be.undefined
+      expect(AnalyticsBatch.fromJson({events: 'foo', schema_version: 2})).to.be.undefined
+      expect(AnalyticsBatch.fromJson({schema_version: 2})).to.be.undefined
     })
 
     it('should return undefined when an event is missing name', () => {
       const json = {
         events: [{created_at: '2023-11-14T22:13:20+00:00', identity: validIdentity, properties: {}}],
-        schema_version: 1,
+        schema_version: 2,
       }
       expect(AnalyticsBatch.fromJson(json)).to.be.undefined
     })
@@ -119,7 +119,7 @@ describe('AnalyticsBatch', () => {
     it('should return undefined when an event has non-string name', () => {
       const json = {
         events: [{created_at: '2023-11-14T22:13:20+00:00', identity: validIdentity, name: 123, properties: {}}],
-        schema_version: 1,
+        schema_version: 2,
       }
       expect(AnalyticsBatch.fromJson(json)).to.be.undefined
     })
@@ -127,7 +127,7 @@ describe('AnalyticsBatch', () => {
     it('should return undefined when an event is missing identity', () => {
       const json = {
         events: [{created_at: '2023-11-14T22:13:20+00:00', name: 'x', properties: {}}],
-        schema_version: 1,
+        schema_version: 2,
       }
       expect(AnalyticsBatch.fromJson(json)).to.be.undefined
     })
@@ -135,17 +135,15 @@ describe('AnalyticsBatch', () => {
     it('should return undefined when identity is missing device_id', () => {
       const json = {
         events: [{created_at: '2023-11-14T22:13:20+00:00', identity: {}, name: 'x', properties: {}}],
-        schema_version: 1,
+        schema_version: 2,
       }
       expect(AnalyticsBatch.fromJson(json)).to.be.undefined
     })
 
     it('should return undefined when identity has empty device_id', () => {
       const json = {
-        events: [
-          {created_at: '2023-11-14T22:13:20+00:00', identity: {device_id: ''}, name: 'x', properties: {}},
-        ],
-        schema_version: 1,
+        events: [{created_at: '2023-11-14T22:13:20+00:00', identity: {device_id: ''}, name: 'x', properties: {}}],
+        schema_version: 2,
       }
       expect(AnalyticsBatch.fromJson(json)).to.be.undefined
     })
@@ -153,7 +151,7 @@ describe('AnalyticsBatch', () => {
     it('should return undefined when an event is missing created_at', () => {
       const json = {
         events: [{identity: validIdentity, name: 'x', properties: {}}],
-        schema_version: 1,
+        schema_version: 2,
       }
       expect(AnalyticsBatch.fromJson(json)).to.be.undefined
     })
@@ -161,7 +159,7 @@ describe('AnalyticsBatch', () => {
     it('should return undefined when an event has a non-string created_at', () => {
       const json = {
         events: [{created_at: 1_700_000_000_000, identity: validIdentity, name: 'x', properties: {}}],
-        schema_version: 1,
+        schema_version: 2,
       }
       expect(AnalyticsBatch.fromJson(json)).to.be.undefined
     })
@@ -169,7 +167,7 @@ describe('AnalyticsBatch', () => {
     it('should return undefined when created_at is missing a timezone designator', () => {
       const json = {
         events: [{created_at: '2023-11-14T22:13:20', identity: validIdentity, name: 'x', properties: {}}],
-        schema_version: 1,
+        schema_version: 2,
       }
       expect(AnalyticsBatch.fromJson(json)).to.be.undefined
     })
@@ -178,7 +176,7 @@ describe('AnalyticsBatch', () => {
       for (const ts of ['2023-11-14T22:13:20Z', '2023-11-14T22:13:20+07:00', '2023-11-14T22:13:20.123-05:30']) {
         const json = {
           events: [{created_at: ts, identity: validIdentity, name: 'x', properties: {}}],
-          schema_version: 1,
+          schema_version: 2,
         }
         expect(AnalyticsBatch.fromJson(json), `created_at=${ts} should parse`).to.not.be.undefined
       }
@@ -198,17 +196,15 @@ describe('AnalyticsBatch', () => {
             timestamp: 1_700_000_000_000,
           },
         ],
-        schema_version: 1,
+        schema_version: 2,
       }
       expect(AnalyticsBatch.fromJson(json)).to.be.undefined
     })
 
     it('should return undefined when an event has non-object properties', () => {
       const json = {
-        events: [
-          {created_at: '2023-11-14T22:13:20+00:00', identity: validIdentity, name: 'x', properties: 'foo'},
-        ],
-        schema_version: 1,
+        events: [{created_at: '2023-11-14T22:13:20+00:00', identity: validIdentity, name: 'x', properties: 'foo'}],
+        schema_version: 2,
       }
       expect(AnalyticsBatch.fromJson(json)).to.be.undefined
     })

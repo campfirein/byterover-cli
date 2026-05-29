@@ -11,12 +11,17 @@ import type {Identity} from './identity.js'
 export type AnalyticsEventWithIdentity = AnalyticsEvent & Readonly<{identity: Identity}>
 
 /**
- * Wire shape for a batch of analytics events. `schema_version: 1` is the
- * only currently-supported value.
+ * Wire shape for a batch of analytics events. `schema_version: 2` is the
+ * only currently-supported value; the backend dispatches on this field to
+ * route v2 batches (per-event `created_at`) away from the legacy v1
+ * (per-event numeric `timestamp`) handler. Coordinate any bump with the
+ * byterover-telemetry deployment - the v2 handler must be live before a
+ * CLI that emits v2 ships, or every flush will fail validation and queue
+ * up to the retry cap.
  */
 export type AnalyticsBatchJson = Readonly<{
   events: ReadonlyArray<AnalyticsEventWithIdentity>
-  schema_version: 1
+  schema_version: 2
 }>
 
 /**
@@ -49,7 +54,7 @@ const AnalyticsEventWithIdentityWireSchema = z
 
 const AnalyticsBatchJsonSchema = z.object({
   events: z.array(AnalyticsEventWithIdentityWireSchema),
-  schema_version: z.literal(1),
+  schema_version: z.literal(2),
 })
 
 /**
@@ -59,11 +64,11 @@ const AnalyticsBatchJsonSchema = z.object({
  */
 export class AnalyticsBatch {
   public readonly events: ReadonlyArray<AnalyticsEventWithIdentity>
-  public readonly schema_version: 1
+  public readonly schema_version: 2
 
   private constructor(events: ReadonlyArray<AnalyticsEventWithIdentity>) {
     this.events = events
-    this.schema_version = 1
+    this.schema_version = 2
   }
 
   /**
