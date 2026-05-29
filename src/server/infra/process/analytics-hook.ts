@@ -258,7 +258,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
   private readonly tasks = new Map<string, TaskAnalyticsState>()
 
   constructor(deps: AnalyticsHookDeps = {}) {
-    this.getSpaceId = deps.getSpaceId ?? (async () => {})
+    this.getSpaceId = deps.getSpaceId ?? (async (): Promise<string | undefined> => undefined)
     this.isEnabled = deps.isEnabled ?? (() => true)
     this.readFile = deps.readFile ?? readFileAsync
   }
