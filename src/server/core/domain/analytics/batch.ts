@@ -14,7 +14,10 @@ export type AnalyticsEventWithIdentity = AnalyticsEvent & Readonly<{identity: Id
  * Wire shape for a batch of analytics events. `schema_version: 2` is the
  * only currently-supported value; the backend dispatches on this field to
  * route v2 batches (per-event `created_at`) away from the legacy v1
- * (per-event numeric `timestamp`) handler.
+ * (per-event numeric `timestamp`) handler. Coordinate any bump with the
+ * byterover-telemetry deployment - the v2 handler must be live before a
+ * CLI that emits v2 ships, or every flush will fail validation and queue
+ * up to the retry cap.
  */
 export type AnalyticsBatchJson = Readonly<{
   events: ReadonlyArray<AnalyticsEventWithIdentity>

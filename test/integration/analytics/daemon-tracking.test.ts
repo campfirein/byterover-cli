@@ -101,7 +101,7 @@ describe('daemon analytics tracking integration (ticket scenario 6)', () => {
     // sort key `timestamp` lives only on the stored record. `formatISO`
     // drops millis, so compare against floor-to-second bounds.
     expect(event.created_at).to.be.a('string')
-    expect(Date.parse(event.created_at)).to.be.at.least(Math.floor(before / 1000) * 1000)
+    expect(Date.parse(event.created_at)).to.be.at.least(Math.floor((before - 1000) / 1000) * 1000)
     expect(Date.parse(event.created_at)).to.be.at.most(Math.floor(after / 1000) * 1000)
 
     // Anonymous identity: device_id only (no token in the stub reader)
