@@ -77,8 +77,16 @@ export class FileSettingsStore implements ISettingsStore {
 
   public async get(key: string): Promise<SettingItem> {
     const descriptor = this.validator.validateKey(key)
+    // readonly-info: value comes from the handler's info-provider map.
+    // global-config: value comes from GlobalConfigHandler via the settings handler facade.
+    // Either way, the file store has no value to surface — return the
+    // inert row shape so the handler can resolve through the right path.
     if (descriptor.type === 'readonly-info') {
-      return {current: undefined, key: descriptor.key, restartRequired: false}
+      return {current: undefined, key: descriptor.key, restartRequired: descriptor.restartRequired}
+    }
+
+    if (descriptor.storage === 'global-config') {
+      return {current: undefined, key: descriptor.key, restartRequired: descriptor.restartRequired}
     }
 
     const overrides = await this.readOverrides()
@@ -94,7 +102,11 @@ export class FileSettingsStore implements ISettingsStore {
     const overrides = await this.readOverrides()
     return this.registry.map((descriptor) => {
       if (descriptor.type === 'readonly-info') {
-        return {current: undefined, key: descriptor.key, restartRequired: false}
+        return {current: undefined, key: descriptor.key, restartRequired: descriptor.restartRequired}
+      }
+
+      if (descriptor.storage === 'global-config') {
+        return {current: undefined, key: descriptor.key, restartRequired: descriptor.restartRequired}
       }
 
       return {
@@ -119,6 +131,14 @@ export class FileSettingsStore implements ISettingsStore {
     const descriptor = this.validator.validateKey(key)
     if (descriptor.type === 'readonly-info') {
       throw new ReadonlySettingKeyError(key)
+    }
+
+    if (descriptor.storage === 'global-config') {
+      throw new InvalidSettingValueError(
+        key,
+        undefined,
+        `'${key}' is stored in config.json, not settings.json; use the SettingsHandler facade`,
+      )
     }
 
     const raw = await this.readRawValues()

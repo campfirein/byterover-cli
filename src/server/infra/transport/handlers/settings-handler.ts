@@ -45,8 +45,30 @@ export type ReadonlyInfoSnapshot = boolean | number | Readonly<Record<string, un
  */
 export type ReadonlyInfoProvider = () => Promise<ReadonlyInfoSnapshot> | ReadonlyInfoSnapshot
 
+/**
+ * Facade over `GlobalConfigHandler` for the `analytics.enabled` setting.
+ * The settings handler routes GET/SET/RESET/LIST for that key through
+ * this facade instead of `FileSettingsStore`, so the canonical storage
+ * in `config.json`, the device-id seeding race fix, the sync analytics
+ * cache, and the abort-on-disable side-effect are all preserved.
+ *
+ * Structurally satisfied by `GlobalConfigHandler` (no `implements`
+ * needed); tests pass a hand-rolled stub.
+ */
+export interface AnalyticsEnabledFacade {
+  getCurrentAnalytics(): Promise<boolean>
+  setAnalyticsValue(value: boolean): Promise<{current: boolean; previous: boolean}>
+}
+
 export interface SettingsHandlerDeps {
   readonly analyticsClient?: IAnalyticsClient
+  /**
+   * Facade for the `analytics.enabled` writable key. When set,
+   * GET/SET/RESET/LIST for `analytics.enabled` route through this facade
+   * instead of the file store. When unset, the key surfaces with
+   * `current: undefined`.
+   */
+  readonly globalConfigHandler?: AnalyticsEnabledFacade
   /**
    * Live-value resolvers for `readonly-info` keys, keyed by descriptor key.
    * t3 (analytics.status) registers `'analytics.status' -> getAnalyticsStatus`
@@ -83,6 +105,7 @@ export interface SettingsHandlerDeps {
  */
 export class SettingsHandler {
   private readonly analyticsClient: IAnalyticsClient | undefined
+  private readonly globalConfigHandler: AnalyticsEnabledFacade | undefined
   private readonly infoProviders: ReadonlyMap<string, ReadonlyInfoProvider>
   private readonly registry: readonly SettingDescriptor[]
   private readonly store: ISettingsStore
@@ -90,6 +113,7 @@ export class SettingsHandler {
 
   public constructor(deps: SettingsHandlerDeps) {
     this.analyticsClient = deps.analyticsClient
+    this.globalConfigHandler = deps.globalConfigHandler
     this.infoProviders = deps.infoProviders ?? new Map()
     this.registry = deps.registry ?? SETTINGS_REGISTRY
     this.store = deps.store
@@ -163,6 +187,61 @@ export class SettingsHandler {
           return {error: readOnlyError(data.key), ok: false}
         }
 
+        // Global-config writables (analytics.enabled and any future ones)
+        // route through the injected facade. The file store stays
+        // untouched. Type check still applies (boolean for the only
+        // current case), so reuse `checkValueType` before delegating.
+        if (descriptor?.storage === 'global-config') {
+          const typeError = checkValueType(descriptor, data.key, data.value)
+          if (typeError !== undefined) {
+            /* eslint-disable camelcase */
+            this.emitAnalytics(AnalyticsEventNames.SETTING_CHANGED, {
+              failure_kind: 'validation',
+              outcome: 'failure',
+              setting_key: data.key,
+              value_kind: writableValueKind(descriptor),
+            })
+            /* eslint-enable camelcase */
+            return {error: typeError, ok: false}
+          }
+
+          if (this.globalConfigHandler === undefined) {
+            return {
+              error: {
+                code: 'misconfigured',
+                key: data.key,
+                message: `'${data.key}' is stored in global config, but no globalConfigHandler facade was wired into SettingsHandler.`,
+              },
+              ok: false,
+            }
+          }
+
+          try {
+            await this.globalConfigHandler.setAnalyticsValue(data.value as boolean)
+            /* eslint-disable camelcase */
+            this.emitAnalytics(AnalyticsEventNames.SETTING_CHANGED, {
+              outcome: 'success',
+              setting_key: data.key,
+              value_changed_from_default: descriptorDefault(descriptor) === undefined
+                ? undefined
+                : data.value !== descriptorDefault(descriptor),
+              value_kind: writableValueKind(descriptor),
+            })
+            /* eslint-enable camelcase */
+            return {ok: true, restartRequired: restartRequiredFor(descriptor)}
+          } catch (error) {
+            /* eslint-disable camelcase */
+            this.emitAnalytics(AnalyticsEventNames.SETTING_CHANGED, {
+              failure_kind: classifySettingsFailure(error),
+              outcome: 'failure',
+              setting_key: data.key,
+              value_kind: writableValueKind(descriptor),
+            })
+            /* eslint-enable camelcase */
+            return {error: errorToDTO(error, data.key, data.value), ok: false}
+          }
+        }
+
         const typeError = checkValueType(descriptor, data.key, data.value)
         if (typeError !== undefined) {
           /* eslint-disable camelcase */
@@ -217,6 +296,59 @@ export class SettingsHandler {
           })
           /* eslint-enable camelcase */
           return {error: readOnlyError(data.key), ok: false}
+        }
+
+        // Reset on a global-config writable means "back to descriptor.default".
+        // For analytics.enabled the default is `false`, so we flip via the facade.
+        if (descriptor?.storage === 'global-config') {
+          if (this.globalConfigHandler === undefined) {
+            return {
+              error: {
+                code: 'misconfigured',
+                key: data.key,
+                message: `'${data.key}' is stored in global config, but no globalConfigHandler facade was wired into SettingsHandler.`,
+              },
+              ok: false,
+            }
+          }
+
+          // The facade interface is boolean-only (`setAnalyticsValue(value: boolean)`).
+          // If a future descriptor is added with storage='global-config' and a
+          // non-boolean type, refuse explicitly instead of silently coercing
+          // the default to `false`.
+          if (descriptor.type !== 'boolean') {
+            return {
+              error: {
+                code: 'misconfigured',
+                key: data.key,
+                message: `'${data.key}' has storage='global-config' but type='${descriptor.type}'; the facade only supports boolean global-config keys.`,
+              },
+              ok: false,
+            }
+          }
+
+          try {
+            const defaultValue: boolean = descriptor.default
+            await this.globalConfigHandler.setAnalyticsValue(defaultValue)
+            /* eslint-disable camelcase */
+            this.emitAnalytics(AnalyticsEventNames.SETTING_RESET, {
+              outcome: 'success',
+              setting_key: data.key,
+              value_kind: writableValueKind(descriptor),
+            })
+            /* eslint-enable camelcase */
+            return {ok: true, restartRequired: restartRequiredFor(descriptor)}
+          } catch (error) {
+            /* eslint-disable camelcase */
+            this.emitAnalytics(AnalyticsEventNames.SETTING_RESET, {
+              failure_kind: classifySettingsFailure(error),
+              outcome: 'failure',
+              setting_key: data.key,
+              value_kind: writableValueKind(descriptor),
+            })
+            /* eslint-enable camelcase */
+            return {error: errorToDTO(error, data.key), ok: false}
+          }
         }
 
         try {
@@ -275,14 +407,23 @@ export class SettingsHandler {
     descriptor: SettingDescriptor,
     stored: SettingItem | undefined,
   ): Promise<SettingItem['current']> {
-    if (descriptor.type !== 'readonly-info') {
-      if (stored?.current !== undefined) return stored.current
-      return descriptor.default
+    if (descriptor.type === 'readonly-info') {
+      const provider = this.infoProviders.get(descriptor.key)
+      if (provider === undefined) return undefined
+      return provider()
     }
 
-    const provider = this.infoProviders.get(descriptor.key)
-    if (provider === undefined) return undefined
-    return provider()
+    if (descriptor.storage === 'global-config') {
+      // Global-config-stored values (analytics.enabled) live in
+      // config.json, not settings.json. Without an injected facade we
+      // cannot resolve — surface `undefined` so the row still renders
+      // rather than crashing.
+      if (this.globalConfigHandler === undefined) return undefined
+      return this.globalConfigHandler.getCurrentAnalytics()
+    }
+
+    if (stored?.current !== undefined) return stored.current
+    return descriptor.default
   }
 }
 

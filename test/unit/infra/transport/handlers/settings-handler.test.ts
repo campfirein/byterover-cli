@@ -4,6 +4,7 @@ import type {
   SettingDescriptor,
   SettingItem,
 } from '../../../../../src/server/core/domain/entities/settings.js'
+import type {IAnalyticsClient} from '../../../../../src/server/core/interfaces/analytics/i-analytics-client.js'
 import type {
   ISettingsStore,
   SettingsStartupSnapshot,
@@ -93,6 +94,7 @@ describe('SettingsHandler', () => {
       expect(result.items.map((i) => i.key).sort()).to.deep.equal([
         'agentPool.maxConcurrentTasksPerProject',
         'agentPool.maxSize',
+        'analytics.enabled',
         'analytics.status',
         'llm.iterationBudgetMs',
         'llm.requestTimeoutMs',
@@ -600,6 +602,245 @@ describe('SettingsHandler', () => {
       }
     })
   })
+  })
+
+  describe('analytics.enabled facade routing (M16.2 — production registry)', () => {
+    type AnalyticsFacadeStub = {
+      readonly calls: Array<{args: unknown[]; method: string}>
+      currentValue: boolean
+      getCurrentAnalytics: () => Promise<boolean>
+      setAnalyticsValue: (value: boolean) => Promise<{current: boolean; previous: boolean}>
+    }
+
+    function makeFacade(initial: boolean): AnalyticsFacadeStub {
+      const stub: AnalyticsFacadeStub = {
+        calls: [],
+        currentValue: initial,
+        async getCurrentAnalytics() {
+          return stub.currentValue
+        },
+        async setAnalyticsValue(value: boolean) {
+          stub.calls.push({args: [value], method: 'setAnalyticsValue'})
+          const previous = stub.currentValue
+          stub.currentValue = value
+          return {current: value, previous}
+        },
+      }
+      return stub
+    }
+
+    it('GET on analytics.enabled reads from the injected globalConfigHandler (true)', async () => {
+      const facade = makeFacade(true)
+      const localStore = new StubSettingsStore()
+      localStore.listResult = [{current: undefined, key: 'analytics.enabled', restartRequired: false}]
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({
+        globalConfigHandler: facade,
+        store: localStore,
+        transport: localTransport,
+      }).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.GET)
+      if (!handler) throw new Error('GET handler not registered')
+      const result = (await handler({key: 'analytics.enabled'}, 'test-client')) as SettingsGetResponse
+
+      expect(result.ok).to.be.true
+      if (result.ok) {
+        expect(result.type).to.equal('boolean')
+        expect(result.current).to.equal(true)
+        expect(result.default).to.equal(false)
+        expect(result.category).to.equal('analytics')
+      }
+    })
+
+    it('SET on analytics.enabled calls globalConfigHandler.setAnalyticsValue, NOT store.set', async () => {
+      const facade = makeFacade(false)
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({
+        globalConfigHandler: facade,
+        store: localStore,
+        transport: localTransport,
+      }).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.SET)
+      if (!handler) throw new Error('SET handler not registered')
+      const result = (await handler({key: 'analytics.enabled', value: true}, 'test-client')) as SettingsSetResponse
+
+      expect(result.ok).to.be.true
+      if (result.ok) {
+        expect(result.restartRequired).to.equal(false)
+      }
+
+      const setCalls = facade.calls.filter((c) => c.method === 'setAnalyticsValue')
+      expect(setCalls).to.have.lengthOf(1)
+      expect(setCalls[0].args).to.deep.equal([true])
+      const storeSetCalls = localStore.calls.filter((c) => c.method === 'set')
+      expect(storeSetCalls, 'file store must not be touched').to.have.lengthOf(0)
+    })
+
+    it('RESET on analytics.enabled flips the globalConfig value to false, NOT store.reset', async () => {
+      const facade = makeFacade(true)
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({
+        globalConfigHandler: facade,
+        store: localStore,
+        transport: localTransport,
+      }).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.RESET)
+      if (!handler) throw new Error('RESET handler not registered')
+      const result = (await handler({key: 'analytics.enabled'}, 'test-client')) as SettingsResetResponse
+
+      expect(result.ok).to.be.true
+      const setCalls = facade.calls.filter((c) => c.method === 'setAnalyticsValue')
+      expect(setCalls).to.have.lengthOf(1)
+      expect(setCalls[0].args).to.deep.equal([false])
+      const storeResetCalls = localStore.calls.filter((c) => c.method === 'reset')
+      expect(storeResetCalls, 'file store must not be touched').to.have.lengthOf(0)
+    })
+
+    it('LIST surfaces analytics.enabled with the value from globalConfigHandler', async () => {
+      const facade = makeFacade(true)
+      const localStore = new StubSettingsStore()
+      localStore.listResult = []
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({
+        globalConfigHandler: facade,
+        store: localStore,
+        transport: localTransport,
+      }).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.LIST)
+      if (!handler) throw new Error('LIST handler not registered')
+      const result = (await handler(undefined, 'test-client')) as SettingsListResponse
+
+      const row = result.items.find((i) => i.key === 'analytics.enabled')
+      expect(row, 'analytics.enabled row present').to.exist
+      expect(row?.type).to.equal('boolean')
+      expect(row?.current).to.equal(true)
+      expect(row?.default).to.equal(false)
+    })
+
+    it('SET on analytics.enabled emits SETTING_CHANGED with value_kind=boolean and outcome=success', async () => {
+      const facade = makeFacade(false)
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      const trackCalls: Array<{args: unknown[]}> = []
+      const fakeClient = {track: (...args: unknown[]) => trackCalls.push({args})} as unknown as IAnalyticsClient
+
+      new SettingsHandler({
+        analyticsClient: fakeClient,
+        globalConfigHandler: facade,
+        store: localStore,
+        transport: localTransport,
+      }).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.SET)
+      if (!handler) throw new Error('SET handler not registered')
+      await handler({key: 'analytics.enabled', value: true}, 'test-client')
+
+      const setting = trackCalls.find((c) => (c.args[0] as string).endsWith('setting_changed'))
+      expect(setting, 'SETTING_CHANGED emitted').to.exist
+      const props = setting!.args[1] as {outcome: string; value_kind: string}
+      expect(props.outcome).to.equal('success')
+      expect(props.value_kind).to.equal('boolean')
+    })
+
+    it('GET on analytics.enabled with NO injected facade returns current=undefined (graceful)', async () => {
+      const localStore = new StubSettingsStore()
+      localStore.listResult = [{current: undefined, key: 'analytics.enabled', restartRequired: false}]
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({store: localStore, transport: localTransport}).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.GET)
+      if (!handler) throw new Error('GET handler not registered')
+      const result = (await handler({key: 'analytics.enabled'}, 'test-client')) as SettingsGetResponse
+
+      expect(result.ok).to.be.true
+      if (result.ok) {
+        expect(result.current).to.equal(undefined)
+      }
+    })
+
+    it('SET on analytics.enabled with NO injected facade returns code=misconfigured (not invalid_value)', async () => {
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({store: localStore, transport: localTransport}).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.SET)
+      if (!handler) throw new Error('SET handler not registered')
+      const result = (await handler({key: 'analytics.enabled', value: true}, 'test-client')) as SettingsSetResponse
+
+      expect(result.ok).to.be.false
+      if (!result.ok) {
+        // Bot review (#7): a missing facade is a daemon wiring problem, not a
+        // user-supplied bad value. Distinct code so logs / WebUI can route
+        // the alert at the right team.
+        expect(result.error.code).to.equal('misconfigured')
+        expect(result.error.key).to.equal('analytics.enabled')
+        expect(result.error.message.toLowerCase()).to.match(/global ?config|facade/)
+      }
+    })
+
+    it('RESET on analytics.enabled with NO injected facade returns code=misconfigured (not invalid_value)', async () => {
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({store: localStore, transport: localTransport}).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.RESET)
+      if (!handler) throw new Error('RESET handler not registered')
+      const result = (await handler({key: 'analytics.enabled'}, 'test-client')) as SettingsResetResponse
+
+      expect(result.ok).to.be.false
+      if (!result.ok) {
+        expect(result.error.code).to.equal('misconfigured')
+        expect(result.error.key).to.equal('analytics.enabled')
+      }
+    })
+
+    it('RESET refuses non-boolean global-config descriptors with code=misconfigured (future-proofing for bot review #6)', async () => {
+      // The facade interface (`setAnalyticsValue(value: boolean)`) is
+      // structurally boolean-only. A future PR that adds an integer
+      // descriptor with `storage: 'global-config'` would otherwise hit
+      // the `: false` fallback in RESET and silently coerce to boolean.
+      // Tighten with a custom registry stub so this is enforced today.
+      const intGlobalDescriptor: SettingDescriptor = {
+        category: 'analytics',
+        default: 42,
+        description: 'fake integer global-config descriptor — test only',
+        key: '_test.integerGlobal',
+        max: 100,
+        min: 0,
+        restartRequired: false,
+        storage: 'global-config',
+        type: 'integer',
+      }
+      const facade = {
+        getCurrentAnalytics: async () => false,
+        setAnalyticsValue: async (value: boolean) => ({current: value, previous: false}),
+      }
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({
+        globalConfigHandler: facade,
+        registry: [intGlobalDescriptor],
+        store: localStore,
+        transport: localTransport,
+      }).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.RESET)
+      if (!handler) throw new Error('RESET handler not registered')
+      const result = (await handler({key: '_test.integerGlobal'}, 'test-client')) as SettingsResetResponse
+
+      expect(result.ok).to.be.false
+      if (!result.ok) {
+        expect(result.error.code).to.equal('misconfigured')
+        expect(result.error.key).to.equal('_test.integerGlobal')
+        expect(result.error.message.toLowerCase()).to.match(/boolean|facade/)
+      }
+    })
   })
 
   describe('analytics.status routing (M16.3 — production registry)', () => {

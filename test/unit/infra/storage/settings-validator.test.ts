@@ -356,6 +356,56 @@ describe('SettingsValidator', () => {
         expect(result.invalid).to.deep.equal([])
       })
 
+      it('still partitions writable keys correctly when mixed with global-config-stored entries (M16.2)', () => {
+        const mixedRegistry: readonly SettingDescriptor[] = [
+          {
+            category: 'analytics',
+            default: false,
+            description: 'analytics opt-in (global config)',
+            key: '_test.global',
+            restartRequired: false,
+            storage: 'global-config',
+            type: 'boolean',
+          },
+          {
+            category: 'concurrency',
+            default: 10,
+            description: 'file-stored writable',
+            key: '_test.writable',
+            max: 100,
+            min: 1,
+            restartRequired: true,
+            type: 'integer',
+          },
+        ]
+        const isolated = new SettingsValidator({registry: mixedRegistry})
+        const result = isolated.partition({
+          '_test.global': true,
+          '_test.writable': 25,
+        })
+        expect(result.valid).to.deep.equal({'_test.writable': 25})
+        expect(result.invalid).to.have.lengthOf(1)
+        expect(result.invalid[0].key).to.equal('_test.global')
+        expect(result.invalid[0].reason.toLowerCase()).to.match(/config\.json|global/)
+      })
+
+      it('throws InvalidSettingValueError when validate() is called on a global-config-stored key (M16.2)', () => {
+        const isolated = new SettingsValidator({
+          registry: [
+            {
+              category: 'analytics',
+              default: false,
+              description: 'analytics opt-in (global config)',
+              key: '_test.global',
+              restartRequired: false,
+              storage: 'global-config',
+              type: 'boolean',
+            },
+          ],
+        })
+        expect(() => isolated.validate('_test.global', true)).to.throw(InvalidSettingValueError, /config\.json|global/)
+      })
+
       it('still partitions writable keys correctly when mixed with readonly-info entries', () => {
         const mixedRegistry: readonly SettingDescriptor[] = [
           ...readonlyInfoRegistry,

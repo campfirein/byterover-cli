@@ -54,6 +54,7 @@ describe('FileSettingsStore', () => {
       expect(keys).to.deep.equal([
         'agentPool.maxConcurrentTasksPerProject',
         'agentPool.maxSize',
+        'analytics.enabled',
         'analytics.status',
         'llm.iterationBudgetMs',
         'llm.requestTimeoutMs',
@@ -61,9 +62,11 @@ describe('FileSettingsStore', () => {
         'update.checkForUpdates',
       ])
       for (const item of items) {
-        // readonly-info rows carry current/default both undefined; writable
-        // rows have current === default when no override is present.
-        if (item.key === 'analytics.status') {
+        // Non-file-stored rows carry current/default both undefined:
+        //   - analytics.status (readonly-info)
+        //   - analytics.enabled (storage=global-config)
+        // Writable file-stored rows have current === default when no override is present.
+        if (item.key === 'analytics.status' || item.key === 'analytics.enabled') {
           expect(item.current).to.equal(undefined)
           expect(item.default).to.equal(undefined)
         } else {
@@ -609,6 +612,97 @@ describe('FileSettingsStore', () => {
       it('still returns descriptor defaults for writable keys alongside readonly-info', async () => {
         const item = await isolatedStore.get('_test.writable')
         expect(item.key).to.equal('_test.writable')
+        expect(item.current).to.equal(10)
+        expect(item.default).to.equal(10)
+      })
+    })
+
+    describe('global-config storage (M16.2)', () => {
+      const globalConfigRegistry: readonly SettingDescriptor[] = [
+        {
+          category: 'analytics',
+          default: false,
+          description: 'analytics opt-in (global config)',
+          key: '_test.global',
+          restartRequired: false,
+          storage: 'global-config',
+          type: 'boolean',
+        },
+        {
+          category: 'concurrency',
+          default: 10,
+          description: 'test writable file-stored',
+          key: '_test.writable',
+          max: 100,
+          min: 1,
+          restartRequired: true,
+          type: 'integer',
+        },
+      ]
+
+      let gcStore: FileSettingsStore
+      let gcDir: string
+
+      beforeEach(async () => {
+        gcDir = join(tmpdir(), `brv-settings-gc-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+        await mkdir(gcDir, {recursive: true})
+        gcStore = new FileSettingsStore({
+          baseDir: gcDir,
+          registry: globalConfigRegistry,
+          validator: new SettingsValidator({registry: globalConfigRegistry}),
+        })
+      })
+
+      afterEach(async () => {
+        await rm(gcDir, {force: true, recursive: true})
+      })
+
+      it('list() returns current=undefined for a global-config-stored key', async () => {
+        const items = await gcStore.list()
+        const row = items.find((i) => i.key === '_test.global')
+        expect(row).to.exist
+        expect(row?.current).to.equal(undefined)
+        expect(row?.default).to.equal(undefined)
+        expect(row?.restartRequired).to.equal(false)
+      })
+
+      it('get() returns current=undefined for a global-config-stored key', async () => {
+        const item = await gcStore.get('_test.global')
+        expect(item.key).to.equal('_test.global')
+        expect(item.current).to.equal(undefined)
+        expect(item.default).to.equal(undefined)
+      })
+
+      it('set() throws InvalidSettingValueError for a global-config-stored key', async () => {
+        try {
+          await gcStore.set('_test.global', true)
+          expect.fail('expected throw')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidSettingValueError)
+        }
+      })
+
+      it('does NOT create the settings file when refusing a global-config write', async () => {
+        try {
+          await gcStore.set('_test.global', true)
+        } catch {
+          // expected
+        }
+
+        expect(existsSync(join(gcDir, SETTINGS_FILENAME))).to.equal(false)
+      })
+
+      it('reset() throws InvalidSettingValueError for a global-config-stored key', async () => {
+        try {
+          await gcStore.reset('_test.global')
+          expect.fail('expected throw')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidSettingValueError)
+        }
+      })
+
+      it('still serves writable file-stored keys alongside global-config keys', async () => {
+        const item = await gcStore.get('_test.writable')
         expect(item.current).to.equal(10)
         expect(item.default).to.equal(10)
       })

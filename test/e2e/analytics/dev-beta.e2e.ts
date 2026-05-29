@@ -110,11 +110,11 @@ function bootDaemon(env: NodeJS.ProcessEnv): {ok: boolean; reason?: string} {
 }
 
 function enableAnalytics(env: NodeJS.ProcessEnv): {ok: boolean; reason?: string} {
-  return runBrv(['analytics', 'enable', '--yes'], env)
+  return runBrv(['settings', 'set', 'analytics.enabled', 'true', '--yes'], env)
 }
 
 function disableAnalytics(env: NodeJS.ProcessEnv): {ok: boolean; reason?: string} {
-  return runBrv(['analytics', 'disable'], env)
+  return runBrv(['settings', 'set', 'analytics.enabled', 'false'], env)
 }
 
 function jsonlPath(dataDir: string): string {
@@ -264,7 +264,7 @@ async function startAcceptProxy(port: number): Promise<{close: () => Promise<voi
 }
 
 function analyticsStatusJson(env: NodeJS.ProcessEnv): Record<string, unknown> | undefined {
-  const result = spawnSync(process.execPath, [BRV_BIN, 'analytics', 'status', '--format', 'json'], {
+  const result = spawnSync(process.execPath, [BRV_BIN, 'settings', 'get', 'analytics.status', '--format', 'json'], {
     env,
     timeout: 15_000,
   })

@@ -185,7 +185,7 @@ describe('AnalyticsClient', () => {
     // Pre-M4.4 this test asserted "no-op when disabled" (no JSONL append,
     // no queue push, no resolver calls). Post-M4.4 the semantic is
     // "local tracking always; remote send only when enabled" — disable
-    // gates the FLUSH layer, not the TRACK layer. `brv analytics disable`
+    // gates the FLUSH layer, not the TRACK layer. `brv settings set analytics.enabled false`
     // means "stop shipping to remote", not "stop collecting locally".
     it('still tracks (JSONL + queue + resolvers) when isEnabled returns false; flush is the gate', async () => {
       const queue = new BoundedQueue()
@@ -1525,7 +1525,7 @@ describe('AnalyticsClient', () => {
 
   describe('M4.6 runtime state tracking', () => {
     /**
-     * `lastSuccessfulFlushAt` is the timestamp shown by `brv analytics status`
+     * `lastSuccessfulFlushAt` is the timestamp shown by `brv settings get analytics.status`
      * as "Last successful flush". Updated ONLY on a real clean ship —
      * same gate as M4.5's backoff `onSuccess()`. Aborted, 4xx, failed,
      * and empty-batch outcomes leave it untouched. The `now: () => number`

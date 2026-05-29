@@ -36,7 +36,23 @@ export interface SettingsItemDTO {
 }
 
 export interface SettingsErrorDTO {
-  code: 'invalid_value' | 'invalid_value_type' | 'read_only' | 'unknown_key'
+  /**
+   * Failure category for a settings:* request.
+   *
+   * - `'invalid_value'`: value violates a descriptor constraint (range,
+   *   coupling, fractional integer, etc).
+   * - `'invalid_value_type'`: value's runtime `typeof` did not match the
+   *   descriptor's declared type.
+   * - `'misconfigured'`: the daemon's wiring of this key is missing or
+   *   incompatible (e.g. a `storage: 'global-config'` descriptor with no
+   *   facade injected, or a non-boolean global-config descriptor — the
+   *   only facade is boolean-only today). Distinct from `invalid_value`
+   *   so logs and the WebUI can distinguish "user gave bad value" from
+   *   "daemon wiring is wrong".
+   * - `'read_only'`: caller tried to write or reset a `readonly-info` key.
+   * - `'unknown_key'`: registry has no descriptor for the requested key.
+   */
+  code: 'invalid_value' | 'invalid_value_type' | 'misconfigured' | 'read_only' | 'unknown_key'
   /** Expected runtime kind, only set when `code === 'invalid_value_type'`. */
   expected?: 'boolean' | 'integer'
   /** `typeof` of the offending value, only set when `code === 'invalid_value_type'`. */

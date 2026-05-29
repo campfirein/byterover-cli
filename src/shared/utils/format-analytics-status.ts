@@ -1,4 +1,4 @@
-/* eslint-disable camelcase -- legacy `brv analytics status --format json` envelope is snake_case. */
+/* eslint-disable camelcase -- legacy `brv settings get analytics.status --format json` envelope is snake_case. */
 import type {AnalyticsStatusResponse} from '../transport/events/analytics-events.js'
 
 import {AnalyticsStatusResponseSchema} from '../transport/events/analytics-events.js'
@@ -39,7 +39,7 @@ export function formatDelayMs(ms: number): string {
 
 /**
  * Renders the analytics-status snapshot as the multi-line text block the
- * legacy `brv analytics status` command printed. The output is consumed by
+ * legacy `brv analytics status` (now `brv settings get analytics.status`) printed. The output is consumed by
  * both `brv settings get analytics.status` and `brv settings list`
  * (per-key readonly-info formatter) — and by the TUI settings page via
  * the same shared registry.
@@ -67,7 +67,8 @@ export function formatAnalyticsStatusText(value: unknown, now: () => number = Da
 
 /**
  * JSON wire shape matching the legacy `brv analytics status --format json`
- * envelope (snake_case fields). Consumed by
+ * envelope (now `brv settings get analytics.status --format json`, snake_case
+ * fields preserved). Consumed by
  * `brv settings get analytics.status --format json` so callers depending
  * on the legacy programmatic shape do not break when the legacy command
  * is deleted in M16.4.

@@ -11,7 +11,7 @@
  * callbacks.
  *
  * The reachability state (healthy / degraded / unreachable) used by
- * `brv analytics status` (M4.6) is DERIVED from `consecutiveFailures()`
+ * `brv settings get analytics.status` (M4.6) is DERIVED from `consecutiveFailures()`
  * by the caller, not exposed here. Mapping (M4.6 owns the labels):
  *   - 0 failures → healthy
  *   - 1-2 failures → degraded

@@ -11,7 +11,7 @@ export const AnalyticsEvents = {
 
 /**
  * M4.6 `analytics:status` response. Surfaces operational metrics for
- * `brv analytics status`: enabled flag (from GlobalConfig), client
+ * `brv settings get analytics.status`: enabled flag (from GlobalConfig), client
  * runtime state (last-flush timestamp, JSONL pending depth, dropped
  * count), backoff state (M4.5 policy + derived reachability label),
  * and the analytics endpoint URL.

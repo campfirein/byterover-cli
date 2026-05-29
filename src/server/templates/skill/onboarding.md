@@ -287,14 +287,14 @@ After the tour closes, ask **once** whether the user wants to share anonymous us
 
 Place the ask _after_ the "Either way, you're set" close, as a single follow-up message — not bundled into Message 3:
 
-> "One optional ask before you go: if you'd like to help us improve ByteRover, you can opt in to share anonymous usage telemetry — things like which commands ran and how long they took. No query content, file contents, or memory is ever sent. You can change your mind anytime with `brv analytics disable`.
+> "One optional ask before you go: if you'd like to help us improve ByteRover, you can opt in to share anonymous usage telemetry — things like which commands ran and how long they took. No query content, file contents, or memory is ever sent. You can change your mind anytime with `brv settings set analytics.enabled false`.
 >
 > Want to opt in? Either answer is fine."
 
 Handling the response:
 
-- **Yes** → run `brv analytics enable --yes` (or instruct the user to run it if you cannot), then confirm in one line: "Done — thanks. `brv analytics disable` reverses it anytime."
-- **No / silence / "maybe later"** → one-line acknowledgement ("No problem — `brv analytics enable` is there whenever.") and stop. Do not re-ask in future sessions.
+- **Yes** → run `brv settings set analytics.enabled true --yes` (or instruct the user to run it if you cannot), then confirm in one line: "Done — thanks. `brv settings set analytics.enabled false` reverses it anytime."
+- **No / silence / "maybe later"** → one-line acknowledgement ("No problem — `brv settings set analytics.enabled true` is there whenever.") and stop. Do not re-ask in future sessions.
 
 Why this beat exists:
 
@@ -304,7 +304,7 @@ Why this beat exists:
 
 Skip the ask entirely if:
 
-- Sharing is already enabled (the `brv analytics status` flag is true).
+- Sharing is already enabled (`brv settings get analytics.enabled` returns true).
 - The user signaled disengagement at the close ("ok", "got it", "thanks", no further input). Don't pull a yes/no out of someone who's already left.
 
 ## What NOT To Do

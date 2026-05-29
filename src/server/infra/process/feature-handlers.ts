@@ -277,7 +277,7 @@ export async function setupFeatureHandlers({
   // M4.4: close the global-config-handler ↔ analyticsClient cycle.
   // The handler was constructed earlier (so its sync cache was
   // populated before the client read it); now that the client
-  // exists, register it so `brv analytics disable` can call
+  // exists, register it so `brv settings set analytics.enabled false` can call
   // `abort()` to cancel any in-flight HTTP.
   globalConfigHandler.setAnalyticsClient(analyticsClient)
 
@@ -293,7 +293,7 @@ export async function setupFeatureHandlers({
   // analyticsClient is in scope for M15.4 `setting_changed` / `setting_reset`
   // emits. M16.3 wires the `analytics.status` readonly-info provider so
   // `brv settings get analytics.status` returns the same operational
-  // snapshot as the legacy `brv analytics status` command.
+  // snapshot as the legacy `brv analytics status` (now `brv settings get analytics.status`).
   const analyticsStatusSnapshotDeps = {
     analyticsClient,
     backoffPolicy: analyticsBackoffPolicy,
@@ -302,6 +302,11 @@ export async function setupFeatureHandlers({
   }
   new SettingsHandler({
     analyticsClient,
+    // Route `analytics.enabled` GET/SET/RESET/LIST through the
+    // global-config handler so the canonical storage in config.json, the
+    // device-id seeding race fix, the analytics cache, and the
+    // abort-on-disable side-effect all stay unchanged.
+    globalConfigHandler,
     infoProviders: new Map([
       ['analytics.status', async () => buildAnalyticsStatusSnapshot(analyticsStatusSnapshotDeps)],
     ]),
@@ -313,7 +318,7 @@ export async function setupFeatureHandlers({
   // as the AnalyticsClient so reads see exactly what trackAsync persisted.
   new AnalyticsListHandler({jsonlStore: jsonlAnalyticsStore, transport}).setup()
 
-  // M4.6: `brv analytics status` read API. Composes runtime state
+  // M4.6: `brv settings get analytics.status` read API. Composes runtime state
   // (client) + backoff state (policy) + enabled flag (config) + endpoint
   // (env) into one wire response. Endpoint is `envConfig.analyticsBaseUrl`
   // or empty string; the handler substitutes "(not configured)" for the
