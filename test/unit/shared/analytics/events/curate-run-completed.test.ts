@@ -47,6 +47,14 @@ describe('CurateRunCompletedSchema', () => {
       }
       expect(CurateRunCompletedSchema.safeParse(zeroed).success).to.equal(true)
     })
+
+    it('accepts a populated space_id', () => {
+      expect(CurateRunCompletedSchema.safeParse({...baseValid, space_id: 'space-uuid-abc'}).success).to.equal(true)
+    })
+
+    it('accepts payloads with no space_id field (standalone project)', () => {
+      expect(CurateRunCompletedSchema.safeParse(baseValid).success).to.equal(true)
+    })
   })
 
   describe('invalid payloads', () => {
@@ -89,6 +97,11 @@ describe('CurateRunCompletedSchema', () => {
 
     it('rejects unknown extra fields (strict)', () => {
       expect(CurateRunCompletedSchema.safeParse({...baseValid, mystery_field: 'oops'}).success).to.equal(false)
+    })
+
+    it('rejects empty / over-cap space_id', () => {
+      expect(CurateRunCompletedSchema.safeParse({...baseValid, space_id: ''}).success).to.equal(false)
+      expect(CurateRunCompletedSchema.safeParse({...baseValid, space_id: 'x'.repeat(65)}).success).to.equal(false)
     })
   })
 })

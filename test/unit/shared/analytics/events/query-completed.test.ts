@@ -94,6 +94,14 @@ describe('QueryCompletedSchema', () => {
       expect(QueryCompletedSchema.safeParse({...baseValid, read_paths_with_metadata: entries}).success).to.equal(true)
     })
 
+    it('accepts a populated space_id', () => {
+      expect(QueryCompletedSchema.safeParse({...baseValid, space_id: 'space-uuid-abc'}).success).to.equal(true)
+    })
+
+    it('accepts payloads omitting space_id (standalone project)', () => {
+      expect(QueryCompletedSchema.safeParse(baseValid).success).to.equal(true)
+    })
+
     it('accepts related_paths with up to 50 structured entries', () => {
       const fifty = Array.from({length: 50}, (_, i) => ({
         keywords: [],
@@ -180,6 +188,11 @@ describe('QueryCompletedSchema', () => {
 
     it('rejects unknown extra fields at top level (strict)', () => {
       expect(QueryCompletedSchema.safeParse({...baseValid, mystery_field: 'oops'}).success).to.equal(false)
+    })
+
+    it('rejects empty / over-cap space_id', () => {
+      expect(QueryCompletedSchema.safeParse({...baseValid, space_id: ''}).success).to.equal(false)
+      expect(QueryCompletedSchema.safeParse({...baseValid, space_id: 'x'.repeat(65)}).success).to.equal(false)
     })
 
     it('rejects unknown extra fields inside an entry (strict)', () => {

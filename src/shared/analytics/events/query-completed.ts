@@ -67,6 +67,13 @@ export const QueryCompletedSchema = z
     read_paths_with_metadata: z.array(ReadPathWithMetadataSchema).max(10).optional(),
     read_tool_call_count: z.number().int().nonnegative(),
     search_call_count: z.number().int().nonnegative(),
+    /**
+     * Active Context Hub space ID for the project, when connected. Sourced
+     * from `.brv/config.json#spaceId` at emit time. Omitted (not empty
+     * string) when the project is standalone or the lookup fails — never
+     * blocks an emit on space metadata.
+     */
+    space_id: z.string().min(1).max(64).optional(),
     task_id: z.string().min(1),
     task_type: z.enum(TASK_TYPE_VALUES),
     tier: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)]).optional(),

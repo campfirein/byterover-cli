@@ -214,6 +214,15 @@ const isCurateLiteral = (value: string): value is CurateTaskTypeLiteral =>
  */
 type AnalyticsHookDeps = {
   /**
+   * Look up the active Context Hub space ID for `projectPath` at emit
+   * time. Returns `undefined` when the project is unconnected, the
+   * lookup fails, or the daemon couldn't resolve a project path —
+   * a missing space_id NEVER blocks an emit. Production wires through
+   * `projectStateLoader.getProjectConfig` in `brv-server.ts`; tests
+   * default to a no-op that always returns `undefined`.
+   */
+  getSpaceId?: (projectPath: string | undefined) => Promise<string | undefined>
+  /**
    * Returns the daemon's cached analytics-enabled flag. Used by M12.3 to
    * short-circuit frontmatter file reads when analytics is disabled (avoids
    * wasted disk I/O on top of the no-op `track()`). Defaults to `() => true`
@@ -232,6 +241,7 @@ type AnalyticsHookDeps = {
 export class AnalyticsHook implements ITaskLifecycleHook {
   /** Lazy-injected by the daemon after `setupFeatureHandlers` constructs the client. */
   private analyticsClient?: IAnalyticsClient
+  private readonly getSpaceId: (projectPath: string | undefined) => Promise<string | undefined>
   private readonly isEnabled: () => boolean
   /**
    * Per-task FIFO of in-flight `onToolResult` processing. Without this the
@@ -248,6 +258,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
   private readonly tasks = new Map<string, TaskAnalyticsState>()
 
   constructor(deps: AnalyticsHookDeps = {}) {
+    this.getSpaceId = deps.getSpaceId ?? (async () => {})
     this.isEnabled = deps.isEnabled ?? (() => true)
     this.readFile = deps.readFile ?? readFileAsync
   }
@@ -277,14 +288,16 @@ export class AnalyticsHook implements ITaskLifecycleHook {
 
       if (state.flavor === 'curate') {
         const outcome = state.counters.failed > 0 ? 'partial' : 'completed'
+        const spaceId = await this.resolveSpaceId(task.projectPath ?? state.projectPath)
         this.emit(
           AnalyticsEventNames.CURATE_RUN_COMPLETED,
-          this.buildCurateRunPayload({outcome, state, task, taskId}),
+          this.buildCurateRunPayload({outcome, spaceId, state, task, taskId}),
         )
       } else {
+        const spaceId = await this.resolveSpaceId(task.projectPath)
         this.emit(
           AnalyticsEventNames.QUERY_COMPLETED,
-          await this.buildQueryCompletedPayload({outcome: 'completed', state, task, taskId}),
+          await this.buildQueryCompletedPayload({outcome: 'completed', spaceId, state, task, taskId}),
         )
       }
     }
@@ -379,11 +392,13 @@ export class AnalyticsHook implements ITaskLifecycleHook {
 
   private buildCurateRunPayload({
     outcome,
+    spaceId,
     state,
     task,
     taskId,
   }: {
     outcome: 'cancelled' | 'completed' | 'error' | 'partial'
+    spaceId: string | undefined
     state: CurateTaskAnalyticsState
     task: TaskInfo
     taskId: string
@@ -398,6 +413,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
       outcome,
       pending_review_count: state.counters.pendingReview,
       ...projectPathHashOptional(task.projectPath ?? state.projectPath),
+      ...(spaceId === undefined ? {} : {space_id: spaceId}),
       task_id: taskId,
       task_type: toAnalyticsTaskType(state.taskType),
     }
@@ -405,11 +421,13 @@ export class AnalyticsHook implements ITaskLifecycleHook {
 
   private async buildQueryCompletedPayload({
     outcome,
+    spaceId,
     state,
     task,
     taskId,
   }: {
     outcome: 'cancelled' | 'completed' | 'error'
+    spaceId: string | undefined
     state: QueryTaskAnalyticsState
     task: TaskInfo
     taskId: string
@@ -491,6 +509,7 @@ export class AnalyticsHook implements ITaskLifecycleHook {
       ...(readPathsWithMetadata.length > 0 ? {read_paths_with_metadata: readPathsWithMetadata} : {}),
       read_tool_call_count: readToolCallCount,
       search_call_count: searchCallCount,
+      ...(spaceId === undefined ? {} : {space_id: spaceId}),
       task_id: taskId,
       task_type: toAnalyticsTaskType(task.type),
       ...(tier === undefined ? {} : {tier}),
@@ -506,14 +525,16 @@ export class AnalyticsHook implements ITaskLifecycleHook {
     await this.pendingByTask.get(taskId)
 
     if (state.flavor === 'curate') {
+      const spaceId = await this.resolveSpaceId(task.projectPath ?? state.projectPath)
       this.emit(
         AnalyticsEventNames.CURATE_RUN_COMPLETED,
-        this.buildCurateRunPayload({outcome, state, task, taskId}),
+        this.buildCurateRunPayload({outcome, spaceId, state, task, taskId}),
       )
     } else {
+      const spaceId = await this.resolveSpaceId(task.projectPath)
       this.emit(
         AnalyticsEventNames.QUERY_COMPLETED,
-        await this.buildQueryCompletedPayload({outcome, state, task, taskId}),
+        await this.buildQueryCompletedPayload({outcome, spaceId, state, task, taskId}),
       )
     }
   }
@@ -688,6 +709,24 @@ export class AnalyticsHook implements ITaskLifecycleHook {
       // ENOENT, EACCES, permission, malformed YAML / HTML — all silently
       // treated as "no frontmatter". No retry, no log noise.
       return {}
+    }
+  }
+
+  /**
+   * Resolve the active space_id without ever throwing — a getSpaceId
+   * rejection (config-load failure, projectStateLoader race, etc.) MUST
+   * NOT take down the terminal emit. Anything other than a non-empty
+   * string normalizes to `undefined` so the payload spread omits the field.
+   */
+  private async resolveSpaceId(projectPath: string | undefined): Promise<string | undefined> {
+    try {
+      const value = await this.getSpaceId(projectPath)
+      return typeof value === 'string' && value.length > 0 ? value : undefined
+    } catch (error) {
+      processLog(
+        `AnalyticsHook: getSpaceId failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return undefined
     }
   }
 }

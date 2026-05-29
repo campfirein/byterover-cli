@@ -81,6 +81,12 @@ const defer = <T>(): Deferred<T> => {
 
 const buildFrontmatterDoc = (tag: string): string => `---\ntags: ["${tag}"]\n---\nbody\n`
 
+const findEmit = (stub: sinon.SinonStub, event: string): Record<string, unknown> => {
+  const call = stub.getCalls().find((c) => c.args[0] === event)
+  if (!call) throw new Error(`expected ${event} emit not found`)
+  return call.args[1] as Record<string, unknown>
+}
+
 const stubReadFileFromQueue =
   (...queue: Array<Promise<string>>): ((p: string) => Promise<string>) =>
   () => {
@@ -810,6 +816,93 @@ describe('AnalyticsHook', () => {
       // Re-creating the task after cleanup must NOT replay either; it only
       // adds another TASK_CREATED (filtered out below).
       expect(filterM12(bundle.trackStub), 'no replay after cleanup').to.have.lengthOf(2)
+    })
+  })
+
+  describe('space_id stamping', () => {
+    it('stamps space_id on curate_run_completed when getSpaceId returns a value', async () => {
+      const bundle = buildAnalyticsClient()
+      const spacedHook = new AnalyticsHook({getSpaceId: async () => 'space-abc'})
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildCurateTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskCompleted(task.taskId, '', task)
+
+      const curateProps = findEmit(bundle.trackStub, AnalyticsEventNames.CURATE_RUN_COMPLETED)
+      expect(curateProps.space_id).to.equal('space-abc')
+    })
+
+    it('stamps space_id on query_completed when getSpaceId returns a value', async () => {
+      const bundle = buildAnalyticsClient()
+      const spacedHook = new AnalyticsHook({getSpaceId: async () => 'space-xyz'})
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildQueryTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskCompleted(task.taskId, '', task)
+
+      const queryProps = findEmit(bundle.trackStub, AnalyticsEventNames.QUERY_COMPLETED)
+      expect(queryProps.space_id).to.equal('space-xyz')
+    })
+
+    it('omits space_id when getSpaceId returns undefined (standalone project)', async () => {
+      const bundle = buildAnalyticsClient()
+      const spacedHook = new AnalyticsHook({async getSpaceId() {}})
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildCurateTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskCompleted(task.taskId, '', task)
+
+      const curateProps = findEmit(bundle.trackStub, AnalyticsEventNames.CURATE_RUN_COMPLETED)
+      expect(curateProps).to.not.have.property('space_id')
+    })
+
+    it('omits space_id when getSpaceId returns an empty string', async () => {
+      const bundle = buildAnalyticsClient()
+      const spacedHook = new AnalyticsHook({getSpaceId: async () => ''})
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildQueryTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskCompleted(task.taskId, '', task)
+
+      const queryProps = findEmit(bundle.trackStub, AnalyticsEventNames.QUERY_COMPLETED)
+      expect(queryProps).to.not.have.property('space_id')
+    })
+
+    it('omits space_id and still emits when getSpaceId throws', async () => {
+      const bundle = buildAnalyticsClient()
+      const spacedHook = new AnalyticsHook({
+        async getSpaceId() {
+          throw new Error('config disk unreadable')
+        },
+      })
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildCurateTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskCompleted(task.taskId, '', task)
+
+      const curateProps = findEmit(bundle.trackStub, AnalyticsEventNames.CURATE_RUN_COMPLETED)
+      expect(curateProps).to.not.have.property('space_id')
+      // Funnel emit still lands — getSpaceId failure must not block the run-completion emit.
+      expect(curateProps.task_type).to.equal('curate')
+    })
+
+    it('also stamps space_id on the failure-path emits (onTaskError / onTaskCancelled)', async () => {
+      const bundle = buildAnalyticsClient()
+      const spacedHook = new AnalyticsHook({getSpaceId: async () => 'space-fail'})
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildCurateTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskError(task.taskId, 'boom', task)
+
+      const curateProps = findEmit(bundle.trackStub, AnalyticsEventNames.CURATE_RUN_COMPLETED)
+      expect(curateProps.outcome).to.equal('error')
+      expect(curateProps.space_id).to.equal('space-fail')
     })
   })
 })
