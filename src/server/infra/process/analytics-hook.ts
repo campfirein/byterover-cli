@@ -198,21 +198,6 @@ const isCurateLiteral = (value: string): value is CurateTaskTypeLiteral =>
   CURATE_TASK_TYPE_SET.has(value)
 
 /**
- * Lifecycle hook that emits per-task analytics (curate_operation_applied,
- * curate_run_completed, query_completed) into the daemon's
- * `IAnalyticsClient`. Pure in-memory state keyed by `taskId`; no I/O of its own.
- *
- * Wired as a peer to `CurateLogHandler` / `QueryLogHandler` /
- * `TaskHistoryHook` inside `TaskRouter.lifecycleHooks[]`. Does NOT modify the
- * other handlers — read paths and curate-op accumulators are recomputed here
- * via the shared `extractCurateOperations` parser and `task.toolCalls[]`
- * shape, so analytics emit is decoupled from log persistence.
- *
- * M12.2 emits skeleton payloads (no frontmatter harvest). M12.3 layers
- * `tags` / `keywords` / `related` arrays onto the curate-op and per-read-path
- * payloads via a daemon-side post-op file read.
- */
-/**
  * Bundle of project-scoped identity fields stamped on terminal emits.
  * Each field is independently optional — a project may have a teamId
  * without a spaceId (mid-onboarding) or neither (standalone).
@@ -233,6 +218,15 @@ type AnalyticsHookDeps = {
    *
    * Bundled (instead of one accessor per field) so a single config read
    * serves both stamps at terminal time.
+   *
+   * Staleness contract: `projectStateLoader` caches the config in-process
+   * and only invalidates when `GET_PROJECT_CONFIG` fires (agent-process
+   * startup). If `.brv/config.json` is rewritten mid-session by `brv login`
+   * or `brv space switch`, this accessor will keep returning the
+   * last-known-good identity until the next invalidation. That is the
+   * accepted contract for funnel analytics — last-known-good is fine.
+   * Do NOT reuse this accessor for billing or audit attribution without
+   * routing through `shouldInvalidate`.
    */
   getIdentity?: (projectPath: string | undefined) => Promise<ProjectIdentity>
   /**
@@ -251,6 +245,21 @@ type AnalyticsHookDeps = {
   readFile?: (filePath: string, encoding: 'utf8') => Promise<string>
 }
 
+/**
+ * Lifecycle hook that emits per-task analytics (curate_operation_applied,
+ * curate_run_completed, query_completed) into the daemon's
+ * `IAnalyticsClient`. Pure in-memory state keyed by `taskId`; no I/O of its own.
+ *
+ * Wired as a peer to `CurateLogHandler` / `QueryLogHandler` /
+ * `TaskHistoryHook` inside `TaskRouter.lifecycleHooks[]`. Does NOT modify the
+ * other handlers — read paths and curate-op accumulators are recomputed here
+ * via the shared `extractCurateOperations` parser and `task.toolCalls[]`
+ * shape, so analytics emit is decoupled from log persistence.
+ *
+ * M12.2 emits skeleton payloads (no frontmatter harvest). M12.3 layers
+ * `tags` / `keywords` / `related` arrays onto the curate-op and per-read-path
+ * payloads via a daemon-side post-op file read.
+ */
 export class AnalyticsHook implements ITaskLifecycleHook {
   /** Lazy-injected by the daemon after `setupFeatureHandlers` constructs the client. */
   private analyticsClient?: IAnalyticsClient
@@ -732,8 +741,13 @@ export class AnalyticsHook implements ITaskLifecycleHook {
    * a getIdentity rejection (config-load failure, projectStateLoader race,
    * etc.) MUST NOT take down the terminal emit. Empty strings normalize to
    * `undefined` per-field so the payload spread omits each independently.
+   *
+   * Short-circuits on `!isEnabled()` so the daemon doesn't touch the
+   * project-state loader on every task termination when analytics is off.
+   * Mirrors the `readFrontmatterFields` precedent.
    */
   private async resolveIdentity(projectPath: string | undefined): Promise<ProjectIdentity> {
+    if (!this.isEnabled()) return {}
     try {
       const raw = await this.getIdentity(projectPath)
       return {

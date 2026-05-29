@@ -938,5 +938,27 @@ describe('AnalyticsHook', () => {
       expect(curateProps.space_id).to.equal('space-fail')
       expect(curateProps.team_id).to.equal('team-fail')
     })
+
+    it('does not invoke getIdentity when analytics is disabled (short-circuit)', async () => {
+      const bundle = buildAnalyticsClient()
+      let calls = 0
+      const spacedHook = new AnalyticsHook({
+        async getIdentity() {
+          calls++
+          return {spaceId: 'should-not-stamp', teamId: 'should-not-stamp'}
+        },
+        isEnabled: () => false,
+      })
+      spacedHook.setAnalyticsClient(bundle.client)
+
+      const task = buildCurateTask()
+      await spacedHook.onTaskCreate(task)
+      await spacedHook.onTaskCompleted(task.taskId, '', task)
+
+      expect(calls, 'getIdentity skipped when analytics disabled').to.equal(0)
+      const curateProps = findEmit(bundle.trackStub, AnalyticsEventNames.CURATE_RUN_COMPLETED)
+      expect(curateProps).to.not.have.property('space_id')
+      expect(curateProps).to.not.have.property('team_id')
+    })
   })
 })
