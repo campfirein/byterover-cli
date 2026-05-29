@@ -1,4 +1,3 @@
- 
 /**
  * Internal analytics event shape, before identity stamping. This is the wire-
  * bound event type: `AnalyticsBatch.events` carries `AnalyticsEventWithIdentity`

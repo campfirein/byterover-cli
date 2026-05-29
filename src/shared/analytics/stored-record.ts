@@ -100,8 +100,16 @@ export type WireAnalyticsEvent = Pick<StoredAnalyticsRecord, 'identity' | 'name'
  * a stored `created_at`, derives one from the numeric `timestamp` so the
  * wire payload is always complete. The UTC instant is exact, but the offset
  * in the derived string reflects the daemon's local timezone at send time,
- * not the user's timezone at original capture. The backend stores the
- * normalized UTC instant, so this offset drift is informational only.
+ * not the user's timezone at original capture.
+ *
+ * Note: `formatISO` (date-fns) emits second precision and drops the
+ * millisecond component, so a derived `created_at` reparses to an instant
+ * up to 999ms earlier than the stored `timestamp`. The backend's UTC
+ * normalization tolerates this; the local `timestamp` remains the
+ * authoritative sub-second sort key on disk.
+ *
+ * The backend stores the normalized UTC instant, so both the offset drift
+ * and the second-precision truncation are informational only.
  */
 export function toWireEvent(record: StoredAnalyticsRecord): WireAnalyticsEvent {
   return {
