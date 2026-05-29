@@ -392,10 +392,10 @@ async function main(): Promise<void> {
     // lifecycleHooks[] but still observe the live config.
     let isAnalyticsEnabledRef: () => boolean = () => true
     const analyticsHook = new AnalyticsHook({
-      async getSpaceId(projectPath) {
-        if (!projectPath) return
+      async getIdentity(projectPath) {
+        if (!projectPath) return {}
         const config = await projectStateLoader.getProjectConfig(projectPath)
-        return config?.spaceId
+        return {spaceId: config?.spaceId, teamId: config?.teamId}
       },
       isEnabled: () => isAnalyticsEnabledRef(),
     })

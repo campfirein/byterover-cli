@@ -37,6 +37,12 @@ export const CurateRunCompletedSchema = z
     space_id: z.string().min(1).max(64).optional(),
     task_id: z.string().min(1),
     task_type: z.enum(TASK_TYPE_VALUES),
+    /**
+     * Active team ID for the project, when connected. Independent of
+     * `space_id` — a project can have a team without a space (intermediate
+     * onboarding state). Same opaque-ID shape and emit semantics.
+     */
+    team_id: z.string().min(1).max(64).optional(),
   })
   .strict()
 
