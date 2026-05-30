@@ -52,8 +52,11 @@ import {
 const MAX_CONTEXT_TREE_FILES = 10_000
 const DEFAULT_CACHE_TTL_MS = 5000
 
-/** Bump when MINISEARCH_OPTIONS fields/boost change to invalidate cached indexes */
-const INDEX_SCHEMA_VERSION = 6
+/**
+ * Bump when MINISEARCH_OPTIONS fields/boost change to invalidate cached indexes.
+ *  v7 (ENG-3021): include `<img>` alt + src in HTML topic indexed content.
+ */
+const INDEX_SCHEMA_VERSION = 7
 
 /** Only include results whose normalized score is at least this fraction of the top result's score */
 const SCORE_GAP_RATIO = 0.7
@@ -611,7 +614,12 @@ async function readIndexableContent(
       // a 3x field boost via the `title` column and is intentionally
       // omitted here.
       const {keywords, related, summary, tags} = parsed.topicAttributes
-      const indexedContent = [parsed.bodyText, summary, tags, keywords, related]
+      // `parsed.imageContent` aggregates every `<img>`'s alt + src in
+      // document order. Without it, queries for image alt phrases or URL
+      // tokens silently miss image-bearing topics — the writer accepts
+      // `<img>` but `getInnerText` (which feeds `bodyText`) returns
+      // nothing for void elements. See ENG-3021 / inline-html milestone.
+      const indexedContent = [parsed.bodyText, summary, tags, keywords, related, parsed.imageContent]
         .filter((part): part is string => typeof part === 'string' && part.length > 0)
         .join(' ')
       return {
