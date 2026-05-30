@@ -103,9 +103,9 @@ describe('format-settings (tui)', () => {
       expect(hint).to.include('background')
     })
 
-    it('returns a read-only hint in browse mode when the focused row is readonly-info (M16.1)', () => {
+    it('returns a view hint (no edit/reset) in browse mode when the focused row is readonly-info (M16.1)', () => {
       const hint = bottomHintFor('browse', '_test.snapshot', 'readonly-info')
-      expect(hint).to.include('read-only')
+      expect(hint).to.include('Enter view')
       expect(hint).to.not.include('Enter edit')
       expect(hint).to.not.include('R reset')
     })

@@ -300,6 +300,17 @@ describe('format-settings (shared)', () => {
       }
     })
 
+    it('keeps the full multi-line value in displayDetail; displayCurrent is only the headline', () => {
+      registerReadonlyInfoFormatter('_test.snapshot', () => 'Headline\nline 2\nline 3')
+      try {
+        const row = buildSettingsRows([makeReadonlyInfoItem({queueDepth: 7})])[0]
+        expect(row.displayCurrent).to.equal('Headline')
+        expect(row.displayDetail).to.equal('Headline\nline 2\nline 3')
+      } finally {
+        unregisterReadonlyInfoFormatter('_test.snapshot')
+      }
+    })
+
     it('falls back to JSON.stringify when no per-key formatter is registered', () => {
       const row = buildSettingsRows([makeReadonlyInfoItem({queueDepth: 3})])[0]
       expect(row.displayCurrent).to.equal('{"queueDepth":3}')

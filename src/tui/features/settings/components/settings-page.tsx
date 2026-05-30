@@ -12,7 +12,7 @@ import {useTheme} from '../../../hooks/index.js'
 import {useGetSettings, useResetSetting, useSetSetting} from '../api/settings-api.js'
 import {bottomHintFor, groupRowsByCategory, preFillBufferFor} from '../utils/format-settings.js'
 
-type Mode = 'browse' | 'confirm-disclosure' | 'edit' | 'saving'
+type Mode = 'browse' | 'confirm-disclosure' | 'detail' | 'edit' | 'saving'
 
 export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): React.ReactNode {
   const {data, error, isLoading} = useGetSettings()
@@ -52,7 +52,7 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
   // `confirm-disclosure` mode short-circuits that render entirely (its
   // own hint is inlined below), so it never reaches `bottomHintFor`.
   const hintMode: 'browse' | 'edit' | 'edit-error' | 'saving' =
-    mode === 'confirm-disclosure'
+    mode === 'confirm-disclosure' || mode === 'detail'
       ? 'browse'
       : mode === 'edit' && rowError !== undefined
         ? 'edit-error'
@@ -199,8 +199,10 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
       if (key.return || input === ' ') {
         const row = rows[cursor]
         if (row.type === 'readonly-info') {
-          // Read-only rows refuse every mutation keybind: no toggle, no
-          // edit, no reset. Selection still works (Up/Down navigate).
+          // Read-only rows can't be edited/toggled/reset, but Enter opens a
+          // detail panel showing the full multi-line value (the list row only
+          // shows the headline). Esc closes the panel.
+          setMode('detail')
           return
         }
 
@@ -255,6 +257,16 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
       if (key.escape) onCancel()
     },
     {isActive: mode === 'saving'},
+  )
+
+  // Detail panel for read-only rows (e.g. analytics.status): shows the full
+  // multi-line value the list row truncates to a headline. Esc returns to the
+  // list (does NOT exit the page).
+  useInput(
+    (_input, key) => {
+      if (key.escape) setMode('browse')
+    },
+    {isActive: mode === 'detail'},
   )
 
   // Disclosure confirm: Enter accepts and flips the flag, Esc cancels
@@ -377,6 +389,10 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
     )
   }
 
+  // Detail overlay for a read-only row: the full multi-line value
+  // (`displayDetail`) the list could only show the headline of.
+  if (mode === 'detail') return renderDetailOverlay(rows[cursor], colors.primary)
+
   const keyWidth = Math.max(40, ...rows.map((r) => r.label.length))
   const currentWidth = Math.max(7, ...rows.map((r) => r.displayCurrent.length))
   const defaultWidth = Math.max(8, ...rows.map((r) => (r.displayDefault ?? '').length))
@@ -432,6 +448,29 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
 
       <Box marginTop={1}>
         <Text>{bottomHintFor(hintMode, focusedRow?.key, focusedRow?.type)}</Text>
+      </Box>
+    </Box>
+  )
+}
+
+function renderDetailOverlay(detailRow: SettingsRow | undefined, primaryColor: string): React.ReactNode {
+  const detailLines = (detailRow?.displayDetail ?? detailRow?.displayCurrent ?? '').split('\n')
+  return (
+    <Box flexDirection="column">
+      <Box flexShrink={0} marginBottom={1}>
+        <Text>{detailRow?.label ?? 'DETAIL'}</Text>
+      </Box>
+      <Box flexDirection="column" flexShrink={1}>
+        {detailLines.map((line, idx) => (
+          <Text key={`detail-${idx}`} wrap="truncate-end">
+            {line.length === 0 ? ' ' : line}
+          </Text>
+        ))}
+      </Box>
+      <Box flexShrink={0} marginTop={1}>
+        <Text bold color={primaryColor}>
+          Esc: close
+        </Text>
       </Box>
     </Box>
   )

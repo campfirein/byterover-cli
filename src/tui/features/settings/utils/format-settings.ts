@@ -41,7 +41,7 @@ export function bottomHintFor(
   switch (mode) {
     case 'browse': {
       if (focusedRowType === 'readonly-info') {
-        return 'Up/Down move | Esc exit | (read-only)'
+        return 'Up/Down move | Enter view | Esc exit'
       }
 
       return 'Up/Down move | Enter edit | R reset | Esc exit'

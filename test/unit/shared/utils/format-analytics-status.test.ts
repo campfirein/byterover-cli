@@ -27,14 +27,14 @@ describe('format-analytics-status (M16.3)', () => {
  describe('formatAnalyticsStatusText', () => {
   const format = formatAt
 
-  it('disabled state: only shows "Analytics: disabled" (other fields suppressed)', () => {
+  it('disabled state: only shows "Analytics sharing: disabled" (other fields suppressed)', () => {
     const text = format({...HEALTHY, enabled: false})
-    expect(text).to.equal('Analytics: disabled')
+    expect(text).to.equal('Analytics sharing: disabled')
   })
 
   it('enabled, never flushed: "Last successful flush: never"', () => {
     const text = format({...HEALTHY, lastFlushAt: undefined})
-    expect(text).to.include('Analytics: enabled')
+    expect(text).to.include('Analytics sharing: enabled')
     expect(text).to.include('Last successful flush: never')
   })
 

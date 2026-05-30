@@ -21,6 +21,12 @@ export interface SettingsRow {
   readonly description: string
   readonly displayCurrent: string
   readonly displayDefault?: string
+  /**
+   * Full multi-line value for readonly-info rows (e.g. `analytics.status`),
+   * shown in the TUI detail panel on Enter. `displayCurrent` is only its
+   * headline so the list row stays single-line. Undefined for editable rows.
+   */
+  readonly displayDetail?: string
   readonly displayRange: string
   readonly key: string
   readonly label: string

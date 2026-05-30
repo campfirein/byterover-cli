@@ -138,14 +138,16 @@ function toBooleanRow(item: SettingsItemDTO, current: boolean, defaultValue: boo
 function toReadonlyInfoRow(item: SettingsItemDTO): SettingsRow {
   // Row views (CLI list, TUI page) are single-line per row. If the per-key
   // formatter returns a multi-line snapshot (e.g. `analytics.status`),
-  // surface only the headline so the table stays aligned; users see the
-  // full block via `brv settings get <key>`.
+  // `displayCurrent` keeps only the headline so the table stays aligned;
+  // `displayDetail` carries the full block, surfaced in the TUI detail panel
+  // (Enter) and via `brv settings get <key>`.
   const fullText = formatReadonlyInfoValue(item.key, item.current)
   return {
     category: toRowCategory(item.category),
     current: item.current,
     description: item.description,
     displayCurrent: fullText.split('\n')[0],
+    displayDetail: fullText,
     displayRange: '',
     key: item.key,
     label: item.key,

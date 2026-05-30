@@ -53,10 +53,14 @@ export function formatAnalyticsStatusText(value: unknown, now: () => number = Da
   if (!parsed.success) return UNAVAILABLE_TEXT
 
   const response = parsed.data
-  if (!response.enabled) return 'Analytics: disabled'
+  // `enabled` is the `analytics.share` flag (remote sharing on/off). Local
+  // analytics tracking is unconditional (AnalyticsClient.track always records
+  // to JSONL), so the toggle this reflects is SHARING, not analytics itself —
+  // labelling it "Analytics: disabled" wrongly implied tracking had stopped.
+  if (!response.enabled) return 'Analytics sharing: disabled'
 
   return [
-    'Analytics: enabled',
+    'Analytics sharing: enabled',
     `Last successful flush: ${formatLastFlush(response.lastFlushAt, now)}`,
     `Queue depth: ${response.queueDepth} events`,
     `Dropped events (this session): ${response.droppedCount}`,
