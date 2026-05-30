@@ -18,7 +18,7 @@ export function AnalyticsPanel() {
   const {data, error, isError, isLoading, refetch} = useGetGlobalConfig()
   const setAnalytics = useSetAnalytics()
   const [pendingIntent, setPendingIntent] = useState<'disable' | 'enable' | undefined>()
-  const [detailsOpen, setDetailsOpen] = useState(false)
+  const [detailsOpen, setDetailsOpen] = useState(true)
 
   const analytics = data?.analytics ?? false
 
