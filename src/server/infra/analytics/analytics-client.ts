@@ -298,11 +298,16 @@ export class AnalyticsClient implements IAnalyticsClient {
       if (policy === undefined) return
       if (result.retryAfterMs === undefined) {
         // The sender contract pairs `retryAfterMs` with every `rate_limited`
-        // result; if a future producer breaks that, surface it instead of
-        // silently dropping the server's backpressure signal.
+        // result. If a future producer breaks that, surface it in the log AND
+        // still flip the policy's rate-limited bit — via a non-finite sentinel,
+        // so no delay floor is set but `isRateLimited()` turns true. That keeps
+        // the scheduler's burst gate closed so the next 20-event burst doesn't
+        // hammer a server we were just told to back off from; the M4.5 schedule
+        // still drives the next-tick delay.
         this.deps.log?.(
-          'analytics.backoff: rate_limited result missing retryAfterMs hint — dropped, falling back to the schedule',
+          'analytics.backoff: rate_limited result missing retryAfterMs hint — falling back to the schedule, burst suppressed',
         )
+        policy.applyServerHint(Number.NaN)
         return
       }
 

@@ -201,6 +201,41 @@ describe('AxiosAnalyticsHttpClient', () => {
       expect(result).to.deep.equal({ok: false, reason: 'rate_limited', retryAfterMs: 60_000, status: 503})
       expect(logged.some((m) => m.includes('503')), 'a WARN is logged for the 503 edge backstop').to.equal(true)
     })
+
+    it('503 WITH a Retry-After header honors it instead of forcing the 60s default (PR #743 review)', async () => {
+      nock(baseUrl).post('/v1/events').reply(503, {}, {'retry-after': '45'})
+      const client = new AxiosAnalyticsHttpClient({baseUrl})
+
+      const result = await client.send(makeBatch(1), {deviceId: validDeviceId, userAgent: 'brv-cli/3.12.0'})
+
+      expect(result).to.deep.equal({ok: false, reason: 'rate_limited', retryAfterMs: 45_000, status: 503})
+    })
+
+    it('429 with a future HTTP-date Retry-After converts to a forward-looking delay (RFC 7231)', async () => {
+      const aboutTwoMin = new Date(Date.now() + 120_000).toUTCString()
+      nock(baseUrl).post('/v1/events').reply(429, {}, {'retry-after': aboutTwoMin})
+      const client = new AxiosAnalyticsHttpClient({baseUrl})
+
+      const result = await client.send(makeBatch(1), {deviceId: validDeviceId, userAgent: 'brv-cli/3.12.0'})
+
+      if (result.ok || result.reason !== 'rate_limited') throw new Error('expected a rate_limited result')
+      // ~120s, allowing tolerance for second-truncation + elapsed time during the call.
+      expect(result.retryAfterMs).to.be.greaterThan(110_000)
+      expect(result.retryAfterMs).to.be.at.most(120_000)
+      expect(result.status).to.equal(429)
+    })
+
+    it('429 with an HTTP-date Retry-After already in the past falls back to the 60s default', async () => {
+      const past = new Date(Date.now() - 60_000).toUTCString()
+      nock(baseUrl).post('/v1/events').reply(429, {}, {'retry-after': past})
+      const logged: string[] = []
+      const client = new AxiosAnalyticsHttpClient({baseUrl, log: (m) => logged.push(m)})
+
+      const result = await client.send(makeBatch(1), {deviceId: validDeviceId, userAgent: 'brv-cli/3.12.0'})
+
+      expect(result).to.deep.equal({ok: false, reason: 'rate_limited', retryAfterMs: 60_000, status: 429})
+      expect(logged.some((m) => /default/i.test(m)), 'a past date is no usable hint -> default + WARN').to.equal(true)
+    })
   })
 
   describe('contract guarantees', () => {

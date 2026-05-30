@@ -1477,7 +1477,7 @@ describe('AnalyticsClient', () => {
       expect(policy.onSuccess.called, 'a rate-limit is not a success either').to.be.false
     })
 
-    it('logs (does not silently drop) a rate_limited result that arrives without retryAfterMs (M5.4 — ENG-2658)', async () => {
+    it('on a rate_limited result without retryAfterMs: logs AND still marks the policy rate-limited so the burst gate engages (M5.4 — ENG-2658)', async () => {
       const policy = makePolicyStub()
       const logs: string[] = []
       const client = new AnalyticsClient({
@@ -1493,10 +1493,17 @@ describe('AnalyticsClient', () => {
       await seedPending(client, 1)
       await client.flush()
 
-      expect(policy.applyServerHint.called, 'no hint value to apply').to.be.false
+      // Still flip the rate-limited bit (with an invalid sentinel so no delay
+      // floor is set) so the scheduler's burst gate stays closed — otherwise the
+      // next 20-event burst would hammer a server we were just told to back off from.
+      expect(policy.applyServerHint.calledOnce, 'the rate-limited bit must still be flipped').to.be.true
+      expect(
+        Number.isFinite(policy.applyServerHint.firstCall.args[0]),
+        'called with a non-finite sentinel so no delay floor is applied',
+      ).to.equal(false)
       expect(policy.onFailure.called, 'still not a reachability failure').to.be.false
       expect(
-        logs.some((m) => m.includes('rate_limited') && /retryAfterMs|hint/i.test(m)),
+        logs.some((m) => m.includes('rate_limited') && /retryAfterMs|hint|burst|suppress/i.test(m)),
         'the dropped hint must be surfaced in the daemon log, not silently swallowed',
       ).to.equal(true)
     })

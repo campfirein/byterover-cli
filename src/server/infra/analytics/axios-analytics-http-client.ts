@@ -105,14 +105,13 @@ const classifyResponse = (response: AxiosResponse, log: (message: string) => voi
   // body, then default) rather than treating it as a payload-shape 4xx.
   if (status === 429) return classifyRateLimited(response, status, log)
   if (status >= 400 && status < 500) return {ok: false, reason: 'http_4xx', status}
-  // M5.4: a bare 503 is the nginx edge backstop tripping (no `Retry-After`).
-  // Treat as a throttle signal (default delay + WARN), NOT an unreachable
-  // backend — the endpoint is up, we're just being shed. Other 5xx stay
-  // `http_5xx` (genuine transient server errors that drive exponential backoff).
-  if (status === 503) {
-    log(`analytics.http: 503 edge backstop, applying default ${DEFAULT_RETRY_AFTER_MS}ms backoff`)
-    return {ok: false, reason: 'rate_limited', retryAfterMs: DEFAULT_RETRY_AFTER_MS, status}
-  }
+  // M5.4: a bare 503 is typically the nginx edge backstop tripping (usually no
+  // `Retry-After`). Route it through the same rate-limit path as 429 so a 503
+  // that DOES carry a server hint (maintenance page, alternate ingress, CDN) is
+  // honored rather than forced to the default — otherwise default delay + WARN.
+  // NOT an unreachable backend (the endpoint is up, we're being shed). Other
+  // 5xx stay `http_5xx` (genuine transient errors that drive exponential backoff).
+  if (status === 503) return classifyRateLimited(response, status, log)
 
   if (status >= 500 && status < 600) return {ok: false, reason: 'http_5xx', status}
   // 1xx / 3xx without redirect handling reach here. Treat as network-level
@@ -130,7 +129,7 @@ const classifyRateLimited = (
   const fromBody = parseRetryAfterBodyMs(response.data)
   if (fromBody !== undefined) return {ok: false, reason: 'rate_limited', retryAfterMs: fromBody, status}
   log(
-    `analytics.http: 429 without Retry-After header or retry_after_seconds body, ` +
+    `analytics.http: ${status} without a usable Retry-After header or retry_after_seconds body, ` +
       `applying default ${DEFAULT_RETRY_AFTER_MS}ms backoff`,
   )
   return {ok: false, reason: 'rate_limited', retryAfterMs: DEFAULT_RETRY_AFTER_MS, status}
@@ -139,13 +138,23 @@ const classifyRateLimited = (
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
 
-/** Parse a `Retry-After` delay-seconds header (RFC 7231) to milliseconds. */
+/** Parse a `Retry-After` header (RFC 7231) — delay-seconds OR HTTP-date — to milliseconds. */
 const parseRetryAfterHeaderMs = (headers: unknown): number | undefined => {
   if (!isObject(headers)) return undefined
   // axios lowercases response header keys.
   const raw = headers['retry-after']
-  const seconds = typeof raw === 'string' || typeof raw === 'number' ? Number(raw) : Number.NaN
-  return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : undefined
+  if (typeof raw !== 'string' && typeof raw !== 'number') return undefined
+  // Preferred form: delay-seconds.
+  const asSeconds = Number(raw)
+  if (Number.isFinite(asSeconds) && asSeconds > 0) return Math.round(asSeconds * 1000)
+  // Alternate form: an HTTP-date — convert to a forward-looking delay. A date in
+  // the past (or an unparseable value) yields no usable hint. An absurdly
+  // far-future date is bounded downstream by the policy's MAX_SERVER_HINT_MS
+  // cap, so there is no setTimeout-overflow risk here.
+  const targetMs = Date.parse(String(raw))
+  if (!Number.isFinite(targetMs)) return undefined
+  const deltaMs = targetMs - Date.now()
+  return deltaMs > 0 ? deltaMs : undefined
 }
 
 /** Parse a `retry_after_seconds` JSON body field (the throttler's fallback). */

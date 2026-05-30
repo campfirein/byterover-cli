@@ -150,6 +150,18 @@ describe('AnalyticsBackoffPolicy (M4.5)', () => {
       expect(policy.nextDelayMs()).to.equal(3_600_000)
     })
 
+    it('applyServerHint with a non-positive / NaN / Infinity hint still flips isRateLimited (no delay floor)', () => {
+      // Load-bearing for the rate_limited reachability classification AND for the
+      // contract-violation path in AnalyticsClient (which marks the policy
+      // rate-limited via applyServerHint(NaN) so the burst gate stays closed).
+      for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        const policy = new AnalyticsBackoffPolicy()
+        policy.applyServerHint(bad)
+        expect(policy.isRateLimited(), `hint=${bad} must still surface rate-limited`).to.equal(true)
+        expect(policy.nextDelayMs(), `hint=${bad} must not change the schedule floor`).to.equal(30_000)
+      }
+    })
+
     it('applyServerHint never accelerates below the current schedule delay', () => {
       const policy = new AnalyticsBackoffPolicy()
       policy.onFailure() // current schedule delay is now 60s
