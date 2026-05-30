@@ -148,7 +148,7 @@ describe('format-settings (shared)', () => {
     })
 
     it('maps the analytics category onto the row instead of falling back to other', () => {
-      const rows = buildSettingsRows([makeItem({category: 'analytics', key: 'analytics.enabled'})])
+      const rows = buildSettingsRows([makeItem({category: 'analytics', key: 'analytics.share'})])
       expect(rows[0].category).to.equal('analytics')
     })
   })

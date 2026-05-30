@@ -26,7 +26,7 @@ class TestableSettingsGet extends SettingsGet {
 }
 
 /**
- * Smoke coverage for the post-M16.4 surface of `analytics.enabled`.
+ * Smoke coverage for the post-M16.4 surface of `analytics.share`.
  *
  * The wire-shape behaviour, facade routing, and disclosure flow are
  * exercised in depth by:
@@ -38,7 +38,7 @@ class TestableSettingsGet extends SettingsGet {
  * analytics enable / disable` deletion does not leave the value
  * unreachable via the CLI.
  */
-describe('brv settings get analytics.enabled (M16.4 smoke)', () => {
+describe('brv settings get analytics.share (M16.4 smoke)', () => {
   let config: Config
   let mockClient: sinon.SinonStubbedInstance<ITransportClient>
   let mockConnector: sinon.SinonStub<[], Promise<ConnectionResult>>
@@ -69,7 +69,7 @@ describe('brv settings get analytics.enabled (M16.4 smoke)', () => {
         current: false,
         default: false,
         description: 'Send anonymous telemetry to ByteRover.',
-        key: 'analytics.enabled',
+        key: 'analytics.share',
         ok: true,
         restartRequired: false,
         type: 'boolean',
@@ -87,14 +87,14 @@ describe('brv settings get analytics.enabled (M16.4 smoke)', () => {
     restore()
   })
 
-  it('routes to the SettingsEvents.GET transport event with key=analytics.enabled', async () => {
-    const command = new TestableSettingsGet(['analytics.enabled'], mockConnector, config)
+  it('routes to the SettingsEvents.GET transport event with key=analytics.share', async () => {
+    const command = new TestableSettingsGet(['analytics.share'], mockConnector, config)
     stub(command, 'log').callsFake(() => {})
     await command.run()
 
     const calls = (mockClient.requestWithAck as sinon.SinonStub).getCalls()
     expect(calls.length, 'one requestWithAck call').to.equal(1)
     expect(calls[0].args[0]).to.equal(SettingsEvents.GET)
-    expect(calls[0].args[1]).to.deep.equal({key: 'analytics.enabled'})
+    expect(calls[0].args[1]).to.deep.equal({key: 'analytics.share'})
   })
 })

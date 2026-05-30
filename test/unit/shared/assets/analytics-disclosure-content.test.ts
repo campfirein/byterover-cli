@@ -29,7 +29,7 @@ describe('analytics-disclosure.md content contract', () => {
     // Pin the new disable instruction to the post-M16.4 surface. A regression
     // that re-introduces the deleted `brv analytics disable` command (or any
     // other variant) fails here loudly.
-    expect(text, 'how-to-disable section').to.match(/brv settings set analytics\.enabled false/i)
+    expect(text, 'how-to-disable section').to.match(/brv settings set analytics\.share false/i)
     expect(text, 'how-to-disable must not reference the deleted command').to.not.match(/brv analytics disable/i)
     expect(text, 'privacy policy link').to.include(PRIVACY_POLICY_URL)
   })

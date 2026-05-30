@@ -234,11 +234,11 @@ describe('analytics lifecycle wire e2e (M14 / M15.6)', function () {
     cleanupDirs.push(scenario.dataDir, scenario.home)
 
     // Match dev-beta.e2e.ts: enable BEFORE boot. `settings set
-    // analytics.enabled true` itself starts a daemon via transport autostart,
+    // analytics.share true` itself starts a daemon via transport autostart,
     // AND the analytics flush scheduler reads the enabled flag at boot time.
     // If we boot first (with analytics disabled) then flip the flag, the
     // scheduler stays dormant.
-    expect(runBrv(['settings', 'set', 'analytics.enabled', 'true', '--yes'], scenario.env), 'analytics enable').to.deep.include({ok: true})
+    expect(runBrv(['settings', 'set', 'analytics.share', 'true', '--yes'], scenario.env), 'analytics enable').to.deep.include({ok: true})
     expect(runBrv(['status'], scenario.env), 'daemon boot via status').to.deep.include({ok: true})
   })
 

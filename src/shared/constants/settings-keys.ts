@@ -10,4 +10,4 @@
  * is a typecheck error at every consuming site.
  */
 
-export const ANALYTICS_ENABLED_KEY = 'analytics.enabled' as const
+export const ANALYTICS_ENABLED_KEY = 'analytics.share' as const

@@ -110,11 +110,11 @@ function bootDaemon(env: NodeJS.ProcessEnv): {ok: boolean; reason?: string} {
 }
 
 function enableAnalytics(env: NodeJS.ProcessEnv): {ok: boolean; reason?: string} {
-  return runBrv(['settings', 'set', 'analytics.enabled', 'true', '--yes'], env)
+  return runBrv(['settings', 'set', 'analytics.share', 'true', '--yes'], env)
 }
 
 function disableAnalytics(env: NodeJS.ProcessEnv): {ok: boolean; reason?: string} {
-  return runBrv(['settings', 'set', 'analytics.enabled', 'false'], env)
+  return runBrv(['settings', 'set', 'analytics.share', 'false'], env)
 }
 
 function jsonlPath(dataDir: string): string {

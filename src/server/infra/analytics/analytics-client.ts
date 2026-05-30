@@ -128,7 +128,7 @@ export class AnalyticsClient implements IAnalyticsClient {
    * which classifies aborted requests as `network` failures — JSONL
    * records stay `pending` (so they ship on the next enabled flush).
    *
-   * Called from `GlobalConfigHandler` when `brv settings set analytics.enabled false`
+   * Called from `GlobalConfigHandler` when `brv settings set analytics.share false`
    * flips the flag, so the daemon doesn't half-ship a batch across an
    * enable/disable boundary. No-op when no flush is in flight.
    */
@@ -156,7 +156,7 @@ export class AnalyticsClient implements IAnalyticsClient {
    * `flush()` is a thin caller — it does not inspect attempts.
    */
   public async flush(): Promise<AnalyticsBatch> {
-    // M4.4: `brv settings set analytics.enabled false` semantically means "stop shipping to
+    // M4.4: `brv settings set analytics.share false` semantically means "stop shipping to
     // remote" — local tracking (JSONL + queue) continues unconditionally.
     // Gate here, NOT in `track()`. Records stay at `status='pending'` in
     // JSONL; the next flush after re-enable picks them up automatically.
@@ -378,7 +378,7 @@ export class AnalyticsClient implements IAnalyticsClient {
 
     await this.deps.jsonlStore.updateStatus(result.succeeded, 'sent')
     // M4.4 N3 fix: when we cancelled the send ourselves (`abort()` fired
-    // because `brv settings set analytics.enabled false` flipped the flag), DO NOT mark the
+    // because `brv settings set analytics.share false` flipped the flag), DO NOT mark the
     // failed records as 'failed' — that bumps the M9.2 retry-cap
     // `attempts` counter on every cancel, and a few disable/enable
     // toggles during shipping could terminate records as `'failed'`

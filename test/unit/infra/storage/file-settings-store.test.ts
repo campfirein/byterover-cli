@@ -54,7 +54,7 @@ describe('FileSettingsStore', () => {
       expect(keys).to.deep.equal([
         'agentPool.maxConcurrentTasksPerProject',
         'agentPool.maxSize',
-        'analytics.enabled',
+        'analytics.share',
         'analytics.status',
         'llm.iterationBudgetMs',
         'llm.requestTimeoutMs',
@@ -64,9 +64,9 @@ describe('FileSettingsStore', () => {
       for (const item of items) {
         // Non-file-stored rows carry current/default both undefined:
         //   - analytics.status (readonly-info)
-        //   - analytics.enabled (storage=global-config)
+        //   - analytics.share (storage=global-config)
         // Writable file-stored rows have current === default when no override is present.
-        if (item.key === 'analytics.status' || item.key === 'analytics.enabled') {
+        if (item.key === 'analytics.status' || item.key === 'analytics.share') {
           expect(item.current).to.equal(undefined)
           expect(item.default).to.equal(undefined)
         } else {

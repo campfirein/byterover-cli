@@ -94,7 +94,7 @@ describe('SettingsHandler', () => {
       expect(result.items.map((i) => i.key).sort()).to.deep.equal([
         'agentPool.maxConcurrentTasksPerProject',
         'agentPool.maxSize',
-        'analytics.enabled',
+        'analytics.share',
         'analytics.status',
         'llm.iterationBudgetMs',
         'llm.requestTimeoutMs',
@@ -604,7 +604,7 @@ describe('SettingsHandler', () => {
   })
   })
 
-  describe('analytics.enabled facade routing (M16.2 — production registry)', () => {
+  describe('analytics.share facade routing (M16.2 — production registry)', () => {
     type AnalyticsFacadeStub = {
       readonly calls: Array<{args: unknown[]; method: string}>
       currentValue: boolean
@@ -629,10 +629,10 @@ describe('SettingsHandler', () => {
       return stub
     }
 
-    it('GET on analytics.enabled reads from the injected globalConfigHandler (true)', async () => {
+    it('GET on analytics.share reads from the injected globalConfigHandler (true)', async () => {
       const facade = makeFacade(true)
       const localStore = new StubSettingsStore()
-      localStore.listResult = [{current: undefined, key: 'analytics.enabled', restartRequired: false}]
+      localStore.listResult = [{current: undefined, key: 'analytics.share', restartRequired: false}]
       const localTransport = createMockTransportServer()
       new SettingsHandler({
         globalConfigHandler: facade,
@@ -642,7 +642,7 @@ describe('SettingsHandler', () => {
 
       const handler = localTransport._handlers.get(SettingsEvents.GET)
       if (!handler) throw new Error('GET handler not registered')
-      const result = (await handler({key: 'analytics.enabled'}, 'test-client')) as SettingsGetResponse
+      const result = (await handler({key: 'analytics.share'}, 'test-client')) as SettingsGetResponse
 
       expect(result.ok).to.be.true
       if (result.ok) {
@@ -653,7 +653,7 @@ describe('SettingsHandler', () => {
       }
     })
 
-    it('SET on analytics.enabled calls globalConfigHandler.setAnalyticsValue, NOT store.set', async () => {
+    it('SET on analytics.share calls globalConfigHandler.setAnalyticsValue, NOT store.set', async () => {
       const facade = makeFacade(false)
       const localStore = new StubSettingsStore()
       const localTransport = createMockTransportServer()
@@ -665,7 +665,7 @@ describe('SettingsHandler', () => {
 
       const handler = localTransport._handlers.get(SettingsEvents.SET)
       if (!handler) throw new Error('SET handler not registered')
-      const result = (await handler({key: 'analytics.enabled', value: true}, 'test-client')) as SettingsSetResponse
+      const result = (await handler({key: 'analytics.share', value: true}, 'test-client')) as SettingsSetResponse
 
       expect(result.ok).to.be.true
       if (result.ok) {
@@ -679,7 +679,7 @@ describe('SettingsHandler', () => {
       expect(storeSetCalls, 'file store must not be touched').to.have.lengthOf(0)
     })
 
-    it('RESET on analytics.enabled flips the globalConfig value to false, NOT store.reset', async () => {
+    it('RESET on analytics.share flips the globalConfig value to false, NOT store.reset', async () => {
       const facade = makeFacade(true)
       const localStore = new StubSettingsStore()
       const localTransport = createMockTransportServer()
@@ -691,7 +691,7 @@ describe('SettingsHandler', () => {
 
       const handler = localTransport._handlers.get(SettingsEvents.RESET)
       if (!handler) throw new Error('RESET handler not registered')
-      const result = (await handler({key: 'analytics.enabled'}, 'test-client')) as SettingsResetResponse
+      const result = (await handler({key: 'analytics.share'}, 'test-client')) as SettingsResetResponse
 
       expect(result.ok).to.be.true
       const setCalls = facade.calls.filter((c) => c.method === 'setAnalyticsValue')
@@ -701,7 +701,7 @@ describe('SettingsHandler', () => {
       expect(storeResetCalls, 'file store must not be touched').to.have.lengthOf(0)
     })
 
-    it('LIST surfaces analytics.enabled with the value from globalConfigHandler', async () => {
+    it('LIST surfaces analytics.share with the value from globalConfigHandler', async () => {
       const facade = makeFacade(true)
       const localStore = new StubSettingsStore()
       localStore.listResult = []
@@ -716,14 +716,14 @@ describe('SettingsHandler', () => {
       if (!handler) throw new Error('LIST handler not registered')
       const result = (await handler(undefined, 'test-client')) as SettingsListResponse
 
-      const row = result.items.find((i) => i.key === 'analytics.enabled')
-      expect(row, 'analytics.enabled row present').to.exist
+      const row = result.items.find((i) => i.key === 'analytics.share')
+      expect(row, 'analytics.share row present').to.exist
       expect(row?.type).to.equal('boolean')
       expect(row?.current).to.equal(true)
       expect(row?.default).to.equal(false)
     })
 
-    it('SET on analytics.enabled emits SETTING_CHANGED with value_kind=boolean and outcome=success', async () => {
+    it('SET on analytics.share emits SETTING_CHANGED with value_kind=boolean and outcome=success', async () => {
       const facade = makeFacade(false)
       const localStore = new StubSettingsStore()
       const localTransport = createMockTransportServer()
@@ -739,7 +739,7 @@ describe('SettingsHandler', () => {
 
       const handler = localTransport._handlers.get(SettingsEvents.SET)
       if (!handler) throw new Error('SET handler not registered')
-      await handler({key: 'analytics.enabled', value: true}, 'test-client')
+      await handler({key: 'analytics.share', value: true}, 'test-client')
 
       const setting = trackCalls.find((c) => (c.args[0] as string).endsWith('setting_changed'))
       expect(setting, 'SETTING_CHANGED emitted').to.exist
@@ -748,15 +748,15 @@ describe('SettingsHandler', () => {
       expect(props.value_kind).to.equal('boolean')
     })
 
-    it('GET on analytics.enabled with NO injected facade returns current=undefined (graceful)', async () => {
+    it('GET on analytics.share with NO injected facade returns current=undefined (graceful)', async () => {
       const localStore = new StubSettingsStore()
-      localStore.listResult = [{current: undefined, key: 'analytics.enabled', restartRequired: false}]
+      localStore.listResult = [{current: undefined, key: 'analytics.share', restartRequired: false}]
       const localTransport = createMockTransportServer()
       new SettingsHandler({store: localStore, transport: localTransport}).setup()
 
       const handler = localTransport._handlers.get(SettingsEvents.GET)
       if (!handler) throw new Error('GET handler not registered')
-      const result = (await handler({key: 'analytics.enabled'}, 'test-client')) as SettingsGetResponse
+      const result = (await handler({key: 'analytics.share'}, 'test-client')) as SettingsGetResponse
 
       expect(result.ok).to.be.true
       if (result.ok) {
@@ -764,14 +764,14 @@ describe('SettingsHandler', () => {
       }
     })
 
-    it('SET on analytics.enabled with NO injected facade returns code=misconfigured (not invalid_value)', async () => {
+    it('SET on analytics.share with NO injected facade returns code=misconfigured (not invalid_value)', async () => {
       const localStore = new StubSettingsStore()
       const localTransport = createMockTransportServer()
       new SettingsHandler({store: localStore, transport: localTransport}).setup()
 
       const handler = localTransport._handlers.get(SettingsEvents.SET)
       if (!handler) throw new Error('SET handler not registered')
-      const result = (await handler({key: 'analytics.enabled', value: true}, 'test-client')) as SettingsSetResponse
+      const result = (await handler({key: 'analytics.share', value: true}, 'test-client')) as SettingsSetResponse
 
       expect(result.ok).to.be.false
       if (!result.ok) {
@@ -779,24 +779,24 @@ describe('SettingsHandler', () => {
         // user-supplied bad value. Distinct code so logs / WebUI can route
         // the alert at the right team.
         expect(result.error.code).to.equal('misconfigured')
-        expect(result.error.key).to.equal('analytics.enabled')
+        expect(result.error.key).to.equal('analytics.share')
         expect(result.error.message.toLowerCase()).to.match(/global ?config|facade/)
       }
     })
 
-    it('RESET on analytics.enabled with NO injected facade returns code=misconfigured (not invalid_value)', async () => {
+    it('RESET on analytics.share with NO injected facade returns code=misconfigured (not invalid_value)', async () => {
       const localStore = new StubSettingsStore()
       const localTransport = createMockTransportServer()
       new SettingsHandler({store: localStore, transport: localTransport}).setup()
 
       const handler = localTransport._handlers.get(SettingsEvents.RESET)
       if (!handler) throw new Error('RESET handler not registered')
-      const result = (await handler({key: 'analytics.enabled'}, 'test-client')) as SettingsResetResponse
+      const result = (await handler({key: 'analytics.share'}, 'test-client')) as SettingsResetResponse
 
       expect(result.ok).to.be.false
       if (!result.ok) {
         expect(result.error.code).to.equal('misconfigured')
-        expect(result.error.key).to.equal('analytics.enabled')
+        expect(result.error.key).to.equal('analytics.share')
       }
     })
 

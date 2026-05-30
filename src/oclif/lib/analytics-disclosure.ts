@@ -61,7 +61,7 @@ export interface CollectConsentDeps {
  * 4. Otherwise, prompt and return the user's choice.
  *
  * Extracted from the legacy `brv analytics enable` command in M16.2 so
- * `brv settings set analytics.enabled true` can reuse the exact same
+ * `brv settings set analytics.share true` can reuse the exact same
  * consent gate. M16.4 then deleted the legacy command; this lib is now
  * the sole consent surface.
  */

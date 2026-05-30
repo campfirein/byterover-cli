@@ -44,13 +44,13 @@ export default class SettingsSet extends Command {
       options: ['text', 'json'],
     }),
     // Accepts the analytics disclosure non-interactively. Only meaningful when
-    // setting `analytics.enabled true` (the one consent-gated key). Passing it
+    // setting `analytics.share true` (the one consent-gated key). Passing it
     // for any other key emits `this.warn(...)` so the user does not silently
     // rely on a flag that has no behavioural effect for their command.
     yes: Flags.boolean({
       char: 'y',
       default: false,
-      description: 'Accept the analytics disclosure non-interactively (only meaningful for analytics.enabled)',
+      description: 'Accept the analytics disclosure non-interactively (only meaningful for analytics.share)',
     }),
   }
 
@@ -120,7 +120,7 @@ export default class SettingsSet extends Command {
         return
       }
 
-      // Enable-to-true on `analytics.enabled` triggers the disclosure
+      // Enable-to-true on `analytics.share` triggers the disclosure
       // prompt. Idempotent (no prompt if already enabled), false-unchanged,
       // and other keys unaffected. `collectConsent`'s `onError` calls
       // `this.error()` which throws CLIError; we let it propagate to
