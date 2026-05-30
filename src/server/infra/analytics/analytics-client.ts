@@ -261,10 +261,12 @@ export class AnalyticsClient implements IAnalyticsClient {
    * Decision table (skip = call neither onSuccess nor onFailure):
    *   - policy not wired                      → skip
    *   - aborted (M4.4 disable cancel)         → skip (user action, not a backend signal)
-   *   - reason = `http_4xx`                   → skip (payload-shape, not a health signal)
+   *   - reason = `http_4xx`                   → skip (payload-shape, not a
+   *     health signal; e.g. HttpAnalyticsSender's `missing-deviceId` path,
+   *     which classifies as `http_4xx` rather than shipping)
    *   - reason undefined AND succeeded.length === 0 → skip (empty no-op
-   *     race, or HttpAnalyticsSender's `missing-deviceId` path that
-   *     returns failed-without-reason; neither is a clean ship)
+   *     race, or an uncategorized failed-without-reason result; no health
+   *     signal either way)
    *   - reason undefined AND succeeded.length > 0   → onSuccess() + M4.6 timestamp stamp
    *   - reason = `timeout` / `network` / `http_5xx` → onFailure()
    *

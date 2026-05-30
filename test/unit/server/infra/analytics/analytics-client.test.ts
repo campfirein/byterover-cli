@@ -1492,17 +1492,18 @@ describe('AnalyticsClient', () => {
       // No assertion needed beyond "did not throw".
     })
 
-    it('does NOT call onSuccess() on failed-without-reason (missing-deviceId / uncategorized failure)', async () => {
+    it('does NOT call onSuccess() on an uncategorized failed-without-reason result', async () => {
       // Regression for review finding I1: prior code treated `reason === undefined`
-      // as success and called `onSuccess()`. The missing-deviceId path in
-      // `HttpAnalyticsSender` returns `{failed: ids, succeeded: [], reason: undefined}`
-      // — a "we never tried" outcome, NOT a clean ship. Resetting backoff
-      // here would wrongly clear the unreachable counter on a first-boot
-      // config bug. Should skip entirely.
+      // as success and called `onSuccess()`. A `{failed: ids, succeeded: [],
+      // reason: undefined}` result is a "we never shipped" outcome, NOT a clean
+      // ship — resetting backoff here would wrongly clear the unreachable
+      // counter. (The missing-deviceId path now classifies as `http_4xx` and is
+      // guarded separately above; this case covers any other uncategorized
+      // failure.) Should skip entirely.
       const policy = makePolicyStub()
       const sender: IAnalyticsSender = {
         async send(records) {
-          // Mimic the missing-deviceId path: failed-with-no-reason.
+          // Mimic an uncategorized failure: failed-with-no-reason.
           return {failed: records.map((r) => r.id), succeeded: []}
         },
       }

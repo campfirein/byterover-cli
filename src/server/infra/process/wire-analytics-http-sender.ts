@@ -3,15 +3,15 @@ import type {IAuthStateReader} from '../../core/interfaces/analytics/i-identity-
 import type {IGlobalConfigStore} from '../../core/interfaces/storage/i-global-config-store.js'
 
 import {AxiosAnalyticsHttpClient} from '../analytics/axios-analytics-http-client.js'
+import {DrainingAnalyticsSender} from '../analytics/draining-analytics-sender.js'
 import {HttpAnalyticsSender} from '../analytics/http-analytics-sender.js'
-import {NoopAnalyticsSender} from '../analytics/noop-analytics-sender.js'
 
 export type AnalyticsHttpSenderWiring = {
   /**
    * Resolved `BRV_ANALYTICS_BASE_URL`. `undefined` signals "no working
    * remote endpoint" (env unset, empty, or malformed — see
    * `resolveAnalyticsBaseUrl`). The factory then returns a
-   * `NoopAnalyticsSender` and the axios client is never constructed.
+   * `DrainingAnalyticsSender` and the axios client is never constructed.
    */
   analyticsBaseUrl: string | undefined
   authStateReader: IAuthStateReader
@@ -38,16 +38,16 @@ export type AnalyticsHttpSenderWiring = {
  * for M4.5 backoff) lands at one obvious seam.
  *
  * When `wiring.analyticsBaseUrl === undefined` (env unset, empty, or
- * malformed) the factory short-circuits to `NoopAnalyticsSender` so the
+ * malformed) the factory short-circuits to `DrainingAnalyticsSender` so the
  * axios client is never constructed and no outbound HTTP fires. Local
  * JSONL tracking via `AnalyticsClient.track()` keeps working unchanged;
- * the noop drains the pending queue on each flush.
+ * the draining sender drains the pending queue on each flush.
  *
  * The returned value is the `IAnalyticsSender` consumed by
  * `AnalyticsClient.flush()`.
  */
 export function wireAnalyticsHttpSender(wiring: AnalyticsHttpSenderWiring): IAnalyticsSender {
-  if (wiring.analyticsBaseUrl === undefined) return new NoopAnalyticsSender()
+  if (wiring.analyticsBaseUrl === undefined) return new DrainingAnalyticsSender()
 
   const httpClient = new AxiosAnalyticsHttpClient({baseUrl: wiring.analyticsBaseUrl})
   return new HttpAnalyticsSender({

@@ -276,7 +276,7 @@ describe('AnalyticsHook M14.3 generic task_* emit simulation', () => {
   })
 
   describe('toRelativePath outside-project guard (PR #722)', () => {
-    it('replaces escaping ../ paths with <outside-project>/basename sentinel', async () => {
+    it('replaces escaping ../ paths with the bare <outside-project> sentinel (no basename leak)', async () => {
       const task = buildTask('curate', {projectPath: '/Users/dev/proj', taskId: 'task-outside'})
       await hook.onTaskCreate(task)
       const result: LlmToolResultEvent = {
@@ -292,10 +292,10 @@ describe('AnalyticsHook M14.3 generic task_* emit simulation', () => {
       await hook.onToolResult('task-outside', result)
 
       const op = trackStub.getCalls().find((c) => c.args[0] === AnalyticsEventNames.CURATE_OPERATION_APPLIED)
-      expect((op?.args[1] as Record<string, unknown>).relative_path).to.equal('<outside-project>/x.md')
+      expect((op?.args[1] as Record<string, unknown>).relative_path).to.equal('<outside-project>')
     })
 
-    it('replaces raw absolute path with <outside-project>/basename when projectPath is undefined', async () => {
+    it('replaces a raw absolute path with the bare <outside-project> sentinel when projectPath is undefined', async () => {
       const task = buildTask('curate', {projectPath: undefined, taskId: 'task-no-proj'})
       await hook.onTaskCreate(task)
       const result: LlmToolResultEvent = {
@@ -311,7 +311,10 @@ describe('AnalyticsHook M14.3 generic task_* emit simulation', () => {
       await hook.onToolResult('task-no-proj', result)
 
       const op = trackStub.getCalls().find((c) => c.args[0] === AnalyticsEventNames.CURATE_OPERATION_APPLIED)
-      expect((op?.args[1] as Record<string, unknown>).relative_path).to.equal('<outside-project>/secret.md')
+      // The leaf token (`secret.md`) must NOT survive: a file outside the
+      // project root carries the highest PII risk and the least analytical
+      // value, so it collapses to the bare sentinel.
+      expect((op?.args[1] as Record<string, unknown>).relative_path).to.equal('<outside-project>')
     })
   })
 
