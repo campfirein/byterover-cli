@@ -155,7 +155,7 @@ describe('settings registry — M7 T2 shape', () => {
         category: 'analytics',
         default: false,
         description: 'analytics opt-in',
-        key: '_test.analytics.enabled',
+        key: '_test.analytics.share',
         restartRequired: false,
         type: 'boolean',
       }
@@ -214,12 +214,12 @@ describe('settings registry — M7 T2 shape', () => {
     })
   })
 
-  describe('analytics.enabled descriptor (M16.2)', () => {
+  describe('analytics.share descriptor (M16.2)', () => {
     it('exposes ANALYTICS_ENABLED on SETTINGS_KEYS', () => {
-      expect(SETTINGS_KEYS.ANALYTICS_ENABLED).to.equal('analytics.enabled')
+      expect(SETTINGS_KEYS.ANALYTICS_ENABLED).to.equal('analytics.share')
     })
 
-    it('registers a descriptor for analytics.enabled', () => {
+    it('registers a descriptor for analytics.share', () => {
       const descriptor = findSettingDescriptor(SETTINGS_KEYS.ANALYTICS_ENABLED)
       expect(descriptor, 'descriptor must exist in SETTINGS_REGISTRY').to.exist
     })
@@ -238,11 +238,11 @@ describe('settings registry — M7 T2 shape', () => {
     it('declares storage=global-config so the file store skips persistence', () => {
       const descriptor = findSettingDescriptor(SETTINGS_KEYS.ANALYTICS_ENABLED)
       // `storage` is an optional field on writable descriptors; defaults to 'file'.
-      // analytics.enabled lives in `config.json`, not `settings.json`.
+      // analytics.share lives in `config.json`, not `settings.json`.
       if (descriptor?.type === 'boolean') {
         expect(descriptor.storage).to.equal('global-config')
       } else {
-        expect.fail('expected boolean descriptor for analytics.enabled')
+        expect.fail('expected boolean descriptor for analytics.share')
       }
     })
 

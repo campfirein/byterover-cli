@@ -150,7 +150,7 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
     async (row: SettingsRow) => {
       if (row.type !== 'boolean' || typeof row.current !== 'boolean') return
 
-      // analytics.enabled false -> true requires the disclosure consent
+      // analytics.share false -> true requires the disclosure consent
       // prompt. Load the markdown and switch into the confirm-disclosure
       // mode; the user must press Enter to accept (which fires the actual
       // SET) or Esc to cancel.

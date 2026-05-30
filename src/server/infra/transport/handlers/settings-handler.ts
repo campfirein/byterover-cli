@@ -46,7 +46,7 @@ export type ReadonlyInfoSnapshot = boolean | number | Readonly<Record<string, un
 export type ReadonlyInfoProvider = () => Promise<ReadonlyInfoSnapshot> | ReadonlyInfoSnapshot
 
 /**
- * Facade over `GlobalConfigHandler` for the `analytics.enabled` setting.
+ * Facade over `GlobalConfigHandler` for the `analytics.share` setting.
  * The settings handler routes GET/SET/RESET/LIST for that key through
  * this facade instead of `FileSettingsStore`, so the canonical storage
  * in `config.json`, the device-id seeding race fix, the sync analytics
@@ -63,8 +63,8 @@ export interface AnalyticsEnabledFacade {
 export interface SettingsHandlerDeps {
   readonly analyticsClient?: IAnalyticsClient
   /**
-   * Facade for the `analytics.enabled` writable key. When set,
-   * GET/SET/RESET/LIST for `analytics.enabled` route through this facade
+   * Facade for the `analytics.share` writable key. When set,
+   * GET/SET/RESET/LIST for `analytics.share` route through this facade
    * instead of the file store. When unset, the key surfaces with
    * `current: undefined`.
    */
@@ -187,7 +187,7 @@ export class SettingsHandler {
           return {error: readOnlyError(data.key), ok: false}
         }
 
-        // Global-config writables (analytics.enabled and any future ones)
+        // Global-config writables (analytics.share and any future ones)
         // route through the injected facade. The file store stays
         // untouched. Type check still applies (boolean for the only
         // current case), so reuse `checkValueType` before delegating.
@@ -299,7 +299,7 @@ export class SettingsHandler {
         }
 
         // Reset on a global-config writable means "back to descriptor.default".
-        // For analytics.enabled the default is `false`, so we flip via the facade.
+        // For analytics.share the default is `false`, so we flip via the facade.
         if (descriptor?.storage === 'global-config') {
           if (this.globalConfigHandler === undefined) {
             return {
@@ -414,7 +414,7 @@ export class SettingsHandler {
     }
 
     if (descriptor.storage === 'global-config') {
-      // Global-config-stored values (analytics.enabled) live in
+      // Global-config-stored values (analytics.share) live in
       // config.json, not settings.json. Without an injected facade we
       // cannot resolve — surface `undefined` so the row still renders
       // rather than crashing.

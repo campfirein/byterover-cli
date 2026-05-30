@@ -332,7 +332,7 @@ describe('analytics lifecycle DB roundtrip e2e (M14 / M15.6)', function () {
     scenario = makeScenarioEnv()
     cleanupDirs.push(scenario.dataDir, scenario.home)
 
-    expect(runBrv(['settings', 'set', 'analytics.enabled', 'true', '--yes'], scenario.env), 'analytics enable').to.deep.include({ok: true})
+    expect(runBrv(['settings', 'set', 'analytics.share', 'true', '--yes'], scenario.env), 'analytics enable').to.deep.include({ok: true})
     expect(runBrv(['status'], scenario.env), 'daemon boot via status').to.deep.include({ok: true})
   })
 

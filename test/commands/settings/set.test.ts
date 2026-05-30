@@ -414,7 +414,7 @@ describe('brv settings set', () => {
   })
 
   describe('--yes flag scope (bot review #2)', () => {
-    it('warns when --yes is passed for a key other than analytics.enabled', async () => {
+    it('warns when --yes is passed for a key other than analytics.share', async () => {
       dispatchByEvent((event) => {
         if (event === SettingsEvents.GET) return makeGetResponse('agentPool.maxSize', 10)
         if (event === SettingsEvents.SET) return {ok: true, restartRequired: true}
@@ -430,17 +430,17 @@ describe('brv settings set', () => {
 
       const warn = warnMessages.join('\n')
       expect(warn).to.match(/--yes/)
-      expect(warn).to.match(/analytics\.enabled/)
+      expect(warn).to.match(/analytics\.share/)
     })
 
-    it('does NOT warn when --yes is passed for analytics.enabled', async () => {
+    it('does NOT warn when --yes is passed for analytics.share', async () => {
       dispatchByEvent((event) => {
-        if (event === SettingsEvents.GET) return makeBooleanGetResponse('analytics.enabled', false)
+        if (event === SettingsEvents.GET) return makeBooleanGetResponse('analytics.share', false)
         if (event === SettingsEvents.SET) return {ok: true, restartRequired: false}
         throw new Error('unexpected event')
       })
 
-      await createCommand('analytics.enabled', 'true', '-y').run()
+      await createCommand('analytics.share', 'true', '-y').run()
 
       expect(warnMessages, 'no leaky-flag warning on the analytics key').to.deep.equal([])
     })
@@ -449,7 +449,7 @@ describe('brv settings set', () => {
   describe('--format json + interactive consent (bot review #3)', () => {
     it('refuses to prompt in JSON mode without --yes and emits a requires_consent error envelope', async () => {
       dispatchByEvent((event) => {
-        if (event === SettingsEvents.GET) return makeBooleanGetResponse('analytics.enabled', false)
+        if (event === SettingsEvents.GET) return makeBooleanGetResponse('analytics.share', false)
         if (event === SettingsEvents.SET) {
           throw new Error('SET must not be dispatched when consent is required and refused')
         }
@@ -457,14 +457,14 @@ describe('brv settings set', () => {
         throw new Error('unexpected event')
       })
 
-      await createJsonCommand('analytics.enabled', 'true').run()
+      await createJsonCommand('analytics.share', 'true').run()
 
       const json = parseJsonOutput()
       expect(json.command).to.equal('settings set')
       expect(json.success).to.be.false
       const {error} = json.data as {error: {code: string; key: string; message: string}}
       expect(error.code).to.equal('requires_consent')
-      expect(error.key).to.equal('analytics.enabled')
+      expect(error.key).to.equal('analytics.share')
       expect(error.message.toLowerCase()).to.match(/--yes|disclosure/)
       expect(process.exitCode).to.equal(1)
 
@@ -476,12 +476,12 @@ describe('brv settings set', () => {
 
     it('passes through in JSON mode WITH --yes (consent gate satisfied silently)', async () => {
       dispatchByEvent((event) => {
-        if (event === SettingsEvents.GET) return makeBooleanGetResponse('analytics.enabled', false)
+        if (event === SettingsEvents.GET) return makeBooleanGetResponse('analytics.share', false)
         if (event === SettingsEvents.SET) return {ok: true, restartRequired: false}
         throw new Error('unexpected event')
       })
 
-      await createJsonCommand('analytics.enabled', 'true', '-y').run()
+      await createJsonCommand('analytics.share', 'true', '-y').run()
 
       const json = parseJsonOutput()
       expect(json.success).to.be.true

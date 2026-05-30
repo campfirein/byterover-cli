@@ -193,7 +193,7 @@ describe('AnalyticsClient', () => {
     // Pre-M4.4 this test asserted "no-op when disabled" (no JSONL append,
     // no queue push, no resolver calls). Post-M4.4 the semantic is
     // "local tracking always; remote send only when enabled" — disable
-    // gates the FLUSH layer, not the TRACK layer. `brv settings set analytics.enabled false`
+    // gates the FLUSH layer, not the TRACK layer. `brv settings set analytics.share false`
     // means "stop shipping to remote", not "stop collecting locally".
     it('still tracks (JSONL + queue + resolvers) when isEnabled returns false; flush is the gate', async () => {
       const queue = new BoundedQueue()

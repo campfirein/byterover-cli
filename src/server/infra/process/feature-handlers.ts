@@ -277,7 +277,7 @@ export async function setupFeatureHandlers({
   // M4.4: close the global-config-handler ↔ analyticsClient cycle.
   // The handler was constructed earlier (so its sync cache was
   // populated before the client read it); now that the client
-  // exists, register it so `brv settings set analytics.enabled false` can call
+  // exists, register it so `brv settings set analytics.share false` can call
   // `abort()` to cancel any in-flight HTTP.
   globalConfigHandler.setAnalyticsClient(analyticsClient)
 
@@ -302,7 +302,7 @@ export async function setupFeatureHandlers({
   }
   new SettingsHandler({
     analyticsClient,
-    // Route `analytics.enabled` GET/SET/RESET/LIST through the
+    // Route `analytics.share` GET/SET/RESET/LIST through the
     // global-config handler so the canonical storage in config.json, the
     // device-id seeding race fix, the analytics cache, and the
     // abort-on-disable side-effect all stay unchanged.
