@@ -53,6 +53,17 @@ import {FileReviewBackupStore} from '../storage/file-review-backup-store.js'
 import {createTokenStore} from '../storage/token-store.js'
 import {HttpTeamService} from '../team/http-team-service.js'
 import {FsTemplateLoader} from '../template/fs-template-loader.js'
+import {channelsEnabled, registerDisabledStubs} from '../transport/handlers/channel-disabled-handler.js'
+import {ChannelCancelHandler} from '../transport/handlers/channel/channel-cancel-handler.js'
+import {ChannelCreateHandler} from '../transport/handlers/channel/channel-create-handler.js'
+import {ChannelGetHandler} from '../transport/handlers/channel/channel-get-handler.js'
+import {ChannelInviteHandler} from '../transport/handlers/channel/channel-invite-handler.js'
+import {ChannelListHandler} from '../transport/handlers/channel/channel-list-handler.js'
+import {ChannelListTurnsHandler} from '../transport/handlers/channel/channel-list-turns-handler.js'
+import {ChannelMentionHandler} from '../transport/handlers/channel/channel-mention-handler.js'
+import {ChannelOnboardHandler} from '../transport/handlers/channel/channel-onboard-handler.js'
+import {ChannelShowHandler} from '../transport/handlers/channel/channel-show-handler.js'
+import {ChannelSubscribeHandler} from '../transport/handlers/channel/channel-subscribe-handler.js'
 import {
   AuthHandler,
   BillingHandler,
@@ -135,6 +146,23 @@ export async function setupFeatureHandlers({
   // Global handlers (no project context needed)
   new ConfigHandler({transport}).setup()
   new SettingsHandler({store: settingsStore, transport}).setup()
+
+  // Channel handlers are gated behind BRV_CHANNELS_ENABLED (opt-out). When the
+  // surface is disabled, register stubs so `channel:*` requests still ack.
+  if (channelsEnabled()) {
+    new ChannelCreateHandler(transport).setup()
+    new ChannelListHandler(transport).setup()
+    new ChannelGetHandler(transport).setup()
+    new ChannelInviteHandler(transport).setup()
+    new ChannelOnboardHandler(transport).setup()
+    new ChannelMentionHandler(transport).setup()
+    new ChannelShowHandler(transport).setup()
+    new ChannelListTurnsHandler(transport).setup()
+    new ChannelSubscribeHandler(transport).setup()
+    new ChannelCancelHandler(transport).setup()
+  } else {
+    registerDisabledStubs(transport)
+  }
 
   new AuthHandler({
     authService: new OAuthService(authConfig),
