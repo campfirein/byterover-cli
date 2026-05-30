@@ -73,6 +73,11 @@ export function wireAnalyticsFlushScheduler(
   return new AnalyticsFlushScheduler({
     flush: () => wiring.analyticsClient.flush(),
     isEnabled: wiring.isEnabled,
+    // M5.4 (ENG-2658): wire the burst-trigger rate-limit gate to the policy so a
+    // 429/503 suppresses threshold flushes (the stretched periodic tick ships
+    // the backlog). Omitted when there's no policy; the scheduler then defaults
+    // to never-rate-limited.
+    ...(policy === undefined ? {} : {isRateLimited: (): boolean => policy.isRateLimited()}),
     ...(nextIntervalMs === undefined ? {} : {nextIntervalMs}),
     pendingCount: async () => (await wiring.jsonlStore.loadPending()).length,
     queueSize: () => wiring.queue.size(),

@@ -1,6 +1,6 @@
 /* eslint-disable camelcase */
 import {readFile as readFileAsync} from 'node:fs/promises'
-import {basename, isAbsolute as isAbsolutePath, relative as relativePath} from 'node:path'
+import {isAbsolute as isAbsolutePath, relative as relativePath} from 'node:path'
 
 import type {AnalyticsEventName} from '../../../shared/analytics/event-names.js'
 import type {CurateRunCompletedProps} from '../../../shared/analytics/events/curate-run-completed.js'
@@ -79,13 +79,17 @@ const OUTSIDE_PROJECT_PATH = '<outside-project>'
  *
  * PR #722 review: `path.relative('/proj', '/Users/dev/other/x.md')` yields
  * `'../../Users/dev/other/x.md'` — still encodes the host layout. When the
- * relative path escapes the project root (or projectPath is unset), surface
- * a stable sentinel + basename rather than the raw absolute path. The
- * sentinel preserves enough signal for backend grouping without becoming
- * PII.
+ * relative path escapes the project root (or projectPath is unset), collapse
+ * to a bare sentinel rather than the raw absolute path.
+ *
+ * PR #726 review: the basename of an out-of-project file is itself PII (e.g.
+ * `passwords.md`, `client-acme.md`, `interview-john-doe.md`) and carries
+ * little analytical value — the file is outside the project being measured.
+ * So the leaf token is dropped too: only the fact (and count) of an
+ * outside-project read survives the wire, never its identity.
  */
 function toRelativePath(filePath: string, projectPath?: string): string {
-  if (!projectPath) return `${OUTSIDE_PROJECT_PATH}/${basename(filePath)}`
+  if (!projectPath) return OUTSIDE_PROJECT_PATH
   const rel = relativePath(projectPath, filePath)
   // `path.relative` returns '' when paths are identical — defensively
   // surface a leaf token rather than emit a zero-length wire string that
@@ -94,7 +98,7 @@ function toRelativePath(filePath: string, projectPath?: string): string {
   // Anything that escapes the project root (`../foo`) or stays absolute
   // (Windows drive letter switches) is treated as outside-project.
   if (rel.startsWith('..') || isAbsolutePath(rel)) {
-    return `${OUTSIDE_PROJECT_PATH}/${basename(filePath)}`
+    return OUTSIDE_PROJECT_PATH
   }
 
   return rel

@@ -37,9 +37,15 @@ function makeClientStub(state: RuntimeStateSnapshot): IAnalyticsClient {
   }
 }
 
-function makePolicyStub(consecutiveFailures: number, nextDelayMs: number): IAnalyticsBackoffPolicy {
+function makePolicyStub(
+  consecutiveFailures: number,
+  nextDelayMs: number,
+  isRateLimited = false,
+): IAnalyticsBackoffPolicy {
   return {
+    applyServerHint() {},
     consecutiveFailures: () => consecutiveFailures,
+    isRateLimited: () => isRateLimited,
     nextDelayMs: () => nextDelayMs,
     onFailure() {},
     onSuccess() {},

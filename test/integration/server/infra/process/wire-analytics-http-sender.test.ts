@@ -10,7 +10,7 @@ import type {IGlobalConfigStore} from '../../../../../src/server/core/interfaces
 import type {StoredAnalyticsRecord} from '../../../../../src/shared/analytics/stored-record.js'
 
 import {GlobalConfig} from '../../../../../src/server/core/domain/entities/global-config.js'
-import {NoopAnalyticsSender} from '../../../../../src/server/infra/analytics/noop-analytics-sender.js'
+import {DrainingAnalyticsSender} from '../../../../../src/server/infra/analytics/draining-analytics-sender.js'
 import {wireAnalyticsHttpSender} from '../../../../../src/server/infra/process/wire-analytics-http-sender.js'
 
 /**
@@ -126,7 +126,10 @@ describe('M4.2 wireAnalyticsHttpSender (integration)', () => {
   })
 
   it('returns failed=ids when the backend returns 5xx (sender swap surface preserved)', async () => {
-    nock(baseUrl).post('/v1/events').reply(503, {})
+    // Use 500, not 503: M5.4 (ENG-2658) reclassifies a bare 503 as the nginx
+    // edge backstop (`rate_limited`), so a generic transient server error is
+    // exercised with 500.
+    nock(baseUrl).post('/v1/events').reply(500, {})
 
     const sender = wireAnalyticsHttpSender({
       analyticsBaseUrl: baseUrl,
@@ -157,9 +160,10 @@ describe('M4.2 wireAnalyticsHttpSender (integration)', () => {
     expect(result).to.deep.equal({failed: [], succeeded: []})
   })
 
-  it('treats missing deviceId from config as a batch failure (no HTTP traffic)', async () => {
-    // Same disable-net-connect guard: empty record-set means HTTP must
-    // not fire, regardless of why.
+  it('treats missing deviceId from config as an http_4xx batch failure (no HTTP traffic)', async () => {
+    // Same disable-net-connect guard: a missing device id means HTTP must
+    // not fire. The failure is classified `http_4xx` (payload-shape) so the
+    // M4.5 backoff policy does not churn on the daemon-side misconfig.
     const emptyStore: IGlobalConfigStore = {
       read: stub().resolves(),
       write: stub().resolves(),
@@ -173,10 +177,10 @@ describe('M4.2 wireAnalyticsHttpSender (integration)', () => {
 
     const result = await sender.send([makeRecord({id: 'r1'})])
 
-    expect(result).to.deep.equal({failed: ['r1'], succeeded: []})
+    expect(result).to.deep.equal({failed: ['r1'], reason: 'http_4xx', succeeded: []})
   })
 
-  it('returns a NoopAnalyticsSender when analyticsBaseUrl is undefined (no HTTP traffic, all ids drained)', async () => {
+  it('returns a DrainingAnalyticsSender when analyticsBaseUrl is undefined (no HTTP traffic, all ids drained)', async () => {
     // Strict: no nock scope registered. With `disableNetConnect`, any
     // axios construction that actually issues a request would throw.
     // We additionally assert the sender's class identity to lock-in
@@ -188,7 +192,7 @@ describe('M4.2 wireAnalyticsHttpSender (integration)', () => {
       version: '3.12.0',
     })
 
-    expect(sender).to.be.instanceOf(NoopAnalyticsSender)
+    expect(sender).to.be.instanceOf(DrainingAnalyticsSender)
 
     const result = await sender.send([makeRecord({id: 'r1'}), makeRecord({id: 'r2'})])
     expect(result).to.deep.equal({failed: [], succeeded: ['r1', 'r2']})

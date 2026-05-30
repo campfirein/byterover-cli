@@ -61,11 +61,14 @@ export class HttpAnalyticsSender implements IAnalyticsSender {
       const config = await this.deps.globalConfigStore.read()
       const deviceId = config?.deviceId
       if (deviceId === undefined || deviceId === '') {
-        // Backend requires `x-byterover-device-id` on every batch.
-        // Without it the request would be rejected with 400; ship the
-        // records as failed so the retry-cap policy bumps attempts and
-        // eventually terminates them rather than looping forever.
-        return {failed: [...ids], succeeded: []}
+        // Backend requires `x-byterover-device-id` on every batch. Without
+        // it the request would be 400-rejected, so classify the failure as
+        // `http_4xx` (a payload-shape problem, not a transient backend
+        // signal). The M4.5 backoff policy then suppresses advancement
+        // rather than churning on this daemon-side misconfig, while the
+        // retry-cap still bumps attempts and eventually terminates the rows
+        // — same terminal classification any other failure reason gets.
+        return {failed: [...ids], reason: 'http_4xx', succeeded: []}
       }
 
       const sessionKey = this.deps.authStateReader.getToken()?.sessionKey
@@ -85,6 +88,13 @@ export class HttpAnalyticsSender implements IAnalyticsSender {
       )
 
       if (httpResult.ok) return {failed: [], succeeded: [...ids]}
+      // M5.4 (ENG-2658): `rate_limited` (429 / 503 edge backstop) carries the
+      // server's retry delay; forward it so `AnalyticsClient` can honor it via
+      // `backoffPolicy.applyServerHint` instead of advancing the failure count.
+      if (httpResult.reason === 'rate_limited') {
+        return {failed: [...ids], reason: 'rate_limited', retryAfterMs: httpResult.retryAfterMs, succeeded: []}
+      }
+
       // M4.5: surface the http-level failure reason so AnalyticsClient
       // can feed it into the backoff policy. `http_4xx` is intentionally
       // forwarded as-is so the caller can suppress backoff advancement

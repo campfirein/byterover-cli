@@ -168,14 +168,22 @@ async function seedPending(client: AnalyticsClient, count: number): Promise<void
 // Hoisted to module scope to satisfy unicorn/consistent-function-scoping.
 // `reason` is optional so the success-path callers can omit it
 // (the autofix would otherwise rewrite `(undefined)` to `()`).
-function makeSenderWithReason(reason?: 'http_4xx' | 'http_5xx' | 'network' | 'timeout'): IAnalyticsSender {
+function makeSenderWithReason(
+  reason?: 'http_4xx' | 'http_5xx' | 'network' | 'rate_limited' | 'timeout',
+  retryAfterMs?: number,
+): IAnalyticsSender {
   return {
     async send(records) {
       if (reason === undefined) {
         return {failed: [], succeeded: records.map((r) => r.id)}
       }
 
-      return {failed: records.map((r) => r.id), reason, succeeded: []}
+      return {
+        failed: records.map((r) => r.id),
+        reason,
+        ...(retryAfterMs === undefined ? {} : {retryAfterMs}),
+        succeeded: [],
+      }
     },
   }
 }
@@ -1342,7 +1350,9 @@ describe('AnalyticsClient', () => {
 
   describe('M4.5 backoff policy feedback', () => {
     type StubPolicy = {
+      applyServerHint: ReturnType<typeof stub>
       consecutiveFailures: () => number
+      isRateLimited: () => boolean
       nextDelayMs: () => number
       onFailure: ReturnType<typeof stub>
       onSuccess: ReturnType<typeof stub>
@@ -1350,7 +1360,9 @@ describe('AnalyticsClient', () => {
 
     function makePolicyStub(): StubPolicy {
       return {
+        applyServerHint: stub(),
         consecutiveFailures: () => 0,
+        isRateLimited: () => false,
         nextDelayMs: () => 30_000,
         onFailure: stub(),
         onSuccess: stub(),
@@ -1445,6 +1457,57 @@ describe('AnalyticsClient', () => {
       expect(policy.onSuccess.called, '4xx is not a success either').to.be.false
     })
 
+    it('honors a rate_limited result via applyServerHint and does NOT advance the failure counter (M5.4 — ENG-2658)', async () => {
+      const policy = makePolicyStub()
+      const client = new AnalyticsClient({
+        backoffPolicy: policy,
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        queue: new BoundedQueue(),
+        sender: makeSenderWithReason('rate_limited', 120_000),
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+      await seedPending(client, 1)
+      await client.flush()
+
+      expect(policy.applyServerHint.calledOnceWithExactly(120_000), 'server hint is forwarded to the policy').to.be
+        .true
+      expect(policy.onFailure.called, 'a 429/503 is reachable, not a failure').to.be.false
+      expect(policy.onSuccess.called, 'a rate-limit is not a success either').to.be.false
+    })
+
+    it('on a rate_limited result without retryAfterMs: logs AND still marks the policy rate-limited so the burst gate engages (M5.4 — ENG-2658)', async () => {
+      const policy = makePolicyStub()
+      const logs: string[] = []
+      const client = new AnalyticsClient({
+        backoffPolicy: policy,
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        log: (m) => logs.push(m),
+        queue: new BoundedQueue(),
+        sender: makeSenderWithReason('rate_limited'), // no retryAfterMs — malformed per the contract
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+      await seedPending(client, 1)
+      await client.flush()
+
+      // Still flip the rate-limited bit (with an invalid sentinel so no delay
+      // floor is set) so the scheduler's burst gate stays closed — otherwise the
+      // next 20-event burst would hammer a server we were just told to back off from.
+      expect(policy.applyServerHint.calledOnce, 'the rate-limited bit must still be flipped').to.be.true
+      expect(
+        Number.isFinite(policy.applyServerHint.firstCall.args[0]),
+        'called with a non-finite sentinel so no delay floor is applied',
+      ).to.equal(false)
+      expect(policy.onFailure.called, 'still not a reachability failure').to.be.false
+      expect(
+        logs.some((m) => m.includes('rate_limited') && /retryAfterMs|hint|burst|suppress/i.test(m)),
+        'the dropped hint must be surfaced in the daemon log, not silently swallowed',
+      ).to.equal(true)
+    })
+
     it('does NOT touch the policy when abort() fired during the flush (user-driven cancel, not a backend signal)', async () => {
       const policy = makePolicyStub()
       let releaseSend!: () => void
@@ -1492,17 +1555,18 @@ describe('AnalyticsClient', () => {
       // No assertion needed beyond "did not throw".
     })
 
-    it('does NOT call onSuccess() on failed-without-reason (missing-deviceId / uncategorized failure)', async () => {
+    it('does NOT call onSuccess() on an uncategorized failed-without-reason result', async () => {
       // Regression for review finding I1: prior code treated `reason === undefined`
-      // as success and called `onSuccess()`. The missing-deviceId path in
-      // `HttpAnalyticsSender` returns `{failed: ids, succeeded: [], reason: undefined}`
-      // — a "we never tried" outcome, NOT a clean ship. Resetting backoff
-      // here would wrongly clear the unreachable counter on a first-boot
-      // config bug. Should skip entirely.
+      // as success and called `onSuccess()`. A `{failed: ids, succeeded: [],
+      // reason: undefined}` result is a "we never shipped" outcome, NOT a clean
+      // ship — resetting backoff here would wrongly clear the unreachable
+      // counter. (The missing-deviceId path now classifies as `http_4xx` and is
+      // guarded separately above; this case covers any other uncategorized
+      // failure.) Should skip entirely.
       const policy = makePolicyStub()
       const sender: IAnalyticsSender = {
         async send(records) {
-          // Mimic the missing-deviceId path: failed-with-no-reason.
+          // Mimic an uncategorized failure: failed-with-no-reason.
           return {failed: records.map((r) => r.id), succeeded: []}
         },
       }

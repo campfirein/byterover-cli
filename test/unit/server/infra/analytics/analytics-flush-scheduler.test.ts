@@ -266,6 +266,34 @@ describe('AnalyticsFlushScheduler', () => {
       expect(deps.flush.called).to.equal(false)
     })
 
+    it('does NOT fire a threshold flush while rate-limited; the stretched periodic tick handles it (M5.4 — ENG-2658)', async () => {
+      const deps = buildDeps({size: 100}) // well past the threshold
+      const scheduler = new AnalyticsFlushScheduler({
+        ...deps,
+        isRateLimited: () => true, // an active server 429/503 rate-limit
+        thresholdCount: 20,
+      })
+
+      scheduler.notifyPushed()
+      await flushMicrotasks()
+
+      expect(deps.flush.called, 'a burst must not hammer a backend that asked us to wait').to.equal(false)
+    })
+
+    it('still fires the threshold flush when NOT rate-limited (normal batching preserved)', async () => {
+      const deps = buildDeps({size: 100})
+      const scheduler = new AnalyticsFlushScheduler({
+        ...deps,
+        isRateLimited: () => false,
+        thresholdCount: 20,
+      })
+
+      scheduler.notifyPushed()
+      await flushMicrotasks()
+
+      expect(deps.flush.calledOnce, 'normal-case batching is unchanged').to.equal(true)
+    })
+
     it('does NOT re-trigger between threshold multiples (regression: queue mirror is monotonic past 20 → every push would fire)', async () => {
       // The queue mirror only decrements on auth-transition drain, NOT on a
       // successful flush. Without a moving baseline, queueSize >= 20 stays

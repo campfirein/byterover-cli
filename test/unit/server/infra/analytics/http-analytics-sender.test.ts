@@ -205,6 +205,25 @@ describe('HttpAnalyticsSender', () => {
       expect(result).to.deep.equal({failed: ['only'], reason: 'http_4xx', succeeded: []})
     })
 
+    it('forwards rate_limited reason AND the retryAfterMs hint (M5.4 — ENG-2658)', async () => {
+      const httpClient = makeCapturingHttpClient({ok: false, reason: 'rate_limited', retryAfterMs: 30_000, status: 429})
+      const sender = new HttpAnalyticsSender({
+        authStateReader: makeAuthReader(),
+        globalConfigStore: makeStubConfigStore(),
+        httpClient,
+        userAgent: 'brv-cli/3.12.0',
+      })
+
+      const result = await sender.send([makeRecord({id: 'r1'}), makeRecord({id: 'r2'})])
+
+      expect(result).to.deep.equal({
+        failed: ['r1', 'r2'],
+        reason: 'rate_limited',
+        retryAfterMs: 30_000,
+        succeeded: [],
+      })
+    })
+
     it('does NOT set reason on a successful send (M4.5 caller treats absence as success)', async () => {
       const httpClient = makeCapturingHttpClient({ok: true})
       const sender = new HttpAnalyticsSender({
@@ -250,12 +269,14 @@ describe('HttpAnalyticsSender', () => {
       expect(httpClient.calls).to.have.lengthOf(0)
     })
 
-    it('treats missing deviceId as a failure (anonymous batches still need a device id per backend contract)', async () => {
+    it('treats missing deviceId as an http_4xx failure (anonymous batches still need a device id per backend contract)', async () => {
       // GlobalConfigStore returns undefined (first-run before the daemon
       // has provisioned a device id). Per the backend contract, batches
-      // without `x-byterover-device-id` are 400-rejected; sender refuses
-      // to ship and counts the records as failed so the flush mirror
-      // (M10.2) increments their attempts.
+      // without `x-byterover-device-id` are 400-rejected; the sender refuses
+      // to ship and classifies the failure as `http_4xx` (a payload-shape
+      // problem, not a transient signal) so the M4.5 backoff policy does not
+      // churn on a daemon-side misconfig, while the flush mirror (M10.2)
+      // still increments attempts toward the retry cap.
       const emptyStore: IGlobalConfigStore = {
         read: stub().resolves(),
         write: stub().resolves(),
@@ -270,7 +291,7 @@ describe('HttpAnalyticsSender', () => {
 
       const result = await sender.send([makeRecord({id: 'r1'})])
 
-      expect(result).to.deep.equal({failed: ['r1'], succeeded: []})
+      expect(result).to.deep.equal({failed: ['r1'], reason: 'http_4xx', succeeded: []})
       expect(httpClient.calls).to.have.lengthOf(0)
     })
   })

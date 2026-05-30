@@ -261,10 +261,12 @@ export class AnalyticsClient implements IAnalyticsClient {
    * Decision table (skip = call neither onSuccess nor onFailure):
    *   - policy not wired                      → skip
    *   - aborted (M4.4 disable cancel)         → skip (user action, not a backend signal)
-   *   - reason = `http_4xx`                   → skip (payload-shape, not a health signal)
+   *   - reason = `http_4xx`                   → skip (payload-shape, not a
+   *     health signal; e.g. HttpAnalyticsSender's `missing-deviceId` path,
+   *     which classifies as `http_4xx` rather than shipping)
    *   - reason undefined AND succeeded.length === 0 → skip (empty no-op
-   *     race, or HttpAnalyticsSender's `missing-deviceId` path that
-   *     returns failed-without-reason; neither is a clean ship)
+   *     race, or an uncategorized failed-without-reason result; no health
+   *     signal either way)
    *   - reason undefined AND succeeded.length > 0   → onSuccess() + M4.6 timestamp stamp
    *   - reason = `timeout` / `network` / `http_5xx` → onFailure()
    *
@@ -284,6 +286,36 @@ export class AnalyticsClient implements IAnalyticsClient {
         )
       }
 
+      return
+    }
+
+    if (result.reason === 'rate_limited') {
+      // M5.4 (ENG-2658): a 429 (app throttler) or 503 (nginx edge backstop) is
+      // a "slow down", not a backend failure. Honor the server's delay via
+      // `applyServerHint` (the scheduler re-arms from `nextDelayMs()` after this
+      // flush settles) and DO NOT advance the failure counter, so a throttled
+      // endpoint never tips the reachability band into "unreachable".
+      if (policy === undefined) return
+      if (result.retryAfterMs === undefined) {
+        // The sender contract pairs `retryAfterMs` with every `rate_limited`
+        // result. If a future producer breaks that, surface it in the log AND
+        // still flip the policy's rate-limited bit — via a non-finite sentinel,
+        // so no delay floor is set but `isRateLimited()` turns true. That keeps
+        // the scheduler's burst gate closed so the next 20-event burst doesn't
+        // hammer a server we were just told to back off from; the M4.5 schedule
+        // still drives the next-tick delay.
+        this.deps.log?.(
+          'analytics.backoff: rate_limited result missing retryAfterMs hint — falling back to the schedule, burst suppressed',
+        )
+        policy.applyServerHint(Number.NaN)
+        return
+      }
+
+      policy.applyServerHint(result.retryAfterMs)
+      this.deps.log?.(
+        `analytics.backoff: rate_limited, honoring server hint retry_after=${result.retryAfterMs}ms ` +
+          `(next=${policy.nextDelayMs()}ms, consecutive_failures=${policy.consecutiveFailures()})`,
+      )
       return
     }
 

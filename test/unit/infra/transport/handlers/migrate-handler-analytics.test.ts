@@ -135,7 +135,13 @@ describe('MigrateHandler analytics emits', () => {
       if (props.mode !== 'forward') throw new Error(`expected forward, got ${props.mode}`)
       expect(props.outcome).to.equal('failure')
       expect(props.dry_run).to.equal(false)
-      expect(props.failure_kind).to.be.a('string').and.not.empty
+      // Pin the exact classification, not just "a non-empty string": the
+      // orchestrator throws `Migration already ran today; ...` here, which
+      // `classifyMigrateFailure` prefix-matches to `archive_exists`. If that
+      // sentinel message is ever reworded the classifier degrades to
+      // `unknown` — this assertion fails the test instead of silently
+      // dropping `archive_exists` from the warehouse.
+      expect(props.failure_kind).to.equal('archive_exists')
     })
   })
 
@@ -181,7 +187,12 @@ describe('MigrateHandler analytics emits', () => {
       if (props.mode !== 'rollback') throw new Error(`expected rollback, got ${props.mode}`)
       expect(props.outcome).to.equal('failure')
       expect(props.dry_run).to.equal(true)
-      expect(props.failure_kind).to.be.a('string').and.not.empty
+      // Pin the exact classification: the orchestrator throws
+      // `No archive to roll back. ...` here, which `classifyMigrateFailure`
+      // prefix-matches to `no_archive`. Asserting the value (not just
+      // "non-empty string") turns a future sentinel-message reword into a
+      // failing test rather than a silent `unknown` in the warehouse.
+      expect(props.failure_kind).to.equal('no_archive')
     })
   })
 

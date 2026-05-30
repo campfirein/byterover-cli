@@ -152,8 +152,10 @@ describe('AnalyticsHook', () => {
       expect(m12Calls()[0].args[0]).to.equal(AnalyticsEventNames.CURATE_OPERATION_APPLIED)
       const firstProps = m12Calls()[0].args[1] as Record<string, unknown>
       // buildCurateTask sets projectPath:'/project'; /a.md escapes the
-      // project root → PR #722 outside-project sentinel + basename.
-      expect(firstProps.relative_path).to.equal('<outside-project>/a.md')
+      // project root → bare PR #722 outside-project sentinel (the basename is
+      // dropped so an out-of-project filename never reaches the wire). The op
+      // stays identifiable via knowledge_path below.
+      expect(firstProps.relative_path).to.equal('<outside-project>')
       expect(firstProps.knowledge_path).to.equal('notes/a')
       expect(firstProps.operation_type).to.equal('ADD')
       expect(firstProps.needs_review).to.equal(false)
@@ -339,11 +341,14 @@ describe('AnalyticsHook', () => {
       expect(props.matched_doc_count).to.equal(7)
       const paths = props.read_paths_with_metadata as Array<Record<string, unknown>>
       expect(paths).to.have.lengthOf(3)
-      // sorted lexicographically; relativized against projectPath:'/project'
+      // sorted lexicographically; relativized against projectPath:'/project'.
+      // All three escape the root, so each collapses to the bare sentinel.
+      // The count (3) still distinguishes them — dedup is on the original
+      // absolute path, not on this relativized output.
       expect(paths.map((p) => p.relative_path)).to.deep.equal([
-        '<outside-project>/a.md',
-        '<outside-project>/b.md',
-        '<outside-project>/c.md',
+        '<outside-project>',
+        '<outside-project>',
+        '<outside-project>',
       ])
       // each entry has empty keywords/tags arrays and an empty related_paths
       // list — no frontmatter source files exist in this in-memory test.
@@ -733,9 +738,11 @@ describe('AnalyticsHook', () => {
       expect(filterM12(bundle.trackStub)).to.have.lengthOf(2)
       const first = filterM12(bundle.trackStub)[0].args[1] as Record<string, unknown>
       const second = filterM12(bundle.trackStub)[1].args[1] as Record<string, unknown>
-      // buildCurateTask projectPath:'/project'; absolute paths relativize with '../' prefix
-      expect(first.relative_path, 'first emit must be op1').to.equal('<outside-project>/op1.md')
-      expect(second.relative_path, 'second emit must be op2').to.equal('<outside-project>/op2.md')
+      // Both files escape projectPath:'/project', so relative_path collapses
+      // to the same bare sentinel for both — distinguish the ops by their
+      // knowledge_path instead to prove arrival-order emit (op1 before op2).
+      expect(first.knowledge_path, 'first emit must be op1').to.equal('notes/op1')
+      expect(second.knowledge_path, 'second emit must be op2').to.equal('notes/op2')
     })
 
     it('onTaskCompleted waits for in-flight onToolResult work before emitting CURATE_RUN_COMPLETED', async () => {
@@ -787,8 +794,9 @@ describe('AnalyticsHook', () => {
 
       expect(filterM12(bundle.trackStub)).to.have.lengthOf(1)
       const props = filterM12(bundle.trackStub)[0].args[1] as Record<string, unknown>
-      // /missing.md escapes the '/project' root — PR #722 outside-project sentinel.
-      expect(props.relative_path).to.equal('<outside-project>/missing.md')
+      // /missing.md escapes the '/project' root — bare PR #722 outside-project
+      // sentinel (basename dropped).
+      expect(props.relative_path).to.equal('<outside-project>')
       expect(props.keywords).to.deep.equal([])
       expect(props.tags).to.deep.equal([])
       expect(props).to.not.have.property('related')

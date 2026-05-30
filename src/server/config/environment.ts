@@ -33,7 +33,7 @@ type EnvironmentConfig = {
    * malformed. There is NO code-side fallback to a shared default; see
    * `resolveAnalyticsBaseUrl` below for the rationale. Consumers
    * downstream MUST handle the `undefined` case
-   * (`wireAnalyticsHttpSender` swaps in `NoopAnalyticsSender`; the
+   * (`wireAnalyticsHttpSender` swaps in `DrainingAnalyticsSender`; the
    * status snapshot coalesces to `''` and surfaces `(not configured)`).
    */
   analyticsBaseUrl: string | undefined

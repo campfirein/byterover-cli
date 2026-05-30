@@ -9,8 +9,12 @@ import type {StoredAnalyticsRecord} from '../../../../shared/analytics/stored-re
  *   - `http_5xx` - server error. Transient → back off.
  *   - `http_4xx` - backend rejected the payload shape. NOT transient — the
  *     caller MUST NOT advance backoff on 4xx; retrying won't help.
+ *   - `rate_limited` - M5.4 (ENG-2658): server throttle (429) or nginx edge
+ *     backstop (503). The caller honors the paired `retryAfterMs` via
+ *     `backoffPolicy.applyServerHint` and MUST NOT advance the failure counter
+ *     (a throttled endpoint is reachable, not failing).
  */
-export type SendFailureReason = 'http_4xx' | 'http_5xx' | 'network' | 'timeout'
+export type SendFailureReason = 'http_4xx' | 'http_5xx' | 'network' | 'rate_limited' | 'timeout'
 
 /**
  * Per-send outcome. Each input record's `id` is mirrored back in exactly
@@ -28,6 +32,12 @@ export type SendResult = Readonly<{
    * (no-op senders, tests) may continue to ignore this field.
    */
   reason?: SendFailureReason
+  /**
+   * M5.4 (ENG-2658): server-supplied retry delay in milliseconds. Present
+   * only alongside `reason: 'rate_limited'`; the caller feeds it to
+   * `backoffPolicy.applyServerHint`.
+   */
+  retryAfterMs?: number
   succeeded: string[]
 }>
 

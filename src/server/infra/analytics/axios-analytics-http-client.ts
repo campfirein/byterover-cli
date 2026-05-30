@@ -10,11 +10,21 @@ import type {
   IAnalyticsHttpClient,
 } from '../../core/interfaces/analytics/i-analytics-http-client.js'
 
+import {processLog} from '../../utils/process-logger.js'
+
 const DEFAULT_TIMEOUT_MS = 5000
 const EVENTS_PATH = '/v1/events'
+// M5.4 (ENG-2658): delay applied when a 429 carries no `Retry-After` hint, or
+// when the nginx edge backstop trips with a bare 503 (which never carries one).
+const DEFAULT_RETRY_AFTER_MS = 60_000
 
 type AxiosAnalyticsHttpClientOptions = {
   baseUrl: string
+  /**
+   * Sink for operational WARN lines (M5.4 default-backoff fallback). Defaults
+   * to the daemon `processLog`; tests inject a spy to assert the WARN fired.
+   */
+  log?: (message: string) => void
   /** Override request timeout (default 5000ms). Test-only escape hatch. */
   timeoutMs?: number
 }
@@ -38,8 +48,10 @@ type AxiosAnalyticsHttpClientOptions = {
  */
 export class AxiosAnalyticsHttpClient implements IAnalyticsHttpClient {
   private readonly axios: AxiosInstance
+  private readonly log: (message: string) => void
 
   public constructor(options: AxiosAnalyticsHttpClientOptions) {
+    this.log = options.log ?? processLog
     this.axios = axios.create({
       baseURL: options.baseUrl.replace(/\/+$/, ''),
       // `validateStatus` returning true delegates HTTP-status classification
@@ -65,9 +77,9 @@ export class AxiosAnalyticsHttpClient implements IAnalyticsHttpClient {
         // (client-side termination, not a server-side condition).
         ...(options?.signal === undefined ? {} : {signal: options.signal}),
       })
-      return classifyResponse(response)
+      return classifyResponse(response, this.log)
     } catch (error: unknown) {
-      return classifyError(error)
+      return classifyError(error, this.log)
     }
   }
 
@@ -85,24 +97,83 @@ export class AxiosAnalyticsHttpClient implements IAnalyticsHttpClient {
   }
 }
 
-const classifyResponse = (response: AxiosResponse): AnalyticsHttpSendResult => {
+const classifyResponse = (response: AxiosResponse, log: (message: string) => void): AnalyticsHttpSendResult => {
   const {status} = response
   if (status >= 200 && status < 300) return {ok: true}
+  // M5.4 (ENG-2658): the app throttler (@nestjs/throttler) returns 429 with a
+  // server-supplied `Retry-After`. Honor it (header, then `retry_after_seconds`
+  // body, then default) rather than treating it as a payload-shape 4xx.
+  if (status === 429) return classifyRateLimited(response, status, log)
   if (status >= 400 && status < 500) return {ok: false, reason: 'http_4xx', status}
+  // M5.4: a bare 503 is typically the nginx edge backstop tripping (usually no
+  // `Retry-After`). Route it through the same rate-limit path as 429 so a 503
+  // that DOES carry a server hint (maintenance page, alternate ingress, CDN) is
+  // honored rather than forced to the default — otherwise default delay + WARN.
+  // NOT an unreachable backend (the endpoint is up, we're being shed). Other
+  // 5xx stay `http_5xx` (genuine transient errors that drive exponential backoff).
+  if (status === 503) return classifyRateLimited(response, status, log)
+
   if (status >= 500 && status < 600) return {ok: false, reason: 'http_5xx', status}
   // 1xx / 3xx without redirect handling reach here. Treat as network-level
   // anomaly so callers see a tagged result rather than silently succeeding.
   return {ok: false, reason: 'network'}
 }
 
-const classifyError = (error: unknown): AnalyticsHttpSendResult => {
+const classifyRateLimited = (
+  response: AxiosResponse,
+  status: number,
+  log: (message: string) => void,
+): AnalyticsHttpSendResult => {
+  const fromHeader = parseRetryAfterHeaderMs(response.headers)
+  if (fromHeader !== undefined) return {ok: false, reason: 'rate_limited', retryAfterMs: fromHeader, status}
+  const fromBody = parseRetryAfterBodyMs(response.data)
+  if (fromBody !== undefined) return {ok: false, reason: 'rate_limited', retryAfterMs: fromBody, status}
+  log(
+    `analytics.http: ${status} without a usable Retry-After header or retry_after_seconds body, ` +
+      `applying default ${DEFAULT_RETRY_AFTER_MS}ms backoff`,
+  )
+  return {ok: false, reason: 'rate_limited', retryAfterMs: DEFAULT_RETRY_AFTER_MS, status}
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null
+
+/** Parse a `Retry-After` header (RFC 7231) — delay-seconds OR HTTP-date — to milliseconds. */
+const parseRetryAfterHeaderMs = (headers: unknown): number | undefined => {
+  if (!isObject(headers)) return undefined
+  // axios lowercases response header keys.
+  const raw = headers['retry-after']
+  if (typeof raw !== 'string' && typeof raw !== 'number') return undefined
+  // Preferred form: delay-seconds.
+  const asSeconds = Number(raw)
+  if (Number.isFinite(asSeconds) && asSeconds > 0) return Math.round(asSeconds * 1000)
+  // Alternate form: an HTTP-date — convert to a forward-looking delay. A date in
+  // the past (or an unparseable value) yields no usable hint. An absurdly
+  // far-future date is bounded downstream by the policy's MAX_SERVER_HINT_MS
+  // cap, so there is no setTimeout-overflow risk here.
+  const targetMs = Date.parse(String(raw))
+  if (!Number.isFinite(targetMs)) return undefined
+  const deltaMs = targetMs - Date.now()
+  return deltaMs > 0 ? deltaMs : undefined
+}
+
+/** Parse a `retry_after_seconds` JSON body field (the throttler's fallback). */
+const parseRetryAfterBodyMs = (data: unknown): number | undefined => {
+  if (!isObject(data)) return undefined
+  const seconds = data.retry_after_seconds
+  return typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0
+    ? Math.round(seconds * 1000)
+    : undefined
+}
+
+const classifyError = (error: unknown, log: (message: string) => void): AnalyticsHttpSendResult => {
   if (axios.isAxiosError(error)) {
     // Timeout: axios surfaces this as `ECONNABORTED` with `code === 'ECONNABORTED'`,
     // or `ETIMEDOUT` on socket-level timeouts.
     if (isTimeoutCode(error)) return {ok: false, reason: 'timeout'}
     // Response present but classifyResponse didn't run (shouldn't happen given
     // `validateStatus: () => true`, but defensively re-classify here).
-    if (error.response !== undefined) return classifyResponse(error.response)
+    if (error.response !== undefined) return classifyResponse(error.response, log)
     return {ok: false, reason: 'network'}
   }
 
