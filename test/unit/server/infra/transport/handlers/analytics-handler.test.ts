@@ -124,6 +124,33 @@ describe('AnalyticsHandler', () => {
       expect(analyticsClient.trackCalls, 'unknown events must NOT reach track').to.deep.equal([])
     })
 
+    it('should drop events named after Object.prototype members without throwing (prototype-key guard)', async () => {
+      const transport = createMockTransportServer()
+      const analyticsClient = makeMockAnalyticsClient()
+      new AnalyticsHandler({analyticsClient, transport}).setup()
+
+      const handler = transport._handlers.get(AnalyticsEvents.TRACK) as AnalyticsTrackHandler
+
+      // A guard using `event in ALL_EVENT_SCHEMAS` matched inherited
+      // Object.prototype keys, so these names passed it and the map lookup
+      // returned a Function/object whose `.safeParse` is undefined — the
+      // dispatch threw a TypeError that escaped the handler. The guard must
+      // treat them as unknown: drop, no throw, no track call.
+      let caught: unknown
+      try {
+        await handler({event: 'toString', properties: {x: 1}}, 'client-1')
+        await handler({event: 'constructor', properties: {x: 1}}, 'client-1')
+        await handler({event: 'valueOf', properties: {x: 1}}, 'client-1')
+        await handler({event: '__proto__', properties: {x: 1}}, 'client-1')
+        await handler({event: 'hasOwnProperty', properties: {x: 1}}, 'client-1')
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught, 'prototype-key events must NOT throw out of the handler').to.equal(undefined)
+      expect(analyticsClient.trackCalls, 'prototype-key events must NOT reach track').to.deep.equal([])
+    })
+
     it('should drop KNOWN events with INVALID per-event properties silently', async () => {
       const transport = createMockTransportServer()
       const analyticsClient = makeMockAnalyticsClient()

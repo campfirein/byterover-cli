@@ -85,16 +85,19 @@ export interface AnalyticsClientDeps {
  * swallowed: analytics MUST NOT crash a correctly-configured consumer,
  * and per ticket scope no error reporting surface exists yet.
  *
- * The no-crash guarantee covers ASYNC errors only. The sync `isEnabled()`
- * callback is called directly; if it throws, the throw propagates to the
- * caller. This is intentional: `isEnabled` is wired to
- * GlobalConfigHandler.getCachedAnalytics(), which throws when invoked
- * before `refreshCache()` has populated the cache. That throw surfaces
- * a bootstrap-misconfiguration bug loudly rather than silently miscounting.
- * Callers MUST ensure the cache is populated before the first `track()`.
+ * `track()` is UNCONDITIONAL: local recording (JSONL + queue) happens
+ * regardless of the analytics flag. The `isEnabled()` gate lives in
+ * `flush()` (remote send) ONLY — a disabled session still records every
+ * track; re-enabling ships the backlog on the next flush. So `track()`
+ * never calls `isEnabled()` and is never a no-op. (Do NOT reintroduce an
+ * `isEnabled()` gate here: that was the bug where fresh/never-authed users
+ * recorded nothing and shipped no telemetry.)
  *
- * When disabled, `track()` is a true no-op: no resolver calls, no
- * allocations beyond the function call frame.
+ * `flush()` calls `isEnabled()` synchronously; that callback is wired to
+ * GlobalConfigHandler.getCachedAnalytics(), which throws if invoked before
+ * `refreshCache()` populated the cache — surfacing a bootstrap-misconfig
+ * loudly rather than silently miscounting. The cache MUST be populated
+ * before the first `flush()`.
  */
 export class AnalyticsClient implements IAnalyticsClient, IWireEventTracker {
   // M4.4 cancellation slot. Held only while a flush is in flight; the

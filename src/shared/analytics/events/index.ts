@@ -166,5 +166,10 @@ export type PropsArg<E extends AnalyticsEventName> = keyof PropsForEvent<E> exte
  * before forwarding to the typed daemon client.
  */
 export function isAnalyticsEventName(value: unknown): value is AnalyticsEventName {
-  return typeof value === 'string' && value in ALL_EVENT_SCHEMAS
+  // `Object.hasOwn`, NOT the `in` operator: `in` walks the prototype chain, so
+  // 'toString' / 'constructor' / 'valueOf' / '__proto__' etc. would pass the
+  // guard, and `ALL_EVENT_SCHEMAS[event]` would then resolve to an inherited
+  // Object.prototype member (a Function, not a Zod schema) whose `.safeParse`
+  // is undefined — throwing at the wire-side dispatch. Own-property only.
+  return typeof value === 'string' && Object.hasOwn(ALL_EVENT_SCHEMAS, value)
 }
