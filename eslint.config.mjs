@@ -88,4 +88,33 @@ export default [
       ],
     },
   },
+  // Architecture boundary: src/server/core may depend only on abstractions.
+  // NOTE: infra is a SIBLING of core under src/server/, so a core→infra relative import
+  // (e.g. ../../../infra/foo.js) has NO "server" segment — the sibling-relative ../infra
+  // variants below are REQUIRED in addition to the **/server/infra/** form.
+  {
+    files: ['src/server/core/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/server/infra/**', '../infra/**', '../../infra/**', '../../../infra/**', '../../../../infra/**'],
+              message:
+                'core must not import from server/infra. Depend on an interface in core/interfaces and let infra implement it (dependency inversion).',
+            },
+            {
+              group: ['**/oclif/**', '../oclif/**', '../../oclif/**', '../../../oclif/**', '../../../../oclif/**'],
+              message: 'core must not import from oclif. Keep CLI wiring out of the domain/application core.',
+            },
+            {
+              group: ['**/tui/**', '../tui/**', '../../tui/**', '../../../tui/**', '../../../../tui/**'],
+              message: 'core must not import from tui. Keep UI out of the domain/application core.',
+            },
+          ],
+        },
+      ],
+    },
+  },
 ]

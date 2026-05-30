@@ -1,5 +1,9 @@
+// TODO(ENG-3034): relocate the HtmlWriteError type into core so this stops importing infra.
+// eslint-disable-next-line no-restricted-imports
 import type {HtmlWriteError} from '../../../infra/render/writer/html-writer.js'
 
+// TODO(ENG-3034): inject ELEMENT_REGISTRY (or move it into core) so this stops importing infra.
+// eslint-disable-next-line no-restricted-imports
 import {ELEMENT_REGISTRY} from '../../../infra/render/elements/registry.js'
 import {ELEMENT_NAMES} from './element-types.js'
 

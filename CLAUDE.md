@@ -36,6 +36,10 @@ npm run dev:ui:package               # Vite dev server resolving shared UI from 
 - Use `??` for nullish defaults (not `||`, which also triggers on `0`/`''`/`false`) and `?.` for safe property access
 - Prefer optional properties (`foo?: T`) over `foo: T | undefined` when a key may legitimately be absent
 
+**Comments / JSDoc**:
+- Doc comments for functions and methods start with a third-person singular present-tense verb (`Creates a channel`, `Returns the driver`, `Appends an event`), not the imperative (`Create`, `Return`, `Append`). This applies to method/function descriptions; type, property, and parameter docs are not constrained this way.
+- Don't embed ephemeral project-planning references in code/doc comments — milestone labels (`M1`, `M5+`), open-question numbers (`Q7`), or Linear issue IDs. They rot as plans change and mislead later readers. State the durable *why* (e.g. "a local subprocess and a remote peer implement the same interface"), not the *when* (which milestone). Exception: a `TODO(ENG-1234)` pointing at a tracked follow-up issue is the correct way to mark known debt. Milestone/issue-linked rationale belongs in Linear and the byterover context tree, not in code.
+
 **Testing (Strict TDD — MANDATORY)**:
 - You MUST follow Test-Driven Development. This is non-negotiable.
   - **Step 1 — Write failing tests FIRST**: Before writing ANY implementation code, write or update tests that describe the expected behavior. Do NOT write implementation and tests together or in reverse order.

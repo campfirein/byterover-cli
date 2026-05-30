@@ -1,4 +1,6 @@
 import type {ICipherAgent} from '../../../../agent/core/interfaces/i-cipher-agent.js'
+// TODO(ENG-3034): relocate the HtmlWriteError type into core so this stops importing infra.
+// eslint-disable-next-line no-restricted-imports
 import type {HtmlWriteError} from '../../../infra/render/writer/html-writer.js'
 import type {CurateUsageRecord} from '../../domain/entities/curate-log-entry.js'
 import type {IUsageAggregator} from '../telemetry/i-usage-aggregator.js'
