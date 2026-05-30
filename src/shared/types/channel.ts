@@ -69,6 +69,7 @@ export const ContentBlockSchema = z.discriminatedUnion('type', [
   ResourceLinkContentBlockSchema,
   EmbeddedResourceContentBlockSchema,
 ])
+
 export type ContentBlock = z.infer<typeof ContentBlockSchema>
 
 // ─── Handle ─────────────────────────────────────────────────────────────────
@@ -93,6 +94,7 @@ export const TurnAuthorSchema = z.discriminatedUnion('kind', [
     sessionId: z.string().optional(),
   }),
 ])
+
 export type TurnAuthor = z.infer<typeof TurnAuthorSchema>
 
 // ─── ChannelMember ──────────────────────────────────────────────────────────
@@ -137,6 +139,7 @@ export const ChannelMemberAcpAgentSchema = z.object({
   capabilities: z.array(z.string()),
   status: AcpAgentStatusSchema,
 })
+
 export type ChannelMemberAcpAgent = z.infer<typeof ChannelMemberAcpAgentSchema>
 
 export const ChannelMemberLocalAgentSchema = z.object({
@@ -146,12 +149,14 @@ export const ChannelMemberLocalAgentSchema = z.object({
   agentName: z.string(),
   status: LocalAgentStatusSchema,
 })
+
 export type ChannelMemberLocalAgent = z.infer<typeof ChannelMemberLocalAgentSchema>
 
 export const ChannelMemberSchema = z.discriminatedUnion('memberKind', [
   ChannelMemberAcpAgentSchema,
   ChannelMemberLocalAgentSchema,
 ])
+
 export type ChannelMember = z.infer<typeof ChannelMemberSchema>
 
 /**
@@ -165,11 +170,13 @@ export const ChannelMemberSummarySchema = z.object({
   status: z.string().optional(),
   capabilities: z.array(z.string()).optional(),
 })
+
 export type ChannelMemberSummary = z.infer<typeof ChannelMemberSummarySchema>
 
 // ─── Turn + TurnDelivery ────────────────────────────────────────────────────
 
 export const TurnStateSchema = z.enum(['pending', 'dispatched', 'completed', 'cancelled'])
+
 export type TurnState = z.infer<typeof TurnStateSchema>
 
 export const TurnSchema = z
@@ -186,6 +193,7 @@ export const TurnSchema = z
     idempotencyKey: z.string().optional(),
   })
   .strict()
+
 export type Turn = z.infer<typeof TurnSchema>
 
 export const TurnDeliveryStateSchema = z.enum([
@@ -197,6 +205,7 @@ export const TurnDeliveryStateSchema = z.enum([
   'cancelled',
   'errored',
 ])
+
 export type TurnDeliveryState = z.infer<typeof TurnDeliveryStateSchema>
 
 export const TurnDeliverySchema = z
@@ -223,6 +232,7 @@ export const TurnDeliverySchema = z
     finalAnswer: z.string().optional(),
   })
   .strict()
+
 export type TurnDelivery = z.infer<typeof TurnDeliverySchema>
 
 // ─── TurnEvent ──────────────────────────────────────────────────────────────
@@ -242,6 +252,7 @@ export const PermissionOptionSchema = z.object({
   name: z.string(),
   kind: z.enum(['allow_once', 'allow_always', 'reject_once', 'reject_always']),
 })
+
 export type PermissionOption = z.infer<typeof PermissionOptionSchema>
 
 export const TurnEventSchema = z.discriminatedUnion('kind', [
@@ -308,6 +319,7 @@ export const TurnEventSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
 ])
+
 export type TurnEvent = z.infer<typeof TurnEventSchema>
 
 // ─── Channel ────────────────────────────────────────────────────────────────
@@ -316,6 +328,7 @@ export const ChannelSettingsSchema = z.object({
   maxParallelAgents: z.number().int().positive().optional(),
   defaultLookbackTurns: z.number().int().nonnegative().optional(),
 })
+
 export type ChannelSettings = z.infer<typeof ChannelSettingsSchema>
 
 export const ChannelSchema = z
@@ -330,4 +343,5 @@ export const ChannelSchema = z
     settings: ChannelSettingsSchema.optional(),
   })
   .strict()
+
 export type Channel = z.infer<typeof ChannelSchema>
