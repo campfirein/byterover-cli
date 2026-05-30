@@ -148,6 +148,21 @@ describe('AnalyticsBatch', () => {
       expect(AnalyticsBatch.fromJson(json)).to.be.undefined
     })
 
+    it('should return undefined when identity carries an unexpected extra field (.strict())', () => {
+      const json = {
+        events: [
+          {
+            created_at: '2023-11-14T22:13:20+00:00',
+            identity: {device_id: '550e8400-e29b-41d4-a716-446655440000', extra_field: 'leak'},
+            name: 'x',
+            properties: {},
+          },
+        ],
+        schema_version: 2,
+      }
+      expect(AnalyticsBatch.fromJson(json)).to.be.undefined
+    })
+
     it('should return undefined when an event is missing created_at', () => {
       const json = {
         events: [{identity: validIdentity, name: 'x', properties: {}}],

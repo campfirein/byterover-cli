@@ -25,7 +25,7 @@
 import {GlobalInstanceManager} from '@campfirein/brv-transport-client'
 import express from 'express'
 import {fork, type StdioOptions} from 'node:child_process'
-import {mkdirSync, readdirSync, readFileSync, unlinkSync} from 'node:fs'
+import {mkdirSync, readdirSync, unlinkSync} from 'node:fs'
 import {dirname, join} from 'node:path'
 import {fileURLToPath} from 'node:url'
 
@@ -53,6 +53,7 @@ import {
 import {buildReviewUrl} from '../../utils/build-review-url.js'
 import {getGlobalDataDir} from '../../utils/global-data-path.js'
 import {crashLog, processLog} from '../../utils/process-logger.js'
+import {readCliVersion} from '../../utils/read-cli-version.js'
 import {createBillingStateHandler} from '../billing/billing-state-endpoint.js'
 import {ClientManager} from '../client/client-manager.js'
 import {ProjectConfigStore} from '../config/file-config-store.js'
@@ -101,25 +102,6 @@ function log(msg: string): void {
   processLog(`[Daemon] ${msg}`)
 }
 
-/**
- * Reads the CLI version from package.json.
- * Walks up from the compiled file location to find the project root.
- */
-function readCliVersion(): string {
-  try {
-    const currentDir = dirname(fileURLToPath(import.meta.url))
-    // Both src/ and dist/ are 4 levels deep: server/infra/daemon/brv-server
-    const pkgPath = join(currentDir, '..', '..', '..', '..', 'package.json')
-    const pkg: unknown = JSON.parse(readFileSync(pkgPath, 'utf8'))
-    if (typeof pkg === 'object' && pkg !== null && 'version' in pkg && typeof pkg.version === 'string') {
-      return pkg.version
-    }
-  } catch {
-    // Best-effort — return fallback
-  }
-
-  return 'unknown'
-}
 
 /**
  * Removes old daemon log files, keeping the most recent ones.

@@ -86,7 +86,6 @@ export interface ContextTreeUpdateFileResponse {
 
 export interface ContextTreeGetFileMetadataRequest {
   cli_metadata?: CliMetadata
-  /** File paths to fetch metadata for. */
   /**
    * File or folder paths to fetch metadata for. Folder paths resolve to the
    * latest commit that modified any descendant of the folder.

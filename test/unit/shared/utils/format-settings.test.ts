@@ -146,6 +146,11 @@ describe('format-settings (shared)', () => {
       expect(rows[0].category).to.equal('other')
       expect(rows[0].unit).to.equal('count')
     })
+
+    it('maps the analytics category onto the row instead of falling back to other', () => {
+      const rows = buildSettingsRows([makeItem({category: 'analytics', key: 'analytics.enabled'})])
+      expect(rows[0].category).to.equal('analytics')
+    })
   })
 
   describe('parseRowInput', () => {

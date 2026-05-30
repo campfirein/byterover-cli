@@ -30,14 +30,19 @@ export type AnalyticsBatchJson = Readonly<{
  * `as Record<string, unknown>` casts that violate CLAUDE.md's
  * "avoid `as Type` assertions" rule).
  */
-const IdentityWireSchema = z.object({
-  device_id: z.string().refine((s) => s.trim().length > 0, {
-    message: 'device_id must be non-empty',
-  }),
-  email: z.string().optional(),
-  name: z.string().optional(),
-  user_id: z.string().optional(),
-})
+const IdentityWireSchema = z
+  .object({
+    device_id: z.string().refine((s) => s.trim().length > 0, {
+      message: 'device_id must be non-empty',
+    }),
+    email: z.string().optional(),
+    name: z.string().optional(),
+    user_id: z.string().optional(),
+  })
+  // `.strict()` mirrors the event-level schema below: an unexpected field
+  // nested in `identity` (a forbidden/PII key, or residue from a pre-upgrade
+  // producer) is rejected at the wire boundary, not silently stripped.
+  .strict()
 
 // `.strict()` mirrors the backend's `forbidNonWhitelisted` validator
 // (byterover-telemetry PR #21): any residual field from a pre-upgrade

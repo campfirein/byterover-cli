@@ -216,6 +216,16 @@ export class AnalyticsClient implements IAnalyticsClient {
     // into a fresh queue → prior-session record stays visible to webui.
     this.deps.queue.drain()
 
+    // NOTE: we intentionally do NOT await an in-flight `flush()` (the
+    // `pendingFlush` slot) before clearing. If a flush is mid-send when this
+    // runs, it already loaded its records and will later call
+    // `jsonlStore.updateStatus(...)` on ids the clear below removed — which is
+    // a safe no-op (the store ignores non-matching ids). That flush ships
+    // those pre-transition events under the OLD identity, which is exactly
+    // what the M4.4 pre-transition flush hook (`wireAnalyticsAuthPreTransition`)
+    // is for; clearing afterward drops whatever it didn't carry. Awaiting the
+    // flush here would only add latency to the auth transition for no
+    // correctness gain, so the barrier is on tracks + queue, not the flush.
     try {
       await this.deps.jsonlStore.clear()
     } catch (error) {

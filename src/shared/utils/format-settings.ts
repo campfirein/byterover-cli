@@ -160,7 +160,13 @@ function renderBoolean(value: boolean): string {
 }
 
 function toRowCategory(category: SettingsItemDTO['category']): SettingsRowCategory {
-  if (category === 'concurrency' || category === 'llm' || category === 'task-history' || category === 'updates') {
+  if (
+    category === 'analytics' ||
+    category === 'concurrency' ||
+    category === 'llm' ||
+    category === 'task-history' ||
+    category === 'updates'
+  ) {
     return category
   }
 

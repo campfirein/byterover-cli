@@ -125,6 +125,22 @@ describe('synthetic-tool-result-emit (M17 tool-mode gap fix)', () => {
       expect(logStub.firstCall.args[0]).to.include('sync throw')
     })
 
+    it('does not let a throwing log callback escape on the sync-throw path', () => {
+      const requestStub = sinon.stub().throws(new Error('boom'))
+      const transport = {request: requestStub} as unknown as ITransportClient
+      const throwingLog = sinon.stub().throws(new Error('log sink exploded'))
+
+      expect(() =>
+        emitSyntheticCurateToolResult({
+          log: throwingLog,
+          operations: [{path: 'x', status: 'success', type: 'ADD'}],
+          taskId: 'task-1',
+          transport,
+        }),
+      ).to.not.throw()
+      expect(throwingLog.calledOnce, 'the log sink was invoked (and its throw swallowed)').to.equal(true)
+    })
+
     it('swallows async transport rejections and logs (PR #728 review fix)', async () => {
       const requestStub = sinon.stub().rejects(new Error('socket dead'))
       const transport = {request: requestStub} as unknown as ITransportClient

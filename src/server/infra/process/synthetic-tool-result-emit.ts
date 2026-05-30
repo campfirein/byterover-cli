@@ -49,15 +49,28 @@ function safeDispatch(
   log: ((msg: string) => void) | undefined,
   context: string,
 ): void {
+  // A logging sink that itself throws must never escalate into the telemetry
+  // path: on the sync path it would escape this function, and inside the
+  // async `.catch` it would become a fresh unhandled rejection — the very
+  // failure mode this wrapper exists to prevent. Swallow any error from the
+  // sink itself.
+  const safeLog = (msg: string): void => {
+    try {
+      log?.(msg)
+    } catch {
+      /* logging is best-effort — never let the sink crash the daemon */
+    }
+  }
+
   try {
     const result = transport.request(event, payload) as unknown
     if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
       ;(result as Promise<unknown>).catch((error: unknown) => {
-        log?.(`${context}: async rejection — ${error instanceof Error ? error.message : String(error)}`)
+        safeLog(`${context}: async rejection — ${error instanceof Error ? error.message : String(error)}`)
       })
     }
   } catch (error) {
-    log?.(`${context}: sync throw — ${error instanceof Error ? error.message : String(error)}`)
+    safeLog(`${context}: sync throw — ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 

@@ -120,7 +120,7 @@ describe('ContextTreeHandler analytics emits', () => {
     expect(props.byte_delta).to.be.lessThan(0)
   })
 
-  it('emits context_tree_file_edited outcome=failure failure_kind=conflict on path traversal', async () => {
+  it('emits context_tree_file_edited outcome=failure failure_kind=invalid_path on path traversal', async () => {
     try {
       await requestHandlers[ContextTreeEvents.UPDATE_FILE]({content: 'x', path: '../../etc/passwd'}, 'c1')
       expect.fail('should have thrown')
@@ -132,7 +132,7 @@ describe('ContextTreeHandler analytics emits', () => {
     expect(calls.length).to.equal(1)
     const props = calls[0].args[1] as {failure_kind?: string; outcome: string; project_path_hash: string}
     expect(props.outcome).to.equal('failure')
-    expect(props.failure_kind).to.equal('conflict')
+    expect(props.failure_kind).to.equal('invalid_path')
     expect(props.project_path_hash).to.match(sha256HexRegex)
   })
 

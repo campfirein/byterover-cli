@@ -310,7 +310,9 @@ export class ContextTreeHandler {
 }
 
 function classifyUpdateFileFailure(error: unknown): string {
-  if (error instanceof Error && error.message.includes('traversal')) return 'conflict'
+  // A path-traversal rejection is a rejected-input/security signal, not a
+  // write conflict — classify it accordingly for the analytics funnel.
+  if (error instanceof Error && error.message.includes('traversal')) return 'invalid_path'
   if (error instanceof Error && 'code' in error) {
     const code = String((error as {code: unknown}).code)
     if (code.startsWith('E')) return 'fs_access'
