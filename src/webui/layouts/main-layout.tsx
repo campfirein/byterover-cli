@@ -2,6 +2,7 @@ import {Badge} from '@campfirein/byterover-packages/components/badge'
 import {cn} from '@campfirein/byterover-packages/lib/utils'
 import {NavLink, Outlet} from 'react-router-dom'
 
+import {MigrationPrompt} from '../features/migrate/components/migration-prompt'
 import {useTaskCounts} from '../features/tasks/stores/task-store'
 import {useGetVcStatus} from '../features/vc/api/get-vc-status'
 import {statusToFiles} from '../features/vc/utils/status-to-files'
@@ -79,6 +80,8 @@ export function MainLayout() {
       <main className="min-h-0 flex-1 overflow-y-auto p-4">
         <Outlet />
       </main>
+
+      <MigrationPrompt />
     </div>
   )
 }
