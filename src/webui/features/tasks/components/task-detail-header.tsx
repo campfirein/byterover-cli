@@ -6,6 +6,7 @@ import {toast} from 'sonner'
 
 import type {StoredTask} from '../types/stored-task'
 
+import {curateHtmlDirectRowTitle, isCurateHtmlDirectType} from '../utils/curate-tool-mode'
 import {formatDuration, formatRelative} from '../utils/format-time'
 import {displayTaskType, isActiveStatus, isTerminalStatus} from '../utils/task-status'
 import {StatusPill} from './status-pill'
@@ -33,13 +34,16 @@ export function DetailHeader({cancelling, now, onCancel, task}: DetailHeaderProp
   const referenceTime = task.startedAt ?? task.createdAt
   const verb = STATUS_VERB[task.status]
   const elapsedLabel = isTerminal ? 'ran' : 'running'
+  // For curate-tool-mode the raw `content` is a JSON blob; decode it so the
+  // header shows the user's intent (CLI) or topic path (MCP) instead.
+  const displayTitle = isCurateHtmlDirectType(task.type) ? curateHtmlDirectRowTitle(task.content) : task.content
 
   return (
     <header className="px-6 pt-5 pb-4">
       <div className="flex items-center gap-3 pr-12">
         <StatusPill status={task.status} />
         <h1 className="text-foreground min-w-0 flex-1 truncate text-lg leading-tight font-medium tracking-tight">
-          {task.content || <span className="text-muted-foreground italic">(empty)</span>}
+          {displayTitle || <span className="text-muted-foreground italic">(empty)</span>}
         </h1>
       </div>
       <div className="text-muted-foreground mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">

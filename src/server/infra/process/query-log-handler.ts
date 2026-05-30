@@ -10,6 +10,29 @@ import {FileQueryLogStore} from '../storage/file-query-log-store.js'
 
 // ── Internal state ────────────────────────────────────────────────────────────
 
+/**
+ * Pull the telemetry fields out of the query result onto the log entry
+ * . All fields are optional; absent fields are not written. Spread
+ * before the discriminated-union completion fields so completion fields
+ * always win on conflicting keys.
+ */
+function telemetryFields(result: QueryResultMetadata | undefined): {
+  cacheCreationTokens?: number
+  cachedInputTokens?: number
+  format?: 'html' | 'markdown'
+  inputTokens?: number
+  outputTokens?: number
+} {
+  if (!result) return {}
+  return {
+    ...(result.usage?.cacheCreationTokens !== undefined && {cacheCreationTokens: result.usage.cacheCreationTokens}),
+    ...(result.usage?.cachedInputTokens !== undefined && {cachedInputTokens: result.usage.cachedInputTokens}),
+    ...(result.format !== undefined && {format: result.format}),
+    ...(result.usage?.inputTokens !== undefined && {inputTokens: result.usage.inputTokens}),
+    ...(result.usage?.outputTokens !== undefined && {outputTokens: result.usage.outputTokens}),
+  }
+}
+
 /** Query metadata without the response string (response arrives via task:completed). */
 type QueryResultMetadata = Omit<QueryExecutorResult, 'response'>
 
@@ -95,6 +118,7 @@ export class QueryLogHandler implements ITaskLifecycleHook {
 
     const updated: QueryLogEntry = {
       ...state.entry,
+      ...telemetryFields(state.queryResult),
       completedAt: Date.now(),
       matchedDocs: state.queryResult?.matchedDocs ?? state.entry.matchedDocs,
       searchMetadata: state.queryResult?.searchMetadata,
@@ -118,6 +142,7 @@ export class QueryLogHandler implements ITaskLifecycleHook {
 
     const updated: QueryLogEntry = {
       ...state.entry,
+      ...telemetryFields(state.queryResult),
       completedAt: Date.now(),
       matchedDocs: state.queryResult?.matchedDocs ?? state.entry.matchedDocs,
       response: result.length > 0 ? result : undefined,
@@ -180,6 +205,7 @@ export class QueryLogHandler implements ITaskLifecycleHook {
 
     const updated: QueryLogEntry = {
       ...state.entry,
+      ...telemetryFields(state.queryResult),
       completedAt: Date.now(),
       error: errorMessage,
       matchedDocs: state.queryResult?.matchedDocs ?? state.entry.matchedDocs,
@@ -206,6 +232,8 @@ export class QueryLogHandler implements ITaskLifecycleHook {
     if (!state) return
     state.queryResult = result
   }
+
+  // ── helpers ───────────────────────────────────────────────────────────────
 
   private getOrCreateStore(projectPath: string): IQueryLogStore {
     const existing = this.stores.get(projectPath)

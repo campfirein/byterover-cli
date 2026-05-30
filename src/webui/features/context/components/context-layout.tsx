@@ -1,5 +1,6 @@
 import {ChevronsRight} from 'lucide-react'
 
+import {MigrateContextTreeButton} from '../../migrate/components/migrate-context-tree-button'
 import {useContextLayout} from '../hooks/use-context-layout'
 import {useContextTree} from '../hooks/use-context-tree'
 import {isFilePath} from '../utils/tree-utils'
@@ -17,7 +18,8 @@ export function ContextLayout() {
     <div className="flex h-full gap-4">
       {/* Left panel: tree navigation */}
       {isLeftPanelOpen ? (
-        <div className="w-72 shrink-0 overflow-y-auto">
+        <div className="flex w-72 shrink-0 flex-col gap-2 overflow-y-auto">
+          <MigrateContextTreeButton />
           <ContextTreePanel onCollapse={toggleLeftPanel} />
         </div>
       ) : (

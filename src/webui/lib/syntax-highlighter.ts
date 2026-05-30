@@ -56,4 +56,4 @@ SyntaxHighlighter.registerLanguage('yaml', yaml)
 SyntaxHighlighter.registerLanguage('yml', yaml)
 
 export {PrismLight as SyntaxHighlighter} from 'react-syntax-highlighter'
-export {oneDark} from 'react-syntax-highlighter/dist/esm/styles/prism'
+export {oneDark, oneLight} from 'react-syntax-highlighter/dist/esm/styles/prism'

@@ -109,6 +109,15 @@ export interface GenerateContentChunk {
    */
   rawChunk?: unknown
   /**
+   * Raw final-response payload (only on the terminating chunk).
+   *
+   * Carries the provider's usage block + provider metadata so token-extraction
+   * decorators (e.g. `LoggingContentGenerator`) can surface per-call telemetry
+   * on streaming calls. Mirrors the non-streaming `GenerateContentResponse.rawResponse`
+   * field; downstream consumers should treat both as the same opaque shape.
+   */
+  rawResponse?: unknown
+  /**
    * Incremental reasoning/thinking content.
    * For models that provide native reasoning fields (OpenAI o1/o3, Grok, Gemini).
    */

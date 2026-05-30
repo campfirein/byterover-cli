@@ -5,14 +5,14 @@
 import {Box, Spacer, Text} from 'ink'
 import React from 'react'
 
-import {useAppViewMode} from '../features/onboarding/hooks/use-app-view-mode.js'
+import {useAuthStore} from '../features/auth/stores/auth-store.js'
 import {selectCancelTargetTaskId} from '../features/tasks/hooks/select-cancel-target.js'
 import {useTasksStore} from '../features/tasks/stores/tasks-store.js'
 import {useMode, useTheme} from '../hooks/index.js'
 
 export const Footer: React.FC = () => {
   const {shortcuts} = useMode()
-  const viewMode = useAppViewMode()
+  const isLoading = useAuthStore((s) => s.isLoadingInitial)
   const {
     theme: {colors},
   } = useTheme()
@@ -21,7 +21,7 @@ export const Footer: React.FC = () => {
   // exactly when ctrl+q is armed — never advertised when nothing is cancellable.
   const hasCancellableTask = useTasksStore((s) => selectCancelTargetTaskId(s.tasks) !== undefined)
 
-  if (viewMode.type === 'loading' || viewMode.type === 'config-provider') {
+  if (isLoading) {
     return <Box height={1} paddingX={1} width="100%" />
   }
 

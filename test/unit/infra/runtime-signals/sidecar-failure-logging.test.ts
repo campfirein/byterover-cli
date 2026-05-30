@@ -14,7 +14,7 @@ import {expect} from 'chai'
 import * as fs from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {restore, type SinonStub, stub} from 'sinon'
+import {restore} from 'sinon'
 
 import type {ICipherAgent} from '../../../../src/agent/core/interfaces/i-cipher-agent.js'
 import type {ILogger} from '../../../../src/agent/core/interfaces/i-logger.js'
@@ -24,9 +24,6 @@ import {createCurateTool} from '../../../../src/agent/infra/tools/implementation
 import {createDefaultRuntimeSignals} from '../../../../src/server/core/domain/knowledge/runtime-signals-schema.js'
 import {FileContextTreeArchiveService} from '../../../../src/server/infra/context-tree/file-context-tree-archive-service.js'
 import {FileContextTreeManifestService} from '../../../../src/server/infra/context-tree/file-context-tree-manifest-service.js'
-import {EMPTY_DREAM_STATE} from '../../../../src/server/infra/dream/dream-state-schema.js'
-import {consolidate} from '../../../../src/server/infra/dream/operations/consolidate.js'
-import {prune} from '../../../../src/server/infra/dream/operations/prune.js'
 import {createMockRuntimeSignalStore} from '../../../helpers/mock-factories.js'
 
 interface CurateOutput {
@@ -433,99 +430,8 @@ describe('Runtime-signals — sidecar-failure logging at swallow sites', () => {
     })
   })
 
-  describe('dream operations', () => {
-    it('consolidate.determineNeedsReview — warns on per-file get() failure during CROSS_REFERENCE gate', async () => {
-      const contextTreeDir = join(tmpDir, '.brv/context-tree')
-      await fs.mkdir(join(contextTreeDir, 'auth'), {recursive: true})
-      await fs.writeFile(join(contextTreeDir, 'auth/a.md'), '# A\nBody.', 'utf8')
-      await fs.writeFile(join(contextTreeDir, 'auth/b.md'), '# B\nBody.', 'utf8')
-
-      const failingGet: {get: (path: string) => Promise<{maturity: 'core' | 'draft' | 'validated'}>} = {
-        async get() {
-          throw new Error('sidecar down')
-        },
-      }
-
-      const {logger, warnings} = createCapturingLogger()
-
-      const agent = {
-        createTaskSession: stub().resolves('sess'),
-        deleteTaskSession: stub().resolves(),
-        executeOnSession: stub().resolves(
-          '```json\n' +
-            JSON.stringify({
-              actions: [
-                {
-                  files: ['auth/a.md', 'auth/b.md'],
-                  reason: 'related',
-                  type: 'CROSS_REFERENCE',
-                },
-              ],
-            }) +
-            '\n```',
-        ),
-        setSandboxVariableOnSession: stub(),
-      }
-
-      await consolidate(['auth/a.md', 'auth/b.md'], {
-        agent: agent as unknown as ICipherAgent,
-        contextTreeDir,
-        logger,
-        runtimeSignalStore: failingGet,
-        searchService: {search: async () => ({results: []})},
-        taskId: 't1',
-      })
-
-      const match = warnings.find((w) => w.includes('consolidate: sidecar get failed'))
-      expect(match, `expected warn for consolidate get, got: ${warnings.join(' | ')}`).to.not.be.undefined
-      expect(match).to.satisfy((m: string) => m.includes('auth/a.md') || m.includes('auth/b.md'))
-    })
-
-    it('prune.findCandidates — warns on list() failure (fail-open to defaults)', async () => {
-      const contextTreeDir = join(tmpDir, '.brv/context-tree')
-      await fs.mkdir(contextTreeDir, {recursive: true})
-
-      const failingList: {list: () => Promise<Map<string, never>>} = {
-        async list() {
-          throw new Error('list broken')
-        },
-      }
-
-      const {logger, warnings} = createCapturingLogger()
-
-      const updateStub: SinonStub = stub().callsFake(
-        async (updater: (s: typeof EMPTY_DREAM_STATE) => typeof EMPTY_DREAM_STATE) => updater({...EMPTY_DREAM_STATE}),
-      )
-
-      await prune({
-        agent: {
-          createTaskSession: stub().resolves('s'),
-          deleteTaskSession: stub().resolves(),
-          executeOnSession: stub().resolves('```json\n{"decisions":[]}\n```'),
-          setSandboxVariableOnSession: stub(),
-        } as unknown as ICipherAgent,
-        archiveService: {
-          archiveEntry: stub(),
-          findArchiveCandidates: stub().resolves([]),
-        },
-        contextTreeDir,
-        dreamLogId: 'd1',
-        dreamStateService: {
-          read: stub().resolves({...EMPTY_DREAM_STATE}),
-          update: updateStub,
-          write: stub().resolves(),
-        },
-        logger,
-        projectRoot: contextTreeDir,
-        runtimeSignalStore: failingList,
-        signal: undefined,
-        taskId: 't1',
-      })
-
-      const match = warnings.find((w) => w.includes('prune: sidecar list failed'))
-      expect(match, `expected warn for prune list, got: ${warnings.join(' | ')}`).to.not.be.undefined
-    })
-  })
+  // The "dream operations" describe block (legacy consolidate / prune sidecar
+  // warnings) was deleted with the operations themselves — see ENG-2884.
 
   describe('FileContextTreeManifestService', () => {
     it('buildManifest — warns on list() failure (fail-open to defaults)', async () => {

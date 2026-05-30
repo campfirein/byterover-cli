@@ -25,19 +25,14 @@ Use `brv curate` **after** you learn or create something valuable:
 
 After curating, use `brv curate view <logId>` to verify what was stored (logId printed on completion).
 
-## Execution Mode: wait by default
+## Execution Mode
 
-Default is `brv curate "..."` (no flag) — **wait for it to finish** before continuing. Any follow-up (query, search, read, or a later curate that builds on this one) may depend on the curated data being live.
+Curate is a two-call session protocol:
 
-Use `--detach` only when BOTH are true:
-1. No remaining step in this turn reads/queries/references this data, AND no later curate in this turn builds on it.
-2. User explicitly said not to wait — addressed to the agent, e.g. "don't wait", "don't block on this", "fire and forget", "move on without waiting". Excludes "run in background" / "run async" (agent self-narrates these).
+1. **Kickoff** — `brv curate "<intent>" --format json` returns the next prompt + `sessionId`. Both kickoff and continuation are short — wait for each.
+2. **Continuation** — `brv curate --session <id> --response "<bv-topic>...</bv-topic>" --format json` writes the topic and returns `status: done` with the file path, or `status: needs-llm-step` with `step: correct-html` if validation failed.
 
-If user phrasing is ambiguous → wait. If either condition is uncertain → wait.
-
-Size/duration is NOT a reason to `--detach`. "Looks like the last step" is NOT a reason — it's a guess.
-
-After `--detach`, report "queued" (not "saved") and save the `logId`. Before any later read of that data, run `brv curate view <logId>` and wait for `status: completed`. Detach errors are silent.
+Any follow-up step (query, search, read, or a later curate that builds on this one) needs the just-curated topic live in the context tree — finish the continuation before moving on.
 
 ## Context Tree Guideline
 

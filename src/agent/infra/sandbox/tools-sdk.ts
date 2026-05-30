@@ -92,9 +92,38 @@ export interface ListDirectoryOptions {
 }
 
 /**
+ * Optional structural-axis hint applied before BM25 ranking. Restricts
+ * the candidate set to topic files containing at least one matching
+ * `<bv-*>` element. Wired but unused by today's callers — the
+ * structural-selector grammar will plug into this without reshaping
+ * the search call signature.
+ *
+ * Discriminated union: either filter by tag alone, or by tag plus an
+ * `attribute=value` pair. A half-set form is rejected at compile time
+ * so callers can't silently drop a value and get broader results than
+ * they asked for.
+ */
+export type SearchKnowledgeElementHint =
+  | {attribute: string; tag: string; value: string}
+  | {tag: string}
+
+/**
  * Options for searchKnowledge operation in ToolsSDK.
  */
 export interface SearchKnowledgeOptions {
+  /**
+   * Multi-word query combination strategy. Default `'auto'` (or undefined)
+   * preserves the long-standing AND-first-with-OR-fallback behavior so
+   * single-keyword searches stay concentrated. Pass `'OR'` to skip the
+   * AND-first attempt entirely — useful for callers that want any-term
+   * recall over multi-word precision (e.g. dream pair-discovery, where
+   * the source title is used verbatim as the query and AND-first
+   * collapses cross-pair matches to self-only). Pass `'AND'` to require
+   * every term and disable the OR fallback.
+   */
+  combineWith?: 'AND' | 'auto' | 'OR'
+  /** Pre-filter candidate set by `<bv-*>` element shape before BM25 ranking. */
+  elementHint?: SearchKnowledgeElementHint
   /** Maximum number of results to return (default: 10) */
   limit?: number
   /** Path prefix to scope search within (e.g. "auth" or "packages/api") */
@@ -112,6 +141,8 @@ export interface SearchKnowledgeResult {
     /** Number of other memories that reference this one */
     backlinkCount?: number
     excerpt: string
+    /** Source format of the topic file ('html' for `<bv-topic>` HTML, 'markdown' for the legacy MD path used by `brv swarm`). */
+    format?: 'html' | 'markdown'
     /** Origin: 'local' for this project, 'shared' for results from knowledge source */
     origin?: 'local' | 'shared'
     /** Alias of the shared source (undefined for local results) */
@@ -138,6 +169,14 @@ export interface SearchKnowledgeResult {
  * Allows injection of knowledge search capability into ToolsSDK.
  */
 export interface ISearchKnowledgeService {
+  /**
+   * Force the next `search()` call to rebuild the index from disk
+   * regardless of TTL cache state. Required for callers that have just
+   * mutated the context tree (e.g. dream-scan after `loadToolModeTopics`)
+   * and need the BM25 ranking to reflect the new on-disk state rather
+   * than a 5-second-stale cached index. No-op when nothing is cached.
+   */
+  refreshIndex(): Promise<void>
   search(query: string, options?: SearchKnowledgeOptions): Promise<SearchKnowledgeResult>
 }
 

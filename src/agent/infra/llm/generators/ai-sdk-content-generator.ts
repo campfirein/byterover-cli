@@ -131,7 +131,11 @@ export class AiSdkContentGenerator implements IContentGenerator {
     return {
       content: result.text,
       finishReason: mapFinishReason(result.finishReason, toolCalls.length > 0),
-      rawResponse: result.response,
+      rawResponse: buildRawResponse({
+        providerMetadata: result.providerMetadata,
+        response: result.response,
+        usage: result.usage,
+      }),
       ...(result.reasoningText && {reasoning: result.reasoningText}),
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       usage: {
@@ -334,4 +338,48 @@ function mapFinishReason(aiReason: string, hasToolCalls: boolean): GenerateConte
       return 'stop'
     }
   }
+}
+
+/**
+ * Build the `rawResponse` payload surfaced to the IContentGenerator decorator chain.
+ *
+ * AI SDK splits the per-call telemetry across three top-level fields on its `result`:
+ * `result.usage` (normalized inputTokens/outputTokens/cachedInputTokens), `result.providerMetadata`
+ * (provider-specific extras — Anthropic exposes cache-creation tokens here), and
+ * `result.response` (request id, model id, headers). `pickRawUsage()` in the logging
+ * decorator only inspects `rawResponse.usage`, so we fold the AI SDK's normalized
+ * usage into a synthetic `usage` block on rawResponse and merge Anthropic's cache-creation
+ * count into it. Other providers continue to populate only `cachedInputTokens` (cache reads).
+ */
+function buildRawResponse(parts: {
+  providerMetadata: unknown
+  response: unknown
+  usage: {cachedInputTokens?: number | undefined; inputTokens: number | undefined; outputTokens: number | undefined; totalTokens: number | undefined}
+}): Record<string, unknown> {
+  const cacheCreation = readAnthropicCacheCreation(parts.providerMetadata)
+  const usage: Record<string, unknown> = {
+    ...parts.usage,
+    ...(cacheCreation !== undefined && {cacheCreationTokens: cacheCreation}),
+  }
+  const responseObj = typeof parts.response === 'object' && parts.response !== null ? parts.response : {}
+  return {
+    ...responseObj,
+    providerMetadata: parts.providerMetadata,
+    usage,
+  }
+}
+
+/**
+ * Read Anthropic's `cacheCreationInputTokens` out of the AI SDK's providerMetadata
+ * (typed as `ProviderMetadata = Record<string, Record<string, JSONValue>>` upstream).
+ * Returns `undefined` for non-Anthropic calls or when the provider didn't set the field.
+ */
+function readAnthropicCacheCreation(providerMetadata: unknown): number | undefined {
+  if (typeof providerMetadata !== 'object' || providerMetadata === null) return undefined
+  const {anthropic} = providerMetadata as {anthropic?: unknown}
+  if (typeof anthropic !== 'object' || anthropic === null) return undefined
+  const {cacheCreationInputTokens} = anthropic as {cacheCreationInputTokens?: unknown}
+  return typeof cacheCreationInputTokens === 'number' && Number.isFinite(cacheCreationInputTokens)
+    ? cacheCreationInputTokens
+    : undefined
 }

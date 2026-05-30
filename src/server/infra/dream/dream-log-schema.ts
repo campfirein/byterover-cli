@@ -1,5 +1,7 @@
 import {z} from 'zod'
 
+import {RuntimeSignalsSchema} from '../../core/domain/knowledge/runtime-signals-schema.js'
+
 // ── Operation schemas (discriminated on type) ────────────────────────────────
 
 const ConsolidateOperationSchema = z.object({
@@ -26,6 +28,30 @@ const PruneOperationSchema = z.object({
   file: z.string(),
   mergeTarget: z.string().optional(),
   needsReview: z.boolean(),
+  /**
+   * mtime (ms since epoch) of each archived file captured before the
+   * rename, so undo can restore the original mtime via `utimes()`
+   * rather than letting `writeFile` stamp the restore wall-clock. Keys
+   * are relative paths under `.brv/context-tree/`. Backward-compat
+   * optional — older log entries written before this field existed
+   * still undo cleanly (file restored, mtime reset to now).
+   */
+  previousMtimes: z.record(z.string(), z.number()).optional(),
+  /**
+   * Snapshot of each archived file's runtime signals (importance,
+   * maturity, accessCount, etc.) captured before the sidecar entry is
+   * deleted. Restored by undo so prune-candidate signals (e.g.
+   * `importance: 15`) survive an archive→undo round-trip. Without this,
+   * a topic archived as `low-importance` returns with default
+   * `importance=50` and won't re-surface on the next prune scan.
+   * Backward-compat optional — older logs still undo with default signals.
+   */
+  previousSignals: z.record(z.string(), RuntimeSignalsSchema).optional(),
+  // Tool-mode finalize captures the file's content before archiving so undo
+  // can restore from the log alone (no archive-service / stub indirection).
+  // Legacy LLM-driven prune still uses stubPath; both forms are supported by
+  // dream-undo at runtime.
+  previousTexts: z.record(z.string(), z.string()).optional(),
   reason: z.string(),
   stubPath: z.string().optional(),
   type: z.literal('PRUNE'),

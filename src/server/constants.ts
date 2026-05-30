@@ -158,6 +158,13 @@ export const FULL_ARCHIVE_EXTENSION = '.full.md'
 export const ABSTRACT_EXTENSION = '.abstract.md'
 export const OVERVIEW_EXTENSION = '.overview.md'
 export const MANIFEST_FILE = '_manifest.json'
+/**
+ * Tool-mode context-tree index. A single auto-generated HTML file at the
+ * context-tree root carrying the `<bv-index>` navigation document. Excluded
+ * from BM25/query results via `isDerivedArtifact`, but tracked by CoGit so
+ * peers consume the latest index without having to run `brv index rebuild`.
+ */
+export const INDEX_HTML_FILE = 'index.html'
 export const ARCHIVE_IMPORTANCE_THRESHOLD = 35
 export const DEFAULT_GHOST_CUE_MAX_TOKENS = 220
 

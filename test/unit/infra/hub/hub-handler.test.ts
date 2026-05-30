@@ -125,6 +125,33 @@ describe('HubHandler', () => {
     it('should register handler', () => {
       expect(handlers['hub:install']).to.be.a('function')
     })
+
+    it('defaults global-only skill agents (Hermes) to global scope when scope is omitted', async () => {
+      nock('https://example.com').get('/registry.json').reply(200, VALID_REGISTRY_RESPONSE)
+
+      await handlers['hub:install']({agent: 'Hermes', entryId: 'test-entry'}, 'client-1')
+
+      expect(installService.install.calledOnce).to.be.true
+      expect(installService.install.firstCall.args[0].scope).to.equal('global')
+    })
+
+    it('defaults project-capable skill agents (Claude Code) to project scope when scope is omitted', async () => {
+      nock('https://example.com').get('/registry.json').reply(200, VALID_REGISTRY_RESPONSE)
+
+      await handlers['hub:install']({agent: 'Claude Code', entryId: 'test-entry'}, 'client-1')
+
+      expect(installService.install.calledOnce).to.be.true
+      expect(installService.install.firstCall.args[0].scope).to.equal('project')
+    })
+
+    it('honors an explicit scope even for global-only agents', async () => {
+      nock('https://example.com').get('/registry.json').reply(200, VALID_REGISTRY_RESPONSE)
+
+      await handlers['hub:install']({agent: 'Hermes', entryId: 'test-entry', scope: 'project'}, 'client-1')
+
+      expect(installService.install.calledOnce).to.be.true
+      expect(installService.install.firstCall.args[0].scope).to.equal('project')
+    })
   })
 
   describe('hub:registry:list', () => {

@@ -123,8 +123,12 @@ function computeSummary(entries: QueryLogEntry[], range: {after?: number; before
     if (entry.status !== 'completed') continue
 
     // ── completed-only aggregations ──
-    if (entry.timing) {
-      durations.push(entry.timing.durationMs)
+    // Prefer canonical `totalMs`; fall back to legacy `durationMs` for
+    // legacy entries. Skip when neither is present (shouldn't happen
+    // for completed entries but we guard for safety).
+    const duration = entry.timing?.totalMs ?? entry.timing?.durationMs
+    if (duration !== undefined) {
+      durations.push(duration)
     }
 
     if (entry.tier === undefined) {

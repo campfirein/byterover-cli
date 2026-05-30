@@ -8,10 +8,8 @@ export interface TaskFilters {
   createdAfter?: number
   createdBefore?: number
   durationPreset: DurationPreset
-  modelFilter: string[]
   page: number
   pageSize: number
-  providerFilter: string[]
   searchQuery: string
   statusFilter: StatusFilter
   typeFilter: string[]
@@ -20,7 +18,7 @@ export interface TaskFilters {
 const STATUS_VALUES = new Set<string>(['all', 'cancelled', 'completed', 'failed', 'running'])
 const DEFAULT_PAGE_SIZE = 20
 
-const FILTER_PARAM_KEYS = ['status', 'types', 'providers', 'models', 'from', 'to', 'duration', 'q', 'page', 'pageSize'] as const
+const FILTER_PARAM_KEYS = ['status', 'types', 'from', 'to', 'duration', 'q', 'page', 'pageSize'] as const
 
 function isStatusFilter(value: null | string): value is StatusFilter {
   return value !== null && STATUS_VALUES.has(value)
@@ -30,10 +28,8 @@ export function useTaskFilterParams(): {
   clearAllFilters: () => void
   filters: TaskFilters
   setDurationPreset: (preset: DurationPreset) => void
-  setModelFilter: (next: string[]) => void
   setPage: (page: number) => void
   setPageSize: (pageSize: number) => void
-  setProviderFilter: (next: string[]) => void
   setSearchQuery: (query: string) => void
   setStatusFilter: (filter: StatusFilter) => void
   setTimeRange: (range: {createdAfter?: number; createdBefore?: number}) => void
@@ -75,17 +71,11 @@ export function useTaskFilterParams(): {
       setDurationPreset(preset: DurationPreset) {
         update({duration: preset === 'all' ? null : preset})
       },
-      setModelFilter(next: string[]) {
-        update({models: next})
-      },
       setPage(page: number) {
         update({page: page === 1 ? null : String(page)}, false)
       },
       setPageSize(pageSize: number) {
         update({pageSize: pageSize === DEFAULT_PAGE_SIZE ? null : String(pageSize)})
-      },
-      setProviderFilter(next: string[]) {
-        update({providers: next})
       },
       setSearchQuery(query: string) {
         update({q: query})
@@ -118,10 +108,8 @@ function parseFilters(params: URLSearchParams): TaskFilters {
   const toRaw = params.get('to')
   return {
     durationPreset: duration !== null && isDurationPreset(duration) ? duration : 'all',
-    modelFilter: parseList(params.get('models')),
     page: pageRaw ? Math.max(1, Number.parseInt(pageRaw, 10) || 1) : 1,
     pageSize: pageSizeRaw ? Math.max(1, Number.parseInt(pageSizeRaw, 10) || DEFAULT_PAGE_SIZE) : DEFAULT_PAGE_SIZE,
-    providerFilter: parseList(params.get('providers')),
     searchQuery: params.get('q') ?? '',
     statusFilter: isStatusFilter(status) ? status : 'all',
     typeFilter: parseList(params.get('types')),

@@ -8,6 +8,9 @@ const gitignorePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
 
 export default [
   includeIgnoreFile(gitignorePath),
+  // The byterover-packages submodule has its own ESLint config and tsconfig
+  // (referencing @workspace/* packages) — skip it from the root lint run.
+  {ignores: ['packages/**']},
   ...oclif,
   prettier,
   {

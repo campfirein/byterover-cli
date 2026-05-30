@@ -18,6 +18,14 @@ describe('CONTEXT_TREE_GITIGNORE_PATTERNS', () => {
     expect(CONTEXT_TREE_GITIGNORE_PATTERNS).to.include('_index.md')
   })
 
+  it('should NOT exclude index.html — it is sync-tracked', () => {
+    // Guard against accidental re-introduction. The navigation index ships to
+    // peers via CoGit; gitignoring it would force a `brv index rebuild` after
+    // every pull. The legacy underscore name must not creep back in either.
+    expect(CONTEXT_TREE_GITIGNORE_PATTERNS).to.not.include('index.html')
+    expect(CONTEXT_TREE_GITIGNORE_PATTERNS).to.not.include('_index.html')
+  })
+
   describe('OS-generated junk files', () => {
     it('should exclude macOS junk (Finder metadata + AppleDouble forks)', () => {
       expect(CONTEXT_TREE_GITIGNORE_PATTERNS).to.include('.DS_Store')

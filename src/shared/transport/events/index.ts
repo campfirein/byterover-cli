@@ -13,6 +13,7 @@ export * from './hub-events.js'
 export * from './init-events.js'
 export * from './llm-events.js'
 export * from './locations-events.js'
+export * from './migrate-events.js'
 export * from './model-events.js'
 export * from './onboarding-events.js'
 export * from './provider-events.js'
@@ -42,6 +43,7 @@ import {HubEvents} from './hub-events.js'
 import {InitEvents} from './init-events.js'
 import {LlmEvents} from './llm-events.js'
 import {LocationsEvents} from './locations-events.js'
+import {MigrateEvents} from './migrate-events.js'
 import {ModelEvents} from './model-events.js'
 import {OnboardingEvents} from './onboarding-events.js'
 import {ProviderEvents} from './provider-events.js'
@@ -74,6 +76,7 @@ export const AllEventGroups = [
   HubEvents,
   InitEvents,
   LlmEvents,
+  MigrateEvents,
   ModelEvents,
   OnboardingEvents,
   ProviderEvents,

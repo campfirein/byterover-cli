@@ -2,7 +2,6 @@ import {Tag} from '@campfirein/byterover-packages/components/tag/tag'
 import {X} from 'lucide-react'
 import {useMemo} from 'react'
 
-import type {ProviderDTO} from '../../../../shared/transport/types/dto'
 import type {StatusFilter} from '../stores/task-store'
 import type {DurationPreset} from '../utils/duration-presets'
 
@@ -19,17 +18,12 @@ export interface TaskFilterTagsProps {
   createdAfter?: number
   createdBefore?: number
   durationPreset: DurationPreset
-  modelFilter: string[]
   onClearAll: () => void
   onDurationChange: (preset: DurationPreset) => void
-  onModelChange: (next: string[]) => void
-  onProviderChange: (next: string[]) => void
   onSearchChange: (query: string) => void
   onStatusChange: (filter: StatusFilter) => void
   onTimeRangeChange: (range: {createdAfter?: number; createdBefore?: number}) => void
   onTypeChange: (next: string[]) => void
-  providerFilter: string[]
-  providers: ProviderDTO[]
   searchQuery: string
   statusFilter: StatusFilter
   typeFilter: string[]
@@ -39,23 +33,16 @@ export function TaskFilterTags({
   createdAfter,
   createdBefore,
   durationPreset,
-  modelFilter,
   onClearAll,
   onDurationChange,
-  onModelChange,
-  onProviderChange,
   onSearchChange,
   onStatusChange,
   onTimeRangeChange,
   onTypeChange,
-  providerFilter,
-  providers,
   searchQuery,
   statusFilter,
   typeFilter,
 }: TaskFilterTagsProps) {
-  const providerNames = useMemo(() => new Map(providers.map((p) => [p.id, p.name])), [providers])
-
   const tags = useMemo(() => {
     const result: Array<{key: string; label: string; onRemove: () => void}> = []
 
@@ -72,22 +59,6 @@ export function TaskFilterTags({
         key: `type:${value}`,
         label: `Type: ${TYPE_LABEL[value] ?? value}`,
         onRemove: () => onTypeChange(typeFilter.filter((v) => v !== value)),
-      })
-    }
-
-    for (const value of providerFilter) {
-      result.push({
-        key: `provider:${value}`,
-        label: `Provider: ${providerNames.get(value) ?? value}`,
-        onRemove: () => onProviderChange(providerFilter.filter((v) => v !== value)),
-      })
-    }
-
-    for (const value of modelFilter) {
-      result.push({
-        key: `model:${value}`,
-        label: `Model: ${value}`,
-        onRemove: () => onModelChange(modelFilter.filter((v) => v !== value)),
       })
     }
 
@@ -119,17 +90,12 @@ export function TaskFilterTags({
   }, [
     statusFilter,
     typeFilter,
-    providerFilter,
-    modelFilter,
     createdAfter,
     createdBefore,
     durationPreset,
     searchQuery,
-    providerNames,
     onStatusChange,
     onTypeChange,
-    onProviderChange,
-    onModelChange,
     onTimeRangeChange,
     onDurationChange,
     onSearchChange,

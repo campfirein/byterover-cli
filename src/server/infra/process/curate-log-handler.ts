@@ -1,4 +1,4 @@
-import type {CurateLogEntry, CurateLogOperation, CurateLogSummary} from '../../core/domain/entities/curate-log-entry.js'
+import type {CurateLogEntry, CurateLogOperation, CurateLogSummary, CurateLogTiming, CurateUsageRecord} from '../../core/domain/entities/curate-log-entry.js'
 import type {LlmToolResultEvent} from '../../core/domain/transport/schemas.js'
 import type {TaskInfo} from '../../core/domain/transport/task-info.js'
 import type {ITaskLifecycleHook} from '../../core/interfaces/process/i-task-lifecycle-hook.js'
@@ -10,6 +10,9 @@ import {transportLog} from '../../utils/process-logger.js'
 import {FileCurateLogStore} from '../storage/file-curate-log-store.js'
 
 // ── Internal state ────────────────────────────────────────────────────────────
+
+// Re-export so existing handler consumers don't break.
+export type {CurateUsageRecord} from '../../core/domain/entities/curate-log-entry.js'
 
 type TaskState = {
   /** Cached initial entry — used in onTaskCompleted/onTaskError to avoid a getById round-trip. */
@@ -23,6 +26,28 @@ type TaskState = {
    * daemon stamps once at the task-create boundary.
    */
   reviewDisabled: boolean
+  /** Telemetry from the executor . Set by `setCurateUsage`. */
+  usage?: CurateUsageRecord
+}
+
+/** Pull the telemetry fields out of usage onto the log entry. */
+function telemetryFields(record: CurateUsageRecord | undefined): {
+  cacheCreationTokens?: number
+  cachedInputTokens?: number
+  format?: 'html' | 'markdown'
+  inputTokens?: number
+  outputTokens?: number
+  timing?: CurateLogTiming
+} {
+  if (!record) return {}
+  return {
+    ...(record.usage?.cacheCreationTokens !== undefined && {cacheCreationTokens: record.usage.cacheCreationTokens}),
+    ...(record.usage?.cachedInputTokens !== undefined && {cachedInputTokens: record.usage.cachedInputTokens}),
+    ...(record.format !== undefined && {format: record.format}),
+    ...(record.usage?.inputTokens !== undefined && {inputTokens: record.usage.inputTokens}),
+    ...(record.usage?.outputTokens !== undefined && {outputTokens: record.usage.outputTokens}),
+    ...(record.timing !== undefined && {timing: record.timing}),
+  }
 }
 
 const CURATE_TASK_TYPES = ['curate', 'curate-folder'] as const
@@ -147,6 +172,7 @@ export class CurateLogHandler implements ITaskLifecycleHook {
 
     const updated: CurateLogEntry = {
       ...state.entry,
+      ...telemetryFields(state.usage),
       completedAt: Date.now(),
       operations: state.operations,
       status: 'cancelled',
@@ -168,6 +194,7 @@ export class CurateLogHandler implements ITaskLifecycleHook {
 
     const updated: CurateLogEntry = {
       ...state.entry,
+      ...telemetryFields(state.usage),
       completedAt: Date.now(),
       operations: state.operations,
       response: result || undefined,
@@ -241,6 +268,10 @@ export class CurateLogHandler implements ITaskLifecycleHook {
 
     const store = this.getOrCreateStore(state.projectPath)
 
+    // Merge telemetry into the error entry so failed curates don't
+    // underreport cost. `state.usage` is populated when the executor's
+    // best-effort error-path `reportTelemetry()` reaches `setCurateUsage`
+    // before this handler fires; merge is a no-op when it didn't.
     const updated: CurateLogEntry = {
       ...state.entry,
       completedAt: Date.now(),
@@ -248,6 +279,7 @@ export class CurateLogHandler implements ITaskLifecycleHook {
       operations: state.operations,
       status: 'error',
       summary: computeSummary(state.operations),
+      ...telemetryFields(state.usage),
     }
 
     await store.save(updated).catch((error: unknown) => {
@@ -279,6 +311,18 @@ export class CurateLogHandler implements ITaskLifecycleHook {
 
       state.operations.push(op)
     }
+  }
+
+  /**
+   * Inject telemetry collected by CurateExecutor (token usage, format, timing
+   * tiers). Synchronous — no I/O. Merged into the final entry on completion.
+   * Called once per task, after curation finishes, before onTaskCompleted/Error.
+   *
+   */
+  setCurateUsage(taskId: string, record: CurateUsageRecord): void {
+    const state = this.tasks.get(taskId)
+    if (!state) return
+    state.usage = record
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────────

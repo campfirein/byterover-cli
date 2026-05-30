@@ -55,20 +55,14 @@ brv query "What do I need to know about [relevant topic]?"
 - Found a bug root cause or fix pattern
 
 ```bash
-# CONTEXT argument MUST come BEFORE flags
-# Max 5 files per curate with -f flag
-brv curate "Specific insight with details" -f path/to/file.ts
-brv curate "Multi-file insight" -f file1.ts -f file2.ts
-
-# For folder pack (analyze entire folder), use -d or --folder flag
-brv curate "Analyze this module" -d path/to/folder/
-brv curate --folder src/auth/  # folder-only mode
+# CONTEXT argument is the kickoff intent — author the topic HTML on the continuation
+brv curate "Specific insight with details" --format json
+# → parse the response, author <bv-topic> HTML inlining any file content you need
+brv curate --session <id> --response "<bv-topic>...</bv-topic>" --format json
 ```
 
-**GOOD:** `brv curate "Auth uses JWT 24h expiry, refresh in httpOnly cookies" -f src/auth.ts`
-**GOOD:** `brv curate "Analyze auth module" -d src/auth/`
-**BAD:** `brv curate "Fixed auth"` (too vague), `brv curate -f file.ts "text"` (wrong order)
-**BAD:** `brv curate -folder src/` (use `-d` or `--folder`, NOT `-folder`)
+**GOOD:** `brv curate "Auth uses JWT 24h expiry, refresh in httpOnly cookies" --format json`
+**BAD:** `brv curate "Fixed auth"` (too vague — kickoff intent must describe the knowledge)
 
 **After curating**, verify what was stored using the logId printed on completion:
 ```bash
@@ -79,28 +73,6 @@ brv curate view --help        # All filter options
 
 **⚠️ CRITICAL - LONG CONVERSATIONS:**
 If you modify code 10 times in a conversation, curate 10 times. Do NOT batch or skip. Each code change = immediate curate before moving on.
-
-## Decision: Wait by default, `--detach` needs BOTH gates
-
-Default is `brv curate "..."` (no flag) — **wait for it to finish** before continuing. Use `--detach` ONLY when BOTH gates hold:
-
-1. **Within-turn gate:** no remaining step in this turn reads/queries/references this data, AND no later curate in this turn builds on it.
-2. **User-signal gate:** user explicitly said not to wait — phrases addressed *to you* like "don't wait", "don't block on this", "fire and forget", "move on without waiting". Excludes "run in background" / "run async" (agent self-narrates these; not user signals).
-
-**If user phrasing is ambiguous → wait.** "Quick one, keep moving" is not enough.
-
-**NOT reasons to `--detach`** (common self-justifications to reject):
-- Curate is slow / large folder / many files → size is irrelevant, block anyway.
-- "Looks like the last step of the turn" → that's a guess, not evidence. Block.
-- "I can't think of anything that would depend on it" → block.
-
-If either gate is uncertain → wait. When in doubt, wait. Correctness beats latency.
-
-**After `--detach`:**
-- Report "queued" with the `logId` — do NOT claim "saved"
-- Before querying data from a prior `--detach`, run `brv curate view <logId>` and wait for `status: completed`
-
-**⚠️ CRITICAL:** `--detach` errors are silent. Always verify completion via `brv curate view <logId>` before trusting the data exists.
 
 ## Quick Reference Table
 

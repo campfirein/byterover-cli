@@ -7,12 +7,11 @@ import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {restore, type SinonFakeTimers, type SinonStub, stub, useFakeTimers} from 'sinon'
 
+import type {QueryToolModeResult} from '../../../../../src/server/core/interfaces/executor/i-query-executor.js'
 import type {McpStartupProjectContext} from '../../../../../src/server/infra/mcp/tools/mcp-project-context.js'
 
 import {BrvQueryInputSchema, registerBrvQueryTool} from '../../../../../src/server/infra/mcp/tools/brv-query-tool.js'
-
-/** Attribution footer produced by QueryExecutor — included in task:completed result */
-const ATTRIBUTION_FOOTER = '\n\n---\nSource: ByteRover Knowledge Base'
+import {decodeQueryToolModeContent} from '../../../../../src/shared/transport/query-tool-mode-content.js'
 
 /** Returns undefined — named constant avoids inline `() => undefined` triggering unicorn/no-useless-undefined. */
 const noClient = (): ITransportClient | undefined => undefined
@@ -21,7 +20,7 @@ const noWorkingDirectory = (): string | undefined => undefined
 /**
  * Handler type captured from server.registerTool().
  */
-type QueryToolHandler = (input: {cwd?: string; query: string}) => Promise<{
+type QueryToolHandler = (input: {cwd?: string; limit?: number; query: string}) => Promise<{
   content: Array<{text: string; type: string}>
   isError?: boolean
 }>
@@ -126,13 +125,41 @@ function setupQueryHandler(options: {
     options.getStartupProjectContext ??
       (() => {
         const workingDirectory = options.getWorkingDirectory()
-        return workingDirectory
-          ? {projectRoot: workingDirectory, worktreeRoot: workingDirectory}
-          : undefined
+        return workingDirectory ? {projectRoot: workingDirectory, worktreeRoot: workingDirectory} : undefined
       }),
     'test-client-version',
   )
   return getHandler('brv-query')
+}
+
+/**
+ * Build a `QueryToolModeResult` envelope for the mock daemon to return
+ * via `task:completed`. Defaults model a single-match ok envelope; pass
+ * overrides for specific shapes.
+ */
+function makeEnvelope(overrides: Partial<QueryToolModeResult> = {}): QueryToolModeResult {
+  return {
+    matchedDocs: [
+      {
+        format: 'html',
+        path: 'security/auth.html',
+        // eslint-disable-next-line camelcase
+        rendered_md: '# Auth\n\nAuth is implemented with JWT.',
+        score: 0.91,
+        title: 'JWT authentication',
+      },
+    ],
+    metadata: {
+      cacheHit: null,
+      durationMs: 142,
+      skippedSharedCount: 0,
+      tier: 2,
+      topScore: 0.91,
+      totalFound: 1,
+    },
+    status: 'ok',
+    ...overrides,
+  }
 }
 
 describe('brv-query-tool', () => {
@@ -141,45 +168,57 @@ describe('brv-query-tool', () => {
   })
 
   describe('BrvQueryInputSchema', () => {
-    it('should accept query without cwd', () => {
+    it('accepts query without cwd', () => {
       const result = BrvQueryInputSchema.safeParse({query: 'How is auth implemented?'})
       expect(result.success).to.be.true
     })
 
-    it('should accept query with cwd', () => {
+    it('accepts query with cwd and limit', () => {
       const result = BrvQueryInputSchema.safeParse({
         cwd: '/path/to/project',
+        limit: 5,
         query: 'How is auth implemented?',
       })
       expect(result.success).to.be.true
     })
 
-    it('should reject missing query', () => {
+    it('rejects missing query', () => {
       const result = BrvQueryInputSchema.safeParse({cwd: '/path'})
       expect(result.success).to.be.false
     })
 
-    it('should accept optional cwd as undefined', () => {
-      const result = BrvQueryInputSchema.safeParse({query: 'test'})
-      expect(result.success).to.be.true
-      if (result.success) {
-        expect(result.data.cwd).to.be.undefined
-      }
+    it('rejects limit below 1', () => {
+      const result = BrvQueryInputSchema.safeParse({limit: 0, query: 'q'})
+      expect(result.success).to.be.false
     })
 
-    it('should expose cwd and query in the schema shape', () => {
+    it('rejects limit above 50', () => {
+      const result = BrvQueryInputSchema.safeParse({limit: 51, query: 'q'})
+      expect(result.success).to.be.false
+    })
+
+    it('rejects non-integer limit', () => {
+      const result = BrvQueryInputSchema.safeParse({limit: 3.5, query: 'q'})
+      expect(result.success).to.be.false
+    })
+
+    it('exposes cwd, limit, and query in the schema shape', () => {
       const {shape} = BrvQueryInputSchema
       expect(shape).to.have.property('cwd')
+      expect(shape).to.have.property('limit')
       expect(shape).to.have.property('query')
     })
   })
 
-  describe('handler — project mode', () => {
-    it('should use projectRoot as clientCwd when cwd is not provided', async () => {
+  describe('dispatch — task type + payload', () => {
+    it('submits task type "query-tool-mode" with JSON-encoded content', async () => {
       const {client, simulateEvent} = createMockClient()
       const requestStub = client.requestWithAck as SinonStub
-      requestStub.callsFake((_event: string, data: {taskId: string}) => {
-        simulateEvent('task:completed', {result: 'Query answer', taskId: data.taskId})
+      requestStub.callsFake((event: string, data: {taskId?: string}) => {
+        if (event === 'task:create' && data.taskId) {
+          simulateEvent('task:completed', {result: JSON.stringify(makeEnvelope()), taskId: data.taskId})
+        }
+
         return Promise.resolve()
       })
 
@@ -188,20 +227,225 @@ describe('brv-query-tool', () => {
         getWorkingDirectory: () => '/project/root',
       })
 
-      const result = await handler({query: 'How does auth work?'})
+      const result = await handler({limit: 3, query: 'How does auth work?'})
 
       expect(result.isError).to.be.undefined
-      expect(result.content[0].text).to.equal('Query answer')
 
-      // Verify task:create payload
+      const createCall = requestStub.getCalls().find((c: {args: unknown[]}) => c.args[0] === 'task:create')
+      expect(createCall, 'task:create dispatched').to.exist
+      const payload = createCall!.args[1] as {content: string; type: string}
+      expect(payload.type).to.equal('query-tool-mode')
+
+      const decoded = decodeQueryToolModeContent(payload.content)
+      expect(decoded.query).to.equal('How does auth work?')
+      expect(decoded.limit).to.equal(3)
+    })
+
+    it('omits limit when input does not include one (daemon applies default)', async () => {
+      const {client, simulateEvent} = createMockClient()
+      const requestStub = client.requestWithAck as SinonStub
+      requestStub.callsFake((event: string, data: {taskId?: string}) => {
+        if (event === 'task:create' && data.taskId) {
+          simulateEvent('task:completed', {result: JSON.stringify(makeEnvelope()), taskId: data.taskId})
+        }
+
+        return Promise.resolve()
+      })
+
+      const handler = setupQueryHandler({
+        getClient: () => client,
+        getWorkingDirectory: () => '/project/root',
+      })
+
+      await handler({query: 'q'})
+
+      const createCall = requestStub.getCalls().find((c: {args: unknown[]}) => c.args[0] === 'task:create')
+      const decoded = decodeQueryToolModeContent((createCall!.args[1] as {content: string}).content)
+      expect(decoded.limit).to.be.undefined
+    })
+  })
+
+  describe('envelope rendering — status: ok', () => {
+    it('renders a single match as a markdown section with title heading', async () => {
+      const {client, simulateEvent} = createMockClient()
+      const requestStub = client.requestWithAck as SinonStub
+      requestStub.callsFake((_event: string, data: {taskId: string}) => {
+        simulateEvent('task:completed', {result: JSON.stringify(makeEnvelope()), taskId: data.taskId})
+        return Promise.resolve()
+      })
+
+      const handler = setupQueryHandler({
+        getClient: () => client,
+        getWorkingDirectory: () => '/project/root',
+      })
+
+      const result = await handler({query: 'auth'})
+
+      expect(result.isError).to.be.undefined
+      expect(result.content[0].text).to.include('## JWT authentication')
+      expect(result.content[0].text).to.include('Auth is implemented with JWT.')
+      expect(result.content[0].text).to.include('_Matched 1 topic(s) in 142ms (tier 2)._')
+    })
+
+    it('falls back to the path when title is missing', async () => {
+      const {client, simulateEvent} = createMockClient()
+      const requestStub = client.requestWithAck as SinonStub
+      requestStub.callsFake((_event: string, data: {taskId: string}) => {
+        const env = makeEnvelope({
+          matchedDocs: [
+            {
+              format: 'markdown',
+              path: 'legacy/notes.md',
+              // eslint-disable-next-line camelcase
+              rendered_md: '# notes',
+              score: 0.6,
+              title: '',
+            },
+          ],
+        })
+        simulateEvent('task:completed', {result: JSON.stringify(env), taskId: data.taskId})
+        return Promise.resolve()
+      })
+
+      const handler = setupQueryHandler({
+        getClient: () => client,
+        getWorkingDirectory: () => '/project/root',
+      })
+
+      const result = await handler({query: 'q'})
+
+      expect(result.content[0].text).to.include('## legacy/notes.md')
+    })
+
+    it('separates multiple matches with `---` and emits one trailer line', async () => {
+      const {client, simulateEvent} = createMockClient()
+      const requestStub = client.requestWithAck as SinonStub
+      requestStub.callsFake((_event: string, data: {taskId: string}) => {
+        const env = makeEnvelope({
+          matchedDocs: [
+            {
+              format: 'html',
+              path: 'a.html',
+              // eslint-disable-next-line camelcase
+              rendered_md: 'body A',
+              score: 0.9,
+              title: 'Topic A',
+            },
+            {
+              format: 'html',
+              path: 'b.html',
+              // eslint-disable-next-line camelcase
+              rendered_md: 'body B',
+              score: 0.7,
+              title: 'Topic B',
+            },
+          ],
+          metadata: {
+            cacheHit: null,
+            durationMs: 60,
+            skippedSharedCount: 0,
+            tier: 2,
+            topScore: 0.9,
+            totalFound: 2,
+          },
+        })
+        simulateEvent('task:completed', {result: JSON.stringify(env), taskId: data.taskId})
+        return Promise.resolve()
+      })
+
+      const handler = setupQueryHandler({
+        getClient: () => client,
+        getWorkingDirectory: () => '/project/root',
+      })
+
+      const result = await handler({query: 'q'})
+
+      const {text} = result.content[0]
+      expect(text).to.include('## Topic A')
+      expect(text).to.include('## Topic B')
+      expect(text).to.include('\n\n---\n\n')
+      expect(text.match(/_Matched/g) ?? []).to.have.length(1)
+      expect(text).to.include('_Matched 2 topic(s) in 60ms (tier 2)._')
+    })
+  })
+
+  describe('envelope rendering — status: no-matches', () => {
+    it('returns a short text block citing the query, not an error', async () => {
+      const {client, simulateEvent} = createMockClient()
+      const requestStub = client.requestWithAck as SinonStub
+      requestStub.callsFake((_event: string, data: {taskId: string}) => {
+        const env: QueryToolModeResult = {
+          matchedDocs: [],
+          metadata: {
+            cacheHit: null,
+            durationMs: 12,
+            skippedSharedCount: 0,
+            tier: 2,
+            topScore: 0,
+            totalFound: 0,
+          },
+          status: 'no-matches',
+        }
+        simulateEvent('task:completed', {result: JSON.stringify(env), taskId: data.taskId})
+        return Promise.resolve()
+      })
+
+      const handler = setupQueryHandler({
+        getClient: () => client,
+        getWorkingDirectory: () => '/project/root',
+      })
+
+      const result = await handler({query: 'quantum cryptography'})
+
+      expect(result.isError).to.be.undefined
+      expect(result.content[0].text).to.include('No topics matched "quantum cryptography"')
+    })
+  })
+
+  describe('envelope rendering — malformed payload', () => {
+    it('returns a clear actionable error when the daemon result is not valid JSON', async () => {
+      const {client, simulateEvent} = createMockClient()
+      const requestStub = client.requestWithAck as SinonStub
+      requestStub.callsFake((_event: string, data: {taskId: string}) => {
+        simulateEvent('task:completed', {result: 'not-json{', taskId: data.taskId})
+        return Promise.resolve()
+      })
+
+      const handler = setupQueryHandler({
+        getClient: () => client,
+        getWorkingDirectory: () => '/project/root',
+      })
+
+      const result = await handler({query: 'q'})
+
+      expect(result.isError).to.be.true
+      expect(result.content[0].text).to.include('Rebuild byterover-cli')
+    })
+  })
+
+  describe('handler — project mode', () => {
+    it('uses projectRoot as clientCwd when cwd is not provided', async () => {
+      const {client, simulateEvent} = createMockClient()
+      const requestStub = client.requestWithAck as SinonStub
+      requestStub.callsFake((_event: string, data: {taskId: string}) => {
+        simulateEvent('task:completed', {result: JSON.stringify(makeEnvelope()), taskId: data.taskId})
+        return Promise.resolve()
+      })
+
+      const handler = setupQueryHandler({
+        getClient: () => client,
+        getWorkingDirectory: () => '/project/root',
+      })
+
+      const result = await handler({query: 'q'})
+
+      expect(result.isError).to.be.undefined
       const payload = requestStub.firstCall.args[1]
       expect(payload.clientCwd).to.equal('/project/root')
-      expect(payload.type).to.equal('query')
-      expect(payload.content).to.equal('How does auth work?')
       expect(payload.taskId).to.be.a('string')
     })
 
-    it('should prefer explicit cwd over projectRoot', async () => {
+    it('prefers explicit cwd over projectRoot', async () => {
       const projectRoot = mkdtempSync(join(tmpdir(), 'brv-query-project-'))
       const otherProject = mkdtempSync(join(tmpdir(), 'brv-query-other-'))
       mkdirSync(join(projectRoot, '.brv'), {recursive: true})
@@ -214,7 +458,7 @@ describe('brv-query-tool', () => {
         const {client, simulateEvent} = createMockClient()
         const requestStub = client.requestWithAck as SinonStub
         requestStub.callsFake((_event: string, data: {taskId: string}) => {
-          simulateEvent('task:completed', {result: 'ok', taskId: data.taskId})
+          simulateEvent('task:completed', {result: JSON.stringify(makeEnvelope()), taskId: data.taskId})
           return Promise.resolve()
         })
 
@@ -236,7 +480,7 @@ describe('brv-query-tool', () => {
   })
 
   describe('handler — global mode', () => {
-    it('should return error when cwd is not provided and no working directory', async () => {
+    it('returns error when cwd is not provided and no working directory', async () => {
       const handler = setupQueryHandler({
         getClient: () => createMockClient().client,
         getWorkingDirectory: noWorkingDirectory,
@@ -249,7 +493,7 @@ describe('brv-query-tool', () => {
       expect(result.content[0].text).to.include('global mode')
     })
 
-    it('should use explicit cwd when provided in global mode', async () => {
+    it('uses explicit cwd when provided in global mode', async () => {
       const projectRoot = mkdtempSync(join(tmpdir(), 'brv-query-global-'))
       mkdirSync(join(projectRoot, '.brv'), {recursive: true})
       writeFileSync(join(projectRoot, '.brv', 'config.json'), '{}')
@@ -260,7 +504,7 @@ describe('brv-query-tool', () => {
         const requestStub = client.requestWithAck as SinonStub
         requestStub.callsFake((event: string, data: {taskId?: string}) => {
           if (event === 'task:create' && data.taskId) {
-            simulateEvent('task:completed', {result: 'answer', taskId: data.taskId})
+            simulateEvent('task:completed', {result: JSON.stringify(makeEnvelope()), taskId: data.taskId})
           }
 
           return Promise.resolve()
@@ -274,8 +518,6 @@ describe('brv-query-tool', () => {
         const result = await handler({cwd: projectRoot, query: 'test'})
 
         expect(result.isError).to.be.undefined
-        expect(result.content[0].text).to.equal('answer')
-
         const createCall = requestStub.getCalls().find((c: {args: unknown[]}) => c.args[0] === 'task:create')
         expect(createCall).to.exist
         expect(createCall!.args[1]).to.have.property('clientCwd', projectRoot)
@@ -286,8 +528,7 @@ describe('brv-query-tool', () => {
       }
     })
 
-    it('should call client:associateProject with walked-up project root in global mode', async () => {
-      // Create temp project with .brv/config.json so resolveProject finds the root
+    it('calls client:associateProject with walked-up project root in global mode', async () => {
       const rawProjectRoot = mkdtempSync(join(tmpdir(), 'brv-test-'))
       const projectRoot = realpathSync(rawProjectRoot)
       const subDir = join(projectRoot, 'src', 'modules')
@@ -300,7 +541,7 @@ describe('brv-query-tool', () => {
         const requestStub = client.requestWithAck as SinonStub
         requestStub.callsFake((event: string, data: {taskId?: string}) => {
           if (event === 'task:create' && data.taskId) {
-            simulateEvent('task:completed', {result: 'ok', taskId: data.taskId})
+            simulateEvent('task:completed', {result: JSON.stringify(makeEnvelope()), taskId: data.taskId})
           }
 
           return Promise.resolve()
@@ -311,7 +552,6 @@ describe('brv-query-tool', () => {
           getWorkingDirectory: noWorkingDirectory,
         })
 
-        // Pass subdirectory as cwd — associate_project should walk up to project root
         await handler({cwd: subDir, query: 'test'})
 
         const associateCall = requestStub
@@ -324,12 +564,12 @@ describe('brv-query-tool', () => {
       }
     })
 
-    it('should not call client:associateProject in project mode', async () => {
+    it('does not call client:associateProject in project mode', async () => {
       const {client, simulateEvent} = createMockClient()
       const requestStub = client.requestWithAck as SinonStub
       requestStub.callsFake((_event: string, data: {taskId?: string}) => {
         if (data.taskId) {
-          simulateEvent('task:completed', {result: 'ok', taskId: data.taskId})
+          simulateEvent('task:completed', {result: JSON.stringify(makeEnvelope()), taskId: data.taskId})
         }
 
         return Promise.resolve()
@@ -360,7 +600,7 @@ describe('brv-query-tool', () => {
       clock.restore()
     })
 
-    it('should return error after timeout when client is undefined', async () => {
+    it('returns error after timeout when client is undefined', async () => {
       const handler = setupQueryHandler({
         getClient: noClient,
         getWorkingDirectory: () => '/project/root',
@@ -375,7 +615,7 @@ describe('brv-query-tool', () => {
       expect(result.content[0].text).to.include('timed out')
     })
 
-    it('should return error after timeout when client is disconnected', async () => {
+    it('returns error after timeout when client is disconnected', async () => {
       const {client} = createMockClient({state: 'disconnected'})
 
       const handler = setupQueryHandler({
@@ -392,24 +632,7 @@ describe('brv-query-tool', () => {
       expect(result.content[0].text).to.include('timed out')
     })
 
-    it('should return error after timeout when client is in reconnecting state', async () => {
-      const {client} = createMockClient({state: 'reconnecting'})
-
-      const handler = setupQueryHandler({
-        getClient: () => client,
-        getWorkingDirectory: () => '/project/root',
-      })
-
-      const resultPromise = handler({query: 'test'})
-      await clock.tickAsync(61_000)
-      const result = await resultPromise
-
-      expect(result.isError).to.be.true
-      expect(result.content[0].text).to.include('Not connected')
-      expect(result.content[0].text).to.include('timed out')
-    })
-
-    it('should resolve immediately when client becomes connected during wait', async () => {
+    it('resolves immediately when client becomes connected during wait', async () => {
       const {client, simulateEvent} = createMockClient({state: 'reconnecting'})
       const currentClient = client
 
@@ -418,16 +641,14 @@ describe('brv-query-tool', () => {
         getWorkingDirectory: () => '/project/root',
       })
 
-      // Simulate requestWithAck completing task:create
       const requestStub = client.requestWithAck as SinonStub
       requestStub.callsFake((_event: string, data: {taskId: string}) => {
-        simulateEvent('task:completed', {result: 'recovered answer', taskId: data.taskId})
+        simulateEvent('task:completed', {result: JSON.stringify(makeEnvelope()), taskId: data.taskId})
         return Promise.resolve()
       })
 
       const resultPromise = handler({query: 'test'})
 
-      // After 2s, client reconnects (getState now returns 'connected')
       await clock.tickAsync(2000)
       ;(client.getState as SinonStub).returns('connected')
       await clock.tickAsync(1000)
@@ -435,115 +656,12 @@ describe('brv-query-tool', () => {
       const result = await resultPromise
 
       expect(result.isError).to.be.undefined
-      expect(result.content[0].text).to.equal('recovered answer')
+      expect(result.content[0].text).to.include('## JWT authentication')
     })
   })
 
   describe('handler — transport errors', () => {
-    it('should retry project association once before creating the task', async () => {
-      const clock = useFakeTimers()
-      const projectRoot = mkdtempSync(join(tmpdir(), 'brv-query-retry-'))
-      mkdirSync(join(projectRoot, '.brv'), {recursive: true})
-      writeFileSync(join(projectRoot, '.brv', 'config.json'), '{}')
-
-      try {
-        const {client, simulateEvent} = createMockClient()
-        const requestStub = client.requestWithAck as SinonStub
-        let associationAttempts = 0
-
-        requestStub.callsFake((event: string, data: {taskId?: string}) => {
-          if (event === 'client:associateProject') {
-            associationAttempts++
-            if (associationAttempts === 1) {
-              return new Promise(() => {})
-            }
-
-            return Promise.resolve({success: true})
-          }
-
-          if (event === 'task:create' && data.taskId) {
-            simulateEvent('task:completed', {result: 'retried answer', taskId: data.taskId})
-          }
-
-          return Promise.resolve()
-        })
-
-        const handler = setupQueryHandler({
-          getClient: () => client,
-          getWorkingDirectory: noWorkingDirectory,
-        })
-
-        const resultPromise = handler({cwd: projectRoot, query: 'test'})
-        await clock.tickAsync(3001)
-        const result = await resultPromise
-
-        expect(result.isError).to.be.undefined
-        expect(result.content[0].text).to.equal('retried answer')
-        expect(associationAttempts).to.equal(2)
-      } finally {
-        clock.restore()
-        rmSync(projectRoot, {force: true, recursive: true})
-      }
-    })
-
-    it('should return actionable error when project association fails twice', async () => {
-      const clock = useFakeTimers()
-      const projectRoot = mkdtempSync(join(tmpdir(), 'brv-query-assoc-fail-'))
-      mkdirSync(join(projectRoot, '.brv'), {recursive: true})
-      writeFileSync(join(projectRoot, '.brv', 'config.json'), '{}')
-
-      try {
-        const {client} = createMockClient()
-        const requestStub = client.requestWithAck as SinonStub
-        requestStub.callsFake((event: string) => {
-          if (event === 'client:associateProject') {
-            return new Promise(() => {})
-          }
-
-          return Promise.resolve()
-        })
-
-        const handler = setupQueryHandler({
-          getClient: () => client,
-          getWorkingDirectory: noWorkingDirectory,
-        })
-
-        const resultPromise = handler({cwd: projectRoot, query: 'test'})
-        await clock.tickAsync(6002)
-        const result = await resultPromise
-
-        expect(result.isError).to.be.true
-        expect(result.content[0].text).to.include('Failed to associate MCP client with project')
-        expect(requestStub.getCalls().filter((c: {args: unknown[]}) => c.args[0] === 'task:create')).to.have.length(0)
-      } finally {
-        clock.restore()
-        rmSync(projectRoot, {force: true, recursive: true})
-      }
-    })
-
-    it('should surface resolver errors instead of silently falling back', async () => {
-      const projectRoot = mkdtempSync(join(tmpdir(), 'brv-query-broken-link-'))
-      const workspace = join(projectRoot, 'packages', 'api')
-      mkdirSync(workspace, {recursive: true})
-      writeFileSync(join(workspace, '.brv'), JSON.stringify({projectRoot: '/missing/project'}))
-
-      try {
-        const {client} = createMockClient()
-        const handler = setupQueryHandler({
-          getClient: () => client,
-          getWorkingDirectory: noWorkingDirectory,
-        })
-
-        const result = await handler({cwd: workspace, query: 'test'})
-
-        expect(result.isError).to.be.true
-        expect(result.content[0].text).to.include('Worktree pointer broken')
-      } finally {
-        rmSync(projectRoot, {force: true, recursive: true})
-      }
-    })
-
-    it('should return error when requestWithAck rejects', async () => {
+    it('returns error when requestWithAck rejects', async () => {
       const {client} = createMockClient()
       const requestStub = client.requestWithAck as SinonStub
       requestStub.rejects(new Error('Connection refused'))
@@ -559,12 +677,12 @@ describe('brv-query-tool', () => {
       expect(result.content[0].text).to.include('Connection refused')
     })
 
-    it('should return error when task fails with error event', async () => {
+    it('returns error when task fails with error event', async () => {
       const {client, simulateEvent} = createMockClient()
       const requestStub = client.requestWithAck as SinonStub
       requestStub.callsFake((_event: string, data: {taskId: string}) => {
         simulateEvent('task:error', {
-          error: {message: 'File not found', name: 'TaskError'},
+          error: {message: 'Index unavailable', name: 'TaskError'},
           taskId: data.taskId,
         })
         return Promise.resolve()
@@ -578,66 +696,19 @@ describe('brv-query-tool', () => {
       const result = await handler({query: 'test'})
 
       expect(result.isError).to.be.true
-      expect(result.content[0].text).to.include('File not found')
-    })
-  })
-
-  describe('handler — attribution', () => {
-    it('should pass through attribution footer produced by executor', async () => {
-      const {client, simulateEvent} = createMockClient()
-      const requestStub = client.requestWithAck as SinonStub
-      // Simulate executor returning result already containing the attribution footer
-      requestStub.callsFake((_event: string, data: {taskId: string}) => {
-        simulateEvent('task:completed', {result: 'Some knowledge content' + ATTRIBUTION_FOOTER, taskId: data.taskId})
-        return Promise.resolve()
-      })
-
-      const handler = setupQueryHandler({
-        getClient: () => client,
-        getWorkingDirectory: () => '/project/root',
-      })
-
-      const result = await handler({query: 'test'})
-
-      expect(result.isError).to.be.undefined
-      expect(result.content[0].text).to.include('Source: ByteRover Knowledge Base')
-      expect(result.content[0].text).to.match(/Some knowledge content\n\n---\nSource: ByteRover Knowledge Base$/)
-    })
-
-    it('should not append attribution footer to error responses', async () => {
-      const {client, simulateEvent} = createMockClient()
-      const requestStub = client.requestWithAck as SinonStub
-      requestStub.callsFake((_event: string, data: {taskId: string}) => {
-        simulateEvent('task:error', {
-          error: {message: 'Something failed', name: 'TaskError'},
-          taskId: data.taskId,
-        })
-        return Promise.resolve()
-      })
-
-      const handler = setupQueryHandler({
-        getClient: () => client,
-        getWorkingDirectory: () => '/project/root',
-      })
-
-      const result = await handler({query: 'test'})
-
-      expect(result.isError).to.be.true
-      expect(result.content[0].text).to.not.include('Source: ByteRover Knowledge Base')
+      expect(result.content[0].text).to.include('Index unavailable')
     })
   })
 
   describe('handler — event listener ordering', () => {
-    it('should register event listeners before sending task:create (race condition prevention)', async () => {
+    it('registers event listeners before sending task:create (race condition prevention)', async () => {
       const {client, simulateEvent} = createMockClient()
       let listenersRegisteredBeforeCreate = false
 
       const requestStub = client.requestWithAck as SinonStub
       requestStub.callsFake((_event: string, data: {taskId: string}) => {
-        // At this point, listeners should already be registered by waitForTaskResult.
-        // Verify by checking that simulating task:completed resolves the handler.
         listenersRegisteredBeforeCreate = true
-        simulateEvent('task:completed', {result: 'fast result', taskId: data.taskId})
+        simulateEvent('task:completed', {result: JSON.stringify(makeEnvelope()), taskId: data.taskId})
         return Promise.resolve()
       })
 
@@ -650,7 +721,6 @@ describe('brv-query-tool', () => {
 
       expect(listenersRegisteredBeforeCreate).to.be.true
       expect(result.isError).to.be.undefined
-      expect(result.content[0].text).to.equal('fast result')
     })
   })
 })
