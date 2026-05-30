@@ -110,8 +110,8 @@ describe('AxiosAnalyticsHttpClient', () => {
       expect(result).to.deep.equal({ok: false, reason: 'http_4xx', status: 400})
     })
 
-    it('returns ok=false reason=http_4xx with status for a 429', async () => {
-      nock(baseUrl).post('/v1/events').reply(429, {message: 'too many requests'})
+    it('returns ok=false reason=http_5xx with status for a 500 (non-503 server errors stay transient)', async () => {
+      nock(baseUrl).post('/v1/events').reply(500, {message: 'boom'})
       const client = new AxiosAnalyticsHttpClient({baseUrl})
 
       const result = await client.send(makeBatch(1), {
@@ -119,19 +119,7 @@ describe('AxiosAnalyticsHttpClient', () => {
         userAgent: 'brv-cli/3.12.0',
       })
 
-      expect(result).to.deep.equal({ok: false, reason: 'http_4xx', status: 429})
-    })
-
-    it('returns ok=false reason=http_5xx with status for a 503', async () => {
-      nock(baseUrl).post('/v1/events').reply(503, {message: 'unavailable'})
-      const client = new AxiosAnalyticsHttpClient({baseUrl})
-
-      const result = await client.send(makeBatch(1), {
-        deviceId: validDeviceId,
-        userAgent: 'brv-cli/3.12.0',
-      })
-
-      expect(result).to.deep.equal({ok: false, reason: 'http_5xx', status: 503})
+      expect(result).to.deep.equal({ok: false, reason: 'http_5xx', status: 500})
     })
 
     it('returns ok=false reason=network when the connection cannot be established', async () => {
@@ -167,6 +155,51 @@ describe('AxiosAnalyticsHttpClient', () => {
       expect(result.ok).to.equal(false)
       if (result.ok) throw new Error('unreachable')
       expect(result.reason).to.equal('timeout')
+    })
+  })
+
+  describe('rate-limit classification (M5.4 honor Retry-After — ENG-2658)', () => {
+    it('429 with a Retry-After header returns rate_limited + retryAfterMs from the header', async () => {
+      nock(baseUrl).post('/v1/events').reply(429, {message: 'slow down'}, {'retry-after': '30'})
+      const client = new AxiosAnalyticsHttpClient({baseUrl})
+
+      const result = await client.send(makeBatch(1), {deviceId: validDeviceId, userAgent: 'brv-cli/3.12.0'})
+
+      expect(result).to.deep.equal({ok: false, reason: 'rate_limited', retryAfterMs: 30_000, status: 429})
+    })
+
+    it('429 with no header but a retry_after_seconds body falls back to the body value', async () => {
+      nock(baseUrl).post('/v1/events').reply(429, {retry_after_seconds: 30})
+      const client = new AxiosAnalyticsHttpClient({baseUrl})
+
+      const result = await client.send(makeBatch(1), {deviceId: validDeviceId, userAgent: 'brv-cli/3.12.0'})
+
+      expect(result).to.deep.equal({ok: false, reason: 'rate_limited', retryAfterMs: 30_000, status: 429})
+    })
+
+    it('429 with neither header nor body falls back to a 60s default and logs a WARN', async () => {
+      nock(baseUrl).post('/v1/events').reply(429, {message: 'too many requests'})
+      const logged: string[] = []
+      const client = new AxiosAnalyticsHttpClient({baseUrl, log: (m) => logged.push(m)})
+
+      const result = await client.send(makeBatch(1), {deviceId: validDeviceId, userAgent: 'brv-cli/3.12.0'})
+
+      expect(result).to.deep.equal({ok: false, reason: 'rate_limited', retryAfterMs: 60_000, status: 429})
+      expect(
+        logged.some((m) => m.includes('429') && /default/i.test(m)),
+        'a WARN is logged when falling back to the default delay',
+      ).to.equal(true)
+    })
+
+    it('503 from the edge backstop returns rate_limited with the default delay and logs a WARN (not unreachable)', async () => {
+      nock(baseUrl).post('/v1/events').reply(503, {message: 'unavailable'})
+      const logged: string[] = []
+      const client = new AxiosAnalyticsHttpClient({baseUrl, log: (m) => logged.push(m)})
+
+      const result = await client.send(makeBatch(1), {deviceId: validDeviceId, userAgent: 'brv-cli/3.12.0'})
+
+      expect(result).to.deep.equal({ok: false, reason: 'rate_limited', retryAfterMs: 60_000, status: 503})
+      expect(logged.some((m) => m.includes('503')), 'a WARN is logged for the 503 edge backstop').to.equal(true)
     })
   })
 

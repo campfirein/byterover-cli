@@ -17,7 +17,7 @@ import type {IAnalyticsClient} from '../../core/interfaces/analytics/i-analytics
  * (the most optimistic label) rather than throw, so a malformed counter
  * never breaks the status command's hot path.
  */
-export type ReachabilityState = 'degraded' | 'healthy' | 'unreachable'
+export type ReachabilityState = 'degraded' | 'healthy' | 'rate_limited' | 'unreachable'
 
 export function consecutiveFailuresToReachabilityState(consecutiveFailures: number): ReachabilityState {
   if (!Number.isFinite(consecutiveFailures) || consecutiveFailures < 1) return 'healthy'
@@ -65,8 +65,13 @@ export async function buildAnalyticsStatusSnapshot(
   // M4.6 override: when no endpoint is configured the daemon has
   // nothing to be "healthy" against — surface unreachable so the user
   // doesn't see a misleading "healthy" label paired with "(not configured)".
+  // M5.4 (ENG-2658): a server-driven rate-limit (429 / 503 edge backstop) is
+  // a distinct state — the backend is reachable but throttling us — and takes
+  // precedence over the failure-count band (rate-limits never bump that count).
   const state: ReachabilityState = endpointConfigured
-    ? consecutiveFailuresToReachabilityState(consecutiveFailures)
+    ? deps.backoffPolicy.isRateLimited()
+      ? 'rate_limited'
+      : consecutiveFailuresToReachabilityState(consecutiveFailures)
     : 'unreachable'
 
   return {

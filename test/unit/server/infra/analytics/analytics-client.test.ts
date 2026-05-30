@@ -168,14 +168,22 @@ async function seedPending(client: AnalyticsClient, count: number): Promise<void
 // Hoisted to module scope to satisfy unicorn/consistent-function-scoping.
 // `reason` is optional so the success-path callers can omit it
 // (the autofix would otherwise rewrite `(undefined)` to `()`).
-function makeSenderWithReason(reason?: 'http_4xx' | 'http_5xx' | 'network' | 'timeout'): IAnalyticsSender {
+function makeSenderWithReason(
+  reason?: 'http_4xx' | 'http_5xx' | 'network' | 'rate_limited' | 'timeout',
+  retryAfterMs?: number,
+): IAnalyticsSender {
   return {
     async send(records) {
       if (reason === undefined) {
         return {failed: [], succeeded: records.map((r) => r.id)}
       }
 
-      return {failed: records.map((r) => r.id), reason, succeeded: []}
+      return {
+        failed: records.map((r) => r.id),
+        reason,
+        ...(retryAfterMs === undefined ? {} : {retryAfterMs}),
+        succeeded: [],
+      }
     },
   }
 }
@@ -1342,7 +1350,9 @@ describe('AnalyticsClient', () => {
 
   describe('M4.5 backoff policy feedback', () => {
     type StubPolicy = {
+      applyServerHint: ReturnType<typeof stub>
       consecutiveFailures: () => number
+      isRateLimited: () => boolean
       nextDelayMs: () => number
       onFailure: ReturnType<typeof stub>
       onSuccess: ReturnType<typeof stub>
@@ -1350,7 +1360,9 @@ describe('AnalyticsClient', () => {
 
     function makePolicyStub(): StubPolicy {
       return {
+        applyServerHint: stub(),
         consecutiveFailures: () => 0,
+        isRateLimited: () => false,
         nextDelayMs: () => 30_000,
         onFailure: stub(),
         onSuccess: stub(),
@@ -1443,6 +1455,26 @@ describe('AnalyticsClient', () => {
 
       expect(policy.onFailure.called, '4xx must NOT advance backoff').to.be.false
       expect(policy.onSuccess.called, '4xx is not a success either').to.be.false
+    })
+
+    it('honors a rate_limited result via applyServerHint and does NOT advance the failure counter (M5.4 — ENG-2658)', async () => {
+      const policy = makePolicyStub()
+      const client = new AnalyticsClient({
+        backoffPolicy: policy,
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        queue: new BoundedQueue(),
+        sender: makeSenderWithReason('rate_limited', 120_000),
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+      await seedPending(client, 1)
+      await client.flush()
+
+      expect(policy.applyServerHint.calledOnceWithExactly(120_000), 'server hint is forwarded to the policy').to.be
+        .true
+      expect(policy.onFailure.called, 'a 429/503 is reachable, not a failure').to.be.false
+      expect(policy.onSuccess.called, 'a rate-limit is not a success either').to.be.false
     })
 
     it('does NOT touch the policy when abort() fired during the flush (user-driven cancel, not a backend signal)', async () => {

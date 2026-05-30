@@ -205,6 +205,25 @@ describe('HttpAnalyticsSender', () => {
       expect(result).to.deep.equal({failed: ['only'], reason: 'http_4xx', succeeded: []})
     })
 
+    it('forwards rate_limited reason AND the retryAfterMs hint (M5.4 — ENG-2658)', async () => {
+      const httpClient = makeCapturingHttpClient({ok: false, reason: 'rate_limited', retryAfterMs: 30_000, status: 429})
+      const sender = new HttpAnalyticsSender({
+        authStateReader: makeAuthReader(),
+        globalConfigStore: makeStubConfigStore(),
+        httpClient,
+        userAgent: 'brv-cli/3.12.0',
+      })
+
+      const result = await sender.send([makeRecord({id: 'r1'}), makeRecord({id: 'r2'})])
+
+      expect(result).to.deep.equal({
+        failed: ['r1', 'r2'],
+        reason: 'rate_limited',
+        retryAfterMs: 30_000,
+        succeeded: [],
+      })
+    })
+
     it('does NOT set reason on a successful send (M4.5 caller treats absence as success)', async () => {
       const httpClient = makeCapturingHttpClient({ok: true})
       const sender = new HttpAnalyticsSender({

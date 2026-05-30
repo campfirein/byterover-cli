@@ -289,6 +289,23 @@ export class AnalyticsClient implements IAnalyticsClient {
       return
     }
 
+    if (result.reason === 'rate_limited') {
+      // M5.4 (ENG-2658): a 429 (app throttler) or 503 (nginx edge backstop) is
+      // a "slow down", not a backend failure. Honor the server's delay via
+      // `applyServerHint` (the scheduler re-arms from `nextDelayMs()` after this
+      // flush settles) and DO NOT advance the failure counter, so a throttled
+      // endpoint never tips the reachability band into "unreachable".
+      if (policy !== undefined && result.retryAfterMs !== undefined) {
+        policy.applyServerHint(result.retryAfterMs)
+        this.deps.log?.(
+          `analytics.backoff: rate_limited, honoring server hint retry_after=${result.retryAfterMs}ms ` +
+            `(next=${policy.nextDelayMs()}ms, consecutive_failures=${policy.consecutiveFailures()})`,
+        )
+      }
+
+      return
+    }
+
     if (result.reason === undefined) {
       if (result.succeeded.length === 0) return // empty no-op or uncategorized failure: no signal
       // M4.6: stamp the timestamp on the same gate as the backoff

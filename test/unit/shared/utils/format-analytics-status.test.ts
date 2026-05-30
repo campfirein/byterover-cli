@@ -85,6 +85,17 @@ describe('format-analytics-status (M16.3)', () => {
     expect(text).to.include('Backoff state: unreachable')
   })
 
+  it('renders the distinct rate_limited backoff state (M5.4 — ENG-2658), not unreachable', () => {
+    const text = format({
+      ...HEALTHY,
+      // 429/503 throttle: zero failures but a server-supplied delay.
+      backoff: {consecutiveFailures: 0, nextDelayMs: 120_000, state: 'rate_limited'},
+    })
+    expect(text).to.include('Backoff state: rate_limited')
+    expect(text).to.not.include('unreachable')
+    expect(text).to.include('next attempt in 2m')
+  })
+
   it('shows queue depth and dropped events on enabled state', () => {
     const text = format({...HEALTHY, droppedCount: 7, queueDepth: 12})
     expect(text).to.include('Queue depth: 12 events')

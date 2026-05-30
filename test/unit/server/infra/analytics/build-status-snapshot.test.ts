@@ -22,9 +22,15 @@ function makeClientStub(state: RuntimeStateSnapshot): IAnalyticsClient {
   }
 }
 
-function makePolicyStub(consecutiveFailures: number, nextDelayMs: number): IAnalyticsBackoffPolicy {
+function makePolicyStub(
+  consecutiveFailures: number,
+  nextDelayMs: number,
+  isRateLimited = false,
+): IAnalyticsBackoffPolicy {
   return {
+    applyServerHint() {},
     consecutiveFailures: () => consecutiveFailures,
+    isRateLimited: () => isRateLimited,
     nextDelayMs: () => nextDelayMs,
     onFailure() {},
     onSuccess() {},
@@ -108,5 +114,18 @@ describe('buildAnalyticsStatusSnapshot (M16.3)', () => {
     })
 
     expect(snapshot.backoff.state).to.equal('unreachable')
+  })
+
+  it('maps a rate-limited policy to the distinct rate_limited state, even at 0 failures (M5.4 — ENG-2658)', async () => {
+    const snapshot = await buildAnalyticsStatusSnapshot({
+      analyticsClient: makeClientStub({droppedCount: 0, lastSuccessfulFlushAt: undefined, queueDepth: 1}),
+      // 0 consecutive failures (429s never bump the counter) but rate-limited:
+      // must surface as `rate_limited`, NOT `healthy` and NOT `unreachable`.
+      backoffPolicy: makePolicyStub(0, 60_000, true),
+      endpoint: 'https://telemetry-dev.byterover.dev',
+      isAnalyticsEnabled: () => true,
+    })
+
+    expect(snapshot.backoff.state).to.equal('rate_limited')
   })
 })

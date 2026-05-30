@@ -22,12 +22,16 @@ export const AnalyticsEvents = {
  * `endpoint` is the resolved `BRV_ANALYTICS_BASE_URL` or the literal
  * `"(not configured)"` placeholder; when not configured, `backoff.state`
  * is forced to `"unreachable"` regardless of `consecutiveFailures`.
+ *
+ * `state: 'rate_limited'` (M5.4 / ENG-2658) is distinct from `unreachable`:
+ * the backend is up but throttling us (429 / 503 edge backstop), so on-call
+ * should wait out the server-supplied delay rather than chase an outage.
  */
 export const AnalyticsStatusResponseSchema = z.object({
   backoff: z.object({
     consecutiveFailures: z.number().int().min(0),
     nextDelayMs: z.number().int().min(0),
-    state: z.enum(['healthy', 'degraded', 'unreachable']),
+    state: z.enum(['healthy', 'degraded', 'rate_limited', 'unreachable']),
   }),
   droppedCount: z.number().int().min(0),
   enabled: z.boolean(),

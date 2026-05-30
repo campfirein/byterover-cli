@@ -127,4 +127,60 @@ describe('AnalyticsBackoffPolicy (M4.5)', () => {
       expect(policy.consecutiveFailures(), 'first success collapses any unreachable count').to.equal(0)
     })
   })
+
+  describe('server-hint override (M5.4 honor Retry-After — ENG-2658)', () => {
+    it('applyServerHint overrides the base 30s delay with the larger server value', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.applyServerHint(120_000)
+      expect(policy.nextDelayMs(), 'server asked for 120s, base is 30s -> 120s').to.equal(120_000)
+    })
+
+    it('applyServerHint never accelerates below the current schedule delay', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.onFailure() // current schedule delay is now 60s
+      policy.applyServerHint(5000)
+      expect(
+        policy.nextDelayMs(),
+        'a misbehaving server cannot pull retries under the safe minimum',
+      ).to.equal(60_000)
+    })
+
+    it('does NOT count a server hint as a consecutive failure (429/503 is not unreachable)', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.applyServerHint(120_000)
+      expect(policy.consecutiveFailures(), 'rate-limit is not a reachability failure').to.equal(0)
+    })
+
+    it('isRateLimited() flips true on applyServerHint and is false from a clean state', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      expect(policy.isRateLimited(), 'clean state is not rate-limited').to.equal(false)
+      policy.applyServerHint(30_000)
+      expect(policy.isRateLimited()).to.equal(true)
+    })
+
+    it('three consecutive server hints stay rate-limited with zero failures (never unreachable)', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.applyServerHint(60_000)
+      policy.applyServerHint(60_000)
+      policy.applyServerHint(60_000)
+      expect(policy.consecutiveFailures(), 'repeated 429s do not bump the unreachable counter').to.equal(0)
+      expect(policy.isRateLimited()).to.equal(true)
+    })
+
+    it('onSuccess clears the server hint and the rate-limited flag', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.applyServerHint(300_000)
+      policy.onSuccess()
+      expect(policy.nextDelayMs(), 'success drops back to the base interval').to.equal(30_000)
+      expect(policy.isRateLimited()).to.equal(false)
+    })
+
+    it('a real transient failure supersedes the server hint and resumes the exponential schedule', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.applyServerHint(300_000)
+      policy.onFailure()
+      expect(policy.isRateLimited(), 'a 5xx after a 429 is no longer a rate-limit').to.equal(false)
+      expect(policy.nextDelayMs(), 'pure exponential after the failure (1 failure -> 60s)').to.equal(60_000)
+    })
+  })
 })

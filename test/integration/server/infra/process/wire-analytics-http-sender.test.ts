@@ -126,7 +126,10 @@ describe('M4.2 wireAnalyticsHttpSender (integration)', () => {
   })
 
   it('returns failed=ids when the backend returns 5xx (sender swap surface preserved)', async () => {
-    nock(baseUrl).post('/v1/events').reply(503, {})
+    // Use 500, not 503: M5.4 (ENG-2658) reclassifies a bare 503 as the nginx
+    // edge backstop (`rate_limited`), so a generic transient server error is
+    // exercised with 500.
+    nock(baseUrl).post('/v1/events').reply(500, {})
 
     const sender = wireAnalyticsHttpSender({
       analyticsBaseUrl: baseUrl,

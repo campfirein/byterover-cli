@@ -88,6 +88,13 @@ export class HttpAnalyticsSender implements IAnalyticsSender {
       )
 
       if (httpResult.ok) return {failed: [], succeeded: [...ids]}
+      // M5.4 (ENG-2658): `rate_limited` (429 / 503 edge backstop) carries the
+      // server's retry delay; forward it so `AnalyticsClient` can honor it via
+      // `backoffPolicy.applyServerHint` instead of advancing the failure count.
+      if (httpResult.reason === 'rate_limited') {
+        return {failed: [...ids], reason: 'rate_limited', retryAfterMs: httpResult.retryAfterMs, succeeded: []}
+      }
+
       // M4.5: surface the http-level failure reason so AnalyticsClient
       // can feed it into the backoff policy. `http_4xx` is intentionally
       // forwarded as-is so the caller can suppress backoff advancement
