@@ -1,73 +1,83 @@
+import {z} from 'zod'
+
 import type {AnalyticsEventName} from '../event-names.js'
 
 import {AnalyticsEventNames} from '../event-names.js'
-import {type AnalyticsDisabledProps, AnalyticsDisabledSchema} from './analytics-disabled.js'
-import {type AuthLoginProps, AuthLoginSchema} from './auth-login.js'
-import {type AuthLogoutProps, AuthLogoutSchema} from './auth-logout.js'
-import {type BrvInitProps, BrvInitSchema} from './brv-init.js'
-import {type CliInvocationProps, CliInvocationSchema} from './cli-invocation.js'
-import {type ConnectorInstalledProps, ConnectorInstalledSchema} from './connector-installed.js'
-import {type ContentMigratedProps, ContentMigratedSchema} from './content-migrated.js'
-import {type ContextTreeFileEditedProps, ContextTreeFileEditedSchema} from './context-tree-file-edited.js'
-import {type CurateOperationAppliedProps, CurateOperationAppliedSchema} from './curate-operation-applied.js'
-import {type CurateRunCompletedProps, CurateRunCompletedSchema} from './curate-run-completed.js'
-import {type DaemonResetExecutedProps, DaemonResetExecutedSchema} from './daemon-reset-executed.js'
-import {type DaemonStartProps, DaemonStartSchema} from './daemon-start.js'
-import {type HubPackageInstalledProps, HubPackageInstalledSchema} from './hub-package-installed.js'
-import {type HubRegistryAddedProps, HubRegistryAddedSchema} from './hub-registry-added.js'
-import {type HubRegistryRemovedProps, HubRegistryRemovedSchema} from './hub-registry-removed.js'
-import {type McpSessionEndedProps, McpSessionEndedSchema} from './mcp-session-ended.js'
-import {type McpSessionStartProps, McpSessionStartSchema} from './mcp-session-start.js'
-import {type McpToolCalledProps, McpToolCalledSchema} from './mcp-tool-called.js'
-import {type MigrateRunProps, MigrateRunSchema} from './migrate-run.js'
-import {type OnboardingAutoSetupStartedProps, OnboardingAutoSetupStartedSchema} from './onboarding-auto-setup-started.js'
-import {type OnboardingCompletedProps, OnboardingCompletedSchema} from './onboarding-completed.js'
-import {type QueryCompletedProps, QueryCompletedSchema} from './query-completed.js'
-import {type ReviewApprovedProps, ReviewApprovedSchema} from './review-approved.js'
-import {type ReviewRejectedProps, ReviewRejectedSchema} from './review-rejected.js'
-import {type ReviewToggledProps, ReviewToggledSchema} from './review-toggled.js'
-import {type SettingChangedProps, SettingChangedSchema} from './setting-changed.js'
-import {type SettingResetProps, SettingResetSchema} from './setting-reset.js'
-import {type SourceAddedProps, SourceAddedSchema} from './source-added.js'
-import {type SourceRemovedProps, SourceRemovedSchema} from './source-removed.js'
-import {type SpaceSwitchedProps, SpaceSwitchedSchema} from './space-switched.js'
-import {type SwarmOnboardedProps, SwarmOnboardedSchema} from './swarm-onboarded.js'
-import {type SwarmQueryCompletedProps, SwarmQueryCompletedSchema} from './swarm-query-completed.js'
-import {type SwarmStoreCompletedProps, SwarmStoreCompletedSchema} from './swarm-store-completed.js'
-import {type TaskCompletedProps, TaskCompletedSchema} from './task-completed.js'
-import {type TaskCreatedProps, TaskCreatedSchema} from './task-created.js'
-import {type TaskFailedProps, TaskFailedSchema} from './task-failed.js'
-import {type VcBranchedProps, VcBranchedSchema} from './vc-branched.js'
-import {type VcCheckedOutProps, VcCheckedOutSchema} from './vc-checked-out.js'
-import {type VcClonedProps, VcClonedSchema} from './vc-cloned.js'
-import {type VcCommitProps, VcCommitSchema} from './vc-commit.js'
-import {type VcDiscardedProps, VcDiscardedSchema} from './vc-discarded.js'
-import {type VcFetchedProps, VcFetchedSchema} from './vc-fetched.js'
-import {type VcInitProps, VcInitSchema} from './vc-init.js'
-import {type VcMergedProps, VcMergedSchema} from './vc-merged.js'
-import {type VcPulledProps, VcPulledSchema} from './vc-pulled.js'
-import {type VcPushedProps, VcPushedSchema} from './vc-pushed.js'
-import {type VcRemoteChangedProps, VcRemoteChangedSchema} from './vc-remote-changed.js'
-import {type VcResetExecutedProps, VcResetExecutedSchema} from './vc-reset-executed.js'
-import {type WebuiSessionEndedProps, WebuiSessionEndedSchema} from './webui-session-ended.js'
-import {type WebuiSessionStartedProps, WebuiSessionStartedSchema} from './webui-session-started.js'
-import {type WorktreeAddedProps, WorktreeAddedSchema} from './worktree-added.js'
-import {type WorktreeRemovedProps, WorktreeRemovedSchema} from './worktree-removed.js'
+import {AnalyticsDisabledSchema} from './analytics-disabled.js'
+import {AuthLoginSchema} from './auth-login.js'
+import {AuthLogoutSchema} from './auth-logout.js'
+import {BrvInitSchema} from './brv-init.js'
+import {CliInvocationSchema} from './cli-invocation.js'
+import {ConnectorInstalledSchema} from './connector-installed.js'
+import {ContentMigratedSchema} from './content-migrated.js'
+import {ContextTreeFileEditedSchema} from './context-tree-file-edited.js'
+import {CurateOperationAppliedSchema} from './curate-operation-applied.js'
+import {CurateRunCompletedSchema} from './curate-run-completed.js'
+import {DaemonResetExecutedSchema} from './daemon-reset-executed.js'
+import {DaemonStartSchema} from './daemon-start.js'
+import {HubPackageInstalledSchema} from './hub-package-installed.js'
+import {HubRegistryAddedSchema} from './hub-registry-added.js'
+import {HubRegistryRemovedSchema} from './hub-registry-removed.js'
+import {McpSessionEndedSchema} from './mcp-session-ended.js'
+import {McpSessionStartSchema} from './mcp-session-start.js'
+import {McpToolCalledSchema} from './mcp-tool-called.js'
+import {MigrateRunSchema} from './migrate-run.js'
+import {OnboardingAutoSetupStartedSchema} from './onboarding-auto-setup-started.js'
+import {OnboardingCompletedSchema} from './onboarding-completed.js'
+import {QueryCompletedSchema} from './query-completed.js'
+import {ReviewApprovedSchema} from './review-approved.js'
+import {ReviewRejectedSchema} from './review-rejected.js'
+import {ReviewToggledSchema} from './review-toggled.js'
+import {SettingChangedSchema} from './setting-changed.js'
+import {SettingResetSchema} from './setting-reset.js'
+import {SourceAddedSchema} from './source-added.js'
+import {SourceRemovedSchema} from './source-removed.js'
+import {SpaceSwitchedSchema} from './space-switched.js'
+import {SwarmOnboardedSchema} from './swarm-onboarded.js'
+import {SwarmQueryCompletedSchema} from './swarm-query-completed.js'
+import {SwarmStoreCompletedSchema} from './swarm-store-completed.js'
+import {TaskCompletedSchema} from './task-completed.js'
+import {TaskCreatedSchema} from './task-created.js'
+import {TaskFailedSchema} from './task-failed.js'
+import {VcBranchedSchema} from './vc-branched.js'
+import {VcCheckedOutSchema} from './vc-checked-out.js'
+import {VcClonedSchema} from './vc-cloned.js'
+import {VcCommitSchema} from './vc-commit.js'
+import {VcDiscardedSchema} from './vc-discarded.js'
+import {VcFetchedSchema} from './vc-fetched.js'
+import {VcInitSchema} from './vc-init.js'
+import {VcMergedSchema} from './vc-merged.js'
+import {VcPulledSchema} from './vc-pulled.js'
+import {VcPushedSchema} from './vc-pushed.js'
+import {VcRemoteChangedSchema} from './vc-remote-changed.js'
+import {VcResetExecutedSchema} from './vc-reset-executed.js'
+import {WebuiSessionEndedSchema} from './webui-session-ended.js'
+import {WebuiSessionStartedSchema} from './webui-session-started.js'
+import {WorktreeAddedSchema} from './worktree-added.js'
+import {WorktreeRemovedSchema} from './worktree-removed.js'
 
 /**
- * Registry of every shipped event schema, keyed by wire name. Used by:
- *   - The privacy fixture, which walks every entry and asserts no field
- *     name appears on the forbidden PII list.
- *   - Per-event validation at the wire boundary (`AnalyticsHandler`).
+ * THE single source of truth for the analytics event catalog: every shipped
+ * event keyed by wire name, mapped to its per-event property schema.
  *
- * Adding a new event requires three steps:
+ * Everything else derives from this map — the `AnyAnalyticsEvent` union, the
+ * `PropsForEvent` / `PropsArg` types used by `track<E>()`, the runtime guard
+ * `isAnalyticsEventName`, and the wire-side validation in `AnalyticsHandler`
+ * (`ALL_EVENT_SCHEMAS[event].safeParse(...)`). There is no second list to keep
+ * in sync.
+ *
+ * `satisfies Record<AnalyticsEventName, z.ZodTypeAny>` makes completeness a
+ * compile error: registering a new `AnalyticsEventName` without a schema entry
+ * here fails the build. `as const` preserves the precise per-key schema types
+ * so the derivations below stay exact.
+ *
+ * Adding a new event:
  *   1. New constant in `../event-names.ts`.
- *   2. New per-event file in this folder.
- *   3. New entry in both `ALL_EVENT_SCHEMAS` and `AnyAnalyticsEvent` below.
+ *   2. New per-event schema file in this folder.
+ *   3. New entry here. (The union and the prop types update automatically.)
  *
  * Some entries are deferred scaffolding for upcoming milestones — they have
- * schemas but no emitter today. The wire-side handler dispatch must still
- * cover them (drop with Zod parse) once an emitter lands.
+ * schemas but no emitter today. Wire-side validation already covers them.
  */
 export const ALL_EVENT_SCHEMAS = {
   [AnalyticsEventNames.ANALYTICS_DISABLED]: AnalyticsDisabledSchema,
@@ -122,66 +132,17 @@ export const ALL_EVENT_SCHEMAS = {
   [AnalyticsEventNames.WEBUI_SESSION_STARTED]: WebuiSessionStartedSchema,
   [AnalyticsEventNames.WORKTREE_ADDED]: WorktreeAddedSchema,
   [AnalyticsEventNames.WORKTREE_REMOVED]: WorktreeRemovedSchema,
-} as const
+} as const satisfies Record<AnalyticsEventName, z.ZodTypeAny>
 
 /**
- * Discriminated union over every event in the catalog. A consumer can
- * destructure {name, properties} and TypeScript will narrow `properties`
+ * Discriminated union over every event in the catalog, DERIVED from
+ * `ALL_EVENT_SCHEMAS` (no hand-maintained second list). A consumer can
+ * destructure `{name, properties}` and TypeScript narrows `properties`
  * against the matching per-event type.
  */
-export type AnyAnalyticsEvent =
-  | {name: typeof AnalyticsEventNames.ANALYTICS_DISABLED; properties: AnalyticsDisabledProps}
-  | {name: typeof AnalyticsEventNames.AUTH_LOGIN; properties: AuthLoginProps}
-  | {name: typeof AnalyticsEventNames.AUTH_LOGOUT; properties: AuthLogoutProps}
-  | {name: typeof AnalyticsEventNames.BRV_INIT; properties: BrvInitProps}
-  | {name: typeof AnalyticsEventNames.CLI_INVOCATION; properties: CliInvocationProps}
-  | {name: typeof AnalyticsEventNames.CONNECTOR_INSTALLED; properties: ConnectorInstalledProps}
-  | {name: typeof AnalyticsEventNames.CONTENT_MIGRATED; properties: ContentMigratedProps}
-  | {name: typeof AnalyticsEventNames.CONTEXT_TREE_FILE_EDITED; properties: ContextTreeFileEditedProps}
-  | {name: typeof AnalyticsEventNames.CURATE_OPERATION_APPLIED; properties: CurateOperationAppliedProps}
-  | {name: typeof AnalyticsEventNames.CURATE_RUN_COMPLETED; properties: CurateRunCompletedProps}
-  | {name: typeof AnalyticsEventNames.DAEMON_RESET_EXECUTED; properties: DaemonResetExecutedProps}
-  | {name: typeof AnalyticsEventNames.DAEMON_START; properties: DaemonStartProps}
-  | {name: typeof AnalyticsEventNames.HUB_PACKAGE_INSTALLED; properties: HubPackageInstalledProps}
-  | {name: typeof AnalyticsEventNames.HUB_REGISTRY_ADDED; properties: HubRegistryAddedProps}
-  | {name: typeof AnalyticsEventNames.HUB_REGISTRY_REMOVED; properties: HubRegistryRemovedProps}
-  | {name: typeof AnalyticsEventNames.MCP_SESSION_ENDED; properties: McpSessionEndedProps}
-  | {name: typeof AnalyticsEventNames.MCP_SESSION_START; properties: McpSessionStartProps}
-  | {name: typeof AnalyticsEventNames.MCP_TOOL_CALLED; properties: McpToolCalledProps}
-  | {name: typeof AnalyticsEventNames.MIGRATE_RUN; properties: MigrateRunProps}
-  | {name: typeof AnalyticsEventNames.ONBOARDING_AUTO_SETUP_STARTED; properties: OnboardingAutoSetupStartedProps}
-  | {name: typeof AnalyticsEventNames.ONBOARDING_COMPLETED; properties: OnboardingCompletedProps}
-  | {name: typeof AnalyticsEventNames.QUERY_COMPLETED; properties: QueryCompletedProps}
-  | {name: typeof AnalyticsEventNames.REVIEW_APPROVED; properties: ReviewApprovedProps}
-  | {name: typeof AnalyticsEventNames.REVIEW_REJECTED; properties: ReviewRejectedProps}
-  | {name: typeof AnalyticsEventNames.REVIEW_TOGGLED; properties: ReviewToggledProps}
-  | {name: typeof AnalyticsEventNames.SETTING_CHANGED; properties: SettingChangedProps}
-  | {name: typeof AnalyticsEventNames.SETTING_RESET; properties: SettingResetProps}
-  | {name: typeof AnalyticsEventNames.SOURCE_ADDED; properties: SourceAddedProps}
-  | {name: typeof AnalyticsEventNames.SOURCE_REMOVED; properties: SourceRemovedProps}
-  | {name: typeof AnalyticsEventNames.SPACE_SWITCHED; properties: SpaceSwitchedProps}
-  | {name: typeof AnalyticsEventNames.SWARM_ONBOARDED; properties: SwarmOnboardedProps}
-  | {name: typeof AnalyticsEventNames.SWARM_QUERY_COMPLETED; properties: SwarmQueryCompletedProps}
-  | {name: typeof AnalyticsEventNames.SWARM_STORE_COMPLETED; properties: SwarmStoreCompletedProps}
-  | {name: typeof AnalyticsEventNames.TASK_COMPLETED; properties: TaskCompletedProps}
-  | {name: typeof AnalyticsEventNames.TASK_CREATED; properties: TaskCreatedProps}
-  | {name: typeof AnalyticsEventNames.TASK_FAILED; properties: TaskFailedProps}
-  | {name: typeof AnalyticsEventNames.VC_BRANCHED; properties: VcBranchedProps}
-  | {name: typeof AnalyticsEventNames.VC_CHECKED_OUT; properties: VcCheckedOutProps}
-  | {name: typeof AnalyticsEventNames.VC_CLONED; properties: VcClonedProps}
-  | {name: typeof AnalyticsEventNames.VC_COMMIT; properties: VcCommitProps}
-  | {name: typeof AnalyticsEventNames.VC_DISCARDED; properties: VcDiscardedProps}
-  | {name: typeof AnalyticsEventNames.VC_FETCHED; properties: VcFetchedProps}
-  | {name: typeof AnalyticsEventNames.VC_INIT; properties: VcInitProps}
-  | {name: typeof AnalyticsEventNames.VC_MERGED; properties: VcMergedProps}
-  | {name: typeof AnalyticsEventNames.VC_PULLED; properties: VcPulledProps}
-  | {name: typeof AnalyticsEventNames.VC_PUSHED; properties: VcPushedProps}
-  | {name: typeof AnalyticsEventNames.VC_REMOTE_CHANGED; properties: VcRemoteChangedProps}
-  | {name: typeof AnalyticsEventNames.VC_RESET_EXECUTED; properties: VcResetExecutedProps}
-  | {name: typeof AnalyticsEventNames.WEBUI_SESSION_ENDED; properties: WebuiSessionEndedProps}
-  | {name: typeof AnalyticsEventNames.WEBUI_SESSION_STARTED; properties: WebuiSessionStartedProps}
-  | {name: typeof AnalyticsEventNames.WORKTREE_ADDED; properties: WorktreeAddedProps}
-  | {name: typeof AnalyticsEventNames.WORKTREE_REMOVED; properties: WorktreeRemovedProps}
+export type AnyAnalyticsEvent = {
+  [E in AnalyticsEventName]: {name: E; properties: z.infer<(typeof ALL_EVENT_SCHEMAS)[E]>}
+}[AnalyticsEventName]
 
 /**
  * Type-derived properties for a given event name. Magic-string typos

@@ -2,6 +2,7 @@
 import {expect} from 'chai'
 
 import type {IAnalyticsClient} from '../../../../../../src/server/core/interfaces/analytics/i-analytics-client.js'
+import type {IWireEventTracker} from '../../../../../../src/server/core/interfaces/analytics/i-wire-event-tracker.js'
 import type {AnalyticsEventName} from '../../../../../../src/shared/analytics/event-names.js'
 import type {PropsArg} from '../../../../../../src/shared/analytics/events/index.js'
 
@@ -15,10 +16,11 @@ type AnalyticsTrackHandler = (data: unknown, clientId: string) => Promise<void>
 
 type TrackCall = {event: AnalyticsEventName; properties: unknown}
 
-type MockAnalyticsClient = IAnalyticsClient & {
-  readonly trackCalls: readonly TrackCall[]
-  trackThrows?: Error
-}
+type MockAnalyticsClient = IAnalyticsClient &
+  IWireEventTracker & {
+    readonly trackCalls: readonly TrackCall[]
+    trackThrows?: Error
+  }
 
 /**
  * Hand-rolled mock that preserves the generic signature on `track`. Sinon's
@@ -40,6 +42,13 @@ function makeMockAnalyticsClient(): MockAnalyticsClient {
       trackCalls.push({event, properties})
     },
     trackCalls,
+    // Records into the same trackCalls log so the existing assertions (which
+    // read event/properties) apply uniformly. The handler dispatches via
+    // trackEvent; this normalizes the union payload back to {event, properties}.
+    trackEvent(event: AnalyticsEventName, properties: Record<string, unknown> | undefined): void {
+      if (mock.trackThrows) throw mock.trackThrows
+      trackCalls.push({event, properties})
+    },
   }
   return mock
 }
@@ -88,7 +97,7 @@ describe('AnalyticsHandler', () => {
       })
     })
 
-    it('should route DAEMON_START (no required properties) without forwarding props', async () => {
+    it('should route DAEMON_START (no required properties) with an empty properties object', async () => {
       const transport = createMockTransportServer()
       const analyticsClient = makeMockAnalyticsClient()
       new AnalyticsHandler({analyticsClient, transport}).setup()
@@ -98,8 +107,9 @@ describe('AnalyticsHandler', () => {
 
       expect(analyticsClient.trackCalls).to.have.lengthOf(1)
       expect(analyticsClient.trackCalls[0].event).to.equal(AnalyticsEventNames.DAEMON_START)
-      // PropsArg makes properties absent for events with no required props.
-      expect(analyticsClient.trackCalls[0].properties).to.equal(undefined)
+      // No-property events validate `{}`; the client merges it with super-
+      // properties, so the recorded event-level properties are an empty object.
+      expect(analyticsClient.trackCalls[0].properties).to.deep.equal({})
     })
 
     it('should drop UNKNOWN event names silently (no track call)', async () => {
@@ -126,6 +136,19 @@ describe('AnalyticsHandler', () => {
       await handler({event: AnalyticsEventNames.QUERY_COMPLETED, properties: {}}, 'client-1')
 
       expect(analyticsClient.trackCalls, 'invalid per-event props must NOT reach track').to.deep.equal([])
+    })
+
+    it('should dispatch swarm_onboarded (registered in the catalog, must not be dropped)', async () => {
+      const transport = createMockTransportServer()
+      const analyticsClient = makeMockAnalyticsClient()
+      new AnalyticsHandler({analyticsClient, transport}).setup()
+
+      const handler = transport._handlers.get(AnalyticsEvents.TRACK) as AnalyticsTrackHandler
+      await handler({event: AnalyticsEventNames.SWARM_ONBOARDED, properties: {outcome: 'success'}}, 'client-1')
+
+      expect(analyticsClient.trackCalls).to.have.lengthOf(1)
+      expect(analyticsClient.trackCalls[0].event).to.equal(AnalyticsEventNames.SWARM_ONBOARDED)
+      expect(analyticsClient.trackCalls[0].properties).to.deep.equal({outcome: 'success'})
     })
   })
 

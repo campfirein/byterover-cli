@@ -94,6 +94,43 @@ describe('GlobalConfigHandler', () => {
     })
   })
 
+  describe('ensureDeviceId', () => {
+    const uuidRegex = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i
+
+    it('generates and persists a device_id for a fresh user (no config on disk)', async () => {
+      store.read.resolves()
+
+      const deviceId = await handler.ensureDeviceId()
+
+      expect(deviceId, 'returns a non-empty UUID').to.match(uuidRegex)
+      expect(store.write.calledOnce, 'persists the seeded config').to.be.true
+      const written = store.write.firstCall.args[0]
+      expect(written.deviceId).to.equal(deviceId)
+      // device_id seeding is independent of analytics — stays opt-in (false).
+      expect(written.analytics).to.equal(false)
+    })
+
+    it('returns the existing device_id WITHOUT writing (idempotent, no drift)', async () => {
+      store.read.resolves(GlobalConfig.create('existing-device-id').withAnalytics(true))
+
+      const deviceId = await handler.ensureDeviceId()
+
+      expect(deviceId).to.equal('existing-device-id')
+      expect(store.write.called, 'must not regenerate or rewrite when present').to.be.false
+    })
+
+    it('is stable across calls — never produces a divergent id once seeded', async () => {
+      store.read.resolves()
+      const first = await handler.ensureDeviceId()
+      // simulate persistence: subsequent reads now see the seeded config
+      store.read.resolves(GlobalConfig.create(first))
+
+      const second = await handler.ensureDeviceId()
+
+      expect(second).to.equal(first)
+    })
+  })
+
   describe('refreshCache', () => {
     it('sets cache to false when no config exists on disk', async () => {
       store.read.resolves()

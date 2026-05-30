@@ -37,10 +37,11 @@ export const CliRequestBaseSchema = z.object({
 })
 
 /**
- * Inferred type with index signature so it satisfies
- * `IAnalyticsClient.track`'s `properties?: Record<string, unknown>` parameter
- * without any `as` cast or spread workaround at the emit site.
+ * Inferred type of the `cli_metadata` block — exactly the `.strict()` schema's
+ * shape. Doubles as the per-event props for `cli_invocation` (via the analytics
+ * catalog) and as the optional `cli_metadata` field on client-originated request
+ * schemas (`CliRequestBaseSchema`).
  */
-export type CliMetadata = Record<string, unknown> & z.infer<typeof CliMetadataSchema>
+export type CliMetadata = z.infer<typeof CliMetadataSchema>
 
 export type CliRequestBase = z.infer<typeof CliRequestBaseSchema>

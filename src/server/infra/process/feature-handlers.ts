@@ -9,6 +9,7 @@ import {access} from 'node:fs/promises'
 import {join} from 'node:path'
 
 import type {IAnalyticsClient} from '../../core/interfaces/analytics/i-analytics-client.js'
+import type {IWireEventTracker} from '../../core/interfaces/analytics/i-wire-event-tracker.js'
 import type {IConnectorManager} from '../../core/interfaces/connectors/i-connector-manager.js'
 import type {IProviderConfigStore} from '../../core/interfaces/i-provider-config-store.js'
 import type {IProviderKeychainStore} from '../../core/interfaces/i-provider-keychain-store.js'
@@ -200,6 +201,13 @@ export async function setupFeatureHandlers({
   const globalConfigHandler = new GlobalConfigHandler({globalConfigStore, transport})
   globalConfigHandler.setup()
   await globalConfigHandler.refreshCache()
+  // device_id is an install-level identifier that must ALWAYS exist. An event
+  // tracked with an empty device_id is dropped by the wire schema + sender
+  // guard, so a fresh, never-authed user would silently fail to ship any
+  // telemetry. Seed it here at bootstrap — BEFORE AnalyticsClient and any
+  // track() — independent of the analytics.share flag and of auth. Seeding the
+  // id is NOT consent: telemetry still only ships once analytics.share is true.
+  await globalConfigHandler.ensureDeviceId()
 
   // M2.5: assemble the daemon-scoped analytics client. Construction happens
   // here because the resolvers and queue share the same `globalConfigStore`
@@ -241,8 +249,11 @@ export async function setupFeatureHandlers({
   // (the closure reads `.value` on every call). The scheduler instance is
   // assigned immediately after AnalyticsClient construction below.
   const schedulerHolder: {value: AnalyticsFlushScheduler | undefined} = {value: undefined}
-  const analyticsClient: IAnalyticsClient = new AnalyticsClient({
+  const analyticsClient: IAnalyticsClient & IWireEventTracker = new AnalyticsClient({
     backoffPolicy: analyticsBackoffPolicy,
+    async ensureDeviceId() {
+      await globalConfigHandler.ensureDeviceId()
+    },
     identityResolver: new IdentityResolver(authStateStore, globalConfigStore),
     isEnabled: () => globalConfigHandler.getCachedAnalytics(),
     jsonlStore: jsonlAnalyticsStore,

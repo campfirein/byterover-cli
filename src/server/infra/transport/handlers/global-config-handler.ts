@@ -70,6 +70,37 @@ export class GlobalConfigHandler implements IGlobalConfigRotator {
   }
 
   /**
+   * Guarantees a non-empty `device_id` exists on disk and returns it.
+   *
+   * `device_id` is an install-level identifier that must ALWAYS be present —
+   * independent of the analytics flag and of auth state. Idempotent: returns
+   * the existing id untouched when present; generates + persists a fresh UUID
+   * ONLY when missing, so repeated calls never produce a divergent id.
+   * Serialized through `writeChain` so a concurrent setAnalytics / rotate
+   * cannot race a second id onto a stale read.
+   *
+   * Called at daemon bootstrap (so every tracked event carries a stable id,
+   * even for a fresh, never-authed user) and defensively before each remote
+   * flush. Seeding the id is NOT consent to ship — telemetry still only leaves
+   * the device when `analytics.share` is true.
+   */
+  public async ensureDeviceId(): Promise<string> {
+    const next = this.writeChain.then(async () => {
+      const existing = await this.globalConfigStore.read()
+      const ensured = this.ensureDeviceIdOn(existing)
+      // Write only when a fresh id was actually seeded (ensured is a new
+      // object); an existing id is returned untouched — no rewrite, no drift.
+      if (ensured !== existing) await this.globalConfigStore.write(ensured)
+      return ensured.deviceId
+    })
+    this.writeChain = next.then(
+      () => {},
+      () => {},
+    )
+    return next
+  }
+
+  /**
    * Synchronous getter for the cached analytics flag. Used by daemon-side
    * consumers (M2.5's AnalyticsClient) that cannot await the async store.
    *
@@ -202,7 +233,10 @@ export class GlobalConfigHandler implements IGlobalConfigRotator {
       return {current: previous, previous}
     }
 
-    const current = existing ?? GlobalConfig.create(randomUUID())
+    // Reuse the canonical seeder so device_id generation lives in ONE place
+    // (no divergent randomUUID paths). In the real flow bootstrap has already
+    // seeded the id, so `existing` carries it and this returns it untouched.
+    const current = this.ensureDeviceIdOn(existing)
     const updated = current.withAnalytics(analytics)
     await this.globalConfigStore.write(updated)
 
@@ -241,6 +275,18 @@ export class GlobalConfigHandler implements IGlobalConfigRotator {
     }
 
     return {current: updated.analytics, previous}
+  }
+
+  /**
+   * Canonical "seed device_id if missing" — the SINGLE place a device_id is
+   * generated. PURE (no I/O): returns the input untouched when it already
+   * carries a non-empty id, otherwise returns a new config with a fresh UUID.
+   * Callers own persistence + writeChain serialization, so each operation
+   * (`ensureDeviceId`, `doSetAnalytics`) writes exactly once.
+   */
+  private ensureDeviceIdOn(existing: GlobalConfig | undefined): GlobalConfig {
+    if (existing && existing.deviceId.trim() !== '') return existing
+    return existing ? existing.withDeviceId(randomUUID()) : GlobalConfig.create(randomUUID())
   }
 
   private async read(): Promise<GlobalConfigGetResponse> {

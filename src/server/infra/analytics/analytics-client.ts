@@ -2,7 +2,7 @@ import {formatISO} from 'date-fns'
 import {randomUUID} from 'node:crypto'
 
 import type {AnalyticsEventName} from '../../../shared/analytics/event-names.js'
-import type {PropsArg, PropsForEvent} from '../../../shared/analytics/events/index.js'
+import type {PropsArg} from '../../../shared/analytics/events/index.js'
 import type {StoredAnalyticsRecord} from '../../../shared/analytics/stored-record.js'
 import type {IAnalyticsBackoffPolicy} from '../../core/interfaces/analytics/i-analytics-backoff-policy.js'
 import type {IAnalyticsClient} from '../../core/interfaces/analytics/i-analytics-client.js'
@@ -11,6 +11,7 @@ import type {IAnalyticsSender, SendResult} from '../../core/interfaces/analytics
 import type {IIdentityResolver} from '../../core/interfaces/analytics/i-identity-resolver.js'
 import type {IJsonlAnalyticsStore} from '../../core/interfaces/analytics/i-jsonl-analytics-store.js'
 import type {ISuperPropertiesResolver} from '../../core/interfaces/analytics/i-super-properties-resolver.js'
+import type {IWireEventTracker} from '../../core/interfaces/analytics/i-wire-event-tracker.js'
 
 import {toWireEvent} from '../../../shared/analytics/stored-record.js'
 import {AnalyticsBatch} from '../../core/domain/analytics/batch.js'
@@ -32,6 +33,15 @@ export interface AnalyticsClientDeps {
    * working with their pre-M4.5 construction shape.
    */
   backoffPolicy?: IAnalyticsBackoffPolicy
+  /**
+   * Optional defensive hook invoked at the start of every remote flush to
+   * GUARANTEE a non-empty `device_id` exists before shipping (the backend
+   * requires it on every batch). The composition root wires this to
+   * `GlobalConfigHandler.ensureDeviceId`; the daemon also seeds the id at
+   * bootstrap, so this is belt-and-suspenders against a config wiped at
+   * runtime. Optional so pre-existing test fakes keep their construction shape.
+   */
+  ensureDeviceId?: () => Promise<void>
   identityResolver: IIdentityResolver
   isEnabled: () => boolean
   jsonlStore: IJsonlAnalyticsStore
@@ -86,7 +96,7 @@ export interface AnalyticsClientDeps {
  * When disabled, `track()` is a true no-op: no resolver calls, no
  * allocations beyond the function call frame.
  */
-export class AnalyticsClient implements IAnalyticsClient {
+export class AnalyticsClient implements IAnalyticsClient, IWireEventTracker {
   // M4.4 cancellation slot. Held only while a flush is in flight; the
   // signal is piped through `sender.send` to the underlying HTTP client.
   // `abort()` is a no-op when this is undefined (no in-flight to cancel).
@@ -255,14 +265,27 @@ export class AnalyticsClient implements IAnalyticsClient {
     const timestamp = now.getTime()
     const createdAt = formatISO(now)
     const [properties] = rest
-    const pending = this.trackAsync({createdAt, event, properties, timestamp})
-    this.pendingTracks.add(pending)
-    // Remove from the in-flight set once the track settles either way.
-    // `void` keeps `track()` synchronous per the IAnalyticsClient contract.
-    // eslint-disable-next-line no-void
-    void pending.finally(() => {
-      this.pendingTracks.delete(pending)
-    })
+    this.registerPending(this.trackAsync({createdAt, name: event, properties, timestamp}))
+  }
+
+  /**
+   * M11: records a pre-validated wire event (from the `analytics:track`
+   * transport handler). Mirrors `track()` — same synchronous, fire-and-forget,
+   * never-crash semantics — but takes the discriminated-union payload whose
+   * `event`/`properties` are already correlated, so no per-event narrowing or
+   * cast is needed at the call site. Disabled-is-no-op for remote send is
+   * handled in `flush()`, identical to `track()`.
+   */
+  public trackEvent(event: AnalyticsEventName, properties: Record<string, unknown> | undefined): void {
+    const now = new Date()
+    this.registerPending(
+      this.trackAsync({
+        createdAt: formatISO(now),
+        name: event,
+        properties,
+        timestamp: now.getTime(),
+      }),
+    )
   }
 
   /**
@@ -356,7 +379,27 @@ export class AnalyticsClient implements IAnalyticsClient {
     }
   }
 
+  /**
+   * Track the in-flight `trackAsync` promise so `onAuthTransition` can await
+   * every track that started before a transition, then drop it once settled.
+   * `void` keeps the public `track`/`trackEvent` methods synchronous per the
+   * IAnalyticsClient contract.
+   */
+  private registerPending(pending: Promise<void>): void {
+    this.pendingTracks.add(pending)
+    // eslint-disable-next-line no-void
+    void pending.finally(() => {
+      this.pendingTracks.delete(pending)
+    })
+  }
+
   private async runFlush(): Promise<AnalyticsBatch> {
+    // Layer-2 safety: guarantee a device_id exists before shipping. The
+    // backend rejects a batch with no device id; bootstrap normally seeds it,
+    // this defends against a config wiped at runtime. Idempotent + serialized
+    // in the handler, so it no-ops when the id is already present.
+    if (this.deps.ensureDeviceId) await this.deps.ensureDeviceId()
+
     const records = await this.deps.jsonlStore.loadPending()
 
     // M4.4: per-flush AbortController, exposed via `abort()` so the
@@ -394,15 +437,15 @@ export class AnalyticsClient implements IAnalyticsClient {
     return AnalyticsBatch.create(records.map((r) => toWireEvent(r)))
   }
 
-  private async trackAsync<E extends AnalyticsEventName>(
+  private async trackAsync(
     input: Readonly<{
       createdAt: string
-      event: E
-      properties: PropsForEvent<E> | undefined
+      name: string
+      properties: Record<string, unknown> | undefined
       timestamp: number
     }>,
   ): Promise<void> {
-    const {createdAt, event, properties, timestamp} = input
+    const {createdAt, name, properties, timestamp} = input
     try {
       const [identity, superProps] = await Promise.all([
         this.deps.identityResolver.resolve(),
@@ -418,7 +461,7 @@ export class AnalyticsClient implements IAnalyticsClient {
         created_at: createdAt,
         id: randomUUID(),
         identity,
-        name: event,
+        name,
         // Super-properties are authoritative: they overwrite any user-supplied
         // property with the same key. This guarantees a consistent envelope
         // (cli_version, device_id, environment, node_version, os) on every event.
