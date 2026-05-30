@@ -295,14 +295,22 @@ export class AnalyticsClient implements IAnalyticsClient {
       // `applyServerHint` (the scheduler re-arms from `nextDelayMs()` after this
       // flush settles) and DO NOT advance the failure counter, so a throttled
       // endpoint never tips the reachability band into "unreachable".
-      if (policy !== undefined && result.retryAfterMs !== undefined) {
-        policy.applyServerHint(result.retryAfterMs)
+      if (policy === undefined) return
+      if (result.retryAfterMs === undefined) {
+        // The sender contract pairs `retryAfterMs` with every `rate_limited`
+        // result; if a future producer breaks that, surface it instead of
+        // silently dropping the server's backpressure signal.
         this.deps.log?.(
-          `analytics.backoff: rate_limited, honoring server hint retry_after=${result.retryAfterMs}ms ` +
-            `(next=${policy.nextDelayMs()}ms, consecutive_failures=${policy.consecutiveFailures()})`,
+          'analytics.backoff: rate_limited result missing retryAfterMs hint — dropped, falling back to the schedule',
         )
+        return
       }
 
+      policy.applyServerHint(result.retryAfterMs)
+      this.deps.log?.(
+        `analytics.backoff: rate_limited, honoring server hint retry_after=${result.retryAfterMs}ms ` +
+          `(next=${policy.nextDelayMs()}ms, consecutive_failures=${policy.consecutiveFailures()})`,
+      )
       return
     }
 

@@ -135,6 +135,21 @@ describe('AnalyticsBackoffPolicy (M4.5)', () => {
       expect(policy.nextDelayMs(), 'server asked for 120s, base is 30s -> 120s').to.equal(120_000)
     })
 
+    it('clamps an absurdly large server hint to the 1h safe maximum (no setTimeout overflow / multi-day stall)', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.applyServerHint(315_360_000_000) // 10 years — would overflow Node's setTimeout (> 2^31-1 ms)
+      expect(
+        policy.nextDelayMs(),
+        'a hostile/buggy server cannot stall shipping for days nor overflow setTimeout',
+      ).to.equal(3_600_000) // capped at 1 hour
+    })
+
+    it('honors a server hint at the cap boundary verbatim', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.applyServerHint(3_600_000) // exactly 1h — within the cap
+      expect(policy.nextDelayMs()).to.equal(3_600_000)
+    })
+
     it('applyServerHint never accelerates below the current schedule delay', () => {
       const policy = new AnalyticsBackoffPolicy()
       policy.onFailure() // current schedule delay is now 60s

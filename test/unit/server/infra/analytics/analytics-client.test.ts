@@ -1477,6 +1477,30 @@ describe('AnalyticsClient', () => {
       expect(policy.onSuccess.called, 'a rate-limit is not a success either').to.be.false
     })
 
+    it('logs (does not silently drop) a rate_limited result that arrives without retryAfterMs (M5.4 — ENG-2658)', async () => {
+      const policy = makePolicyStub()
+      const logs: string[] = []
+      const client = new AnalyticsClient({
+        backoffPolicy: policy,
+        identityResolver: makeStubIdentityResolver(makeAnonIdentity()),
+        isEnabled: () => true,
+        jsonlStore: makeFakeJsonlStore(),
+        log: (m) => logs.push(m),
+        queue: new BoundedQueue(),
+        sender: makeSenderWithReason('rate_limited'), // no retryAfterMs — malformed per the contract
+        superPropsResolver: makeStubSuperPropsResolver(makeSuperProps()),
+      })
+      await seedPending(client, 1)
+      await client.flush()
+
+      expect(policy.applyServerHint.called, 'no hint value to apply').to.be.false
+      expect(policy.onFailure.called, 'still not a reachability failure').to.be.false
+      expect(
+        logs.some((m) => m.includes('rate_limited') && /retryAfterMs|hint/i.test(m)),
+        'the dropped hint must be surfaced in the daemon log, not silently swallowed',
+      ).to.equal(true)
+    })
+
     it('does NOT touch the policy when abort() fired during the flush (user-driven cancel, not a backend signal)', async () => {
       const policy = makePolicyStub()
       let releaseSend!: () => void

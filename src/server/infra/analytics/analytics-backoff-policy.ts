@@ -4,6 +4,15 @@ import type {IAnalyticsBackoffPolicy} from '../../core/interfaces/analytics/i-an
 // Index = consecutiveFailures clamped to [0, length - 1].
 const BACKOFF_STEPS_MS: readonly number[] = [30_000, 60_000, 120_000, 300_000]
 
+// M5.4 (ENG-2658): upper bound on an honored server Retry-After. A hint above
+// this is clamped down. Rationale: (1) well under Node's setTimeout ceiling
+// (2^31-1 ms ≈ 24.8 days), past which a delay silently overflows and fires
+// immediately — which would IGNORE the rate-limit; (2) a throttle window longer
+// than an hour is unreasonable for opt-in telemetry and would otherwise stall
+// shipping for days. The lower bound is handled separately by `nextDelayMs`'s
+// max() with the schedule.
+const MAX_SERVER_HINT_MS = 3_600_000 // 1 hour
+
 /**
  * In-memory exponential-backoff policy. See `IAnalyticsBackoffPolicy`
  * for the contract.
@@ -28,9 +37,11 @@ export class AnalyticsBackoffPolicy implements IAnalyticsBackoffPolicy {
 
   public applyServerHint(retryAfterMs: number): void {
     // Ignore a non-positive / NaN hint for the delay floor (a bad server value
-    // must not shorten the wait), but still record that we were rate-limited.
+    // must not shorten the wait), and clamp an absurdly large one to the safe
+    // maximum (a bad value must not overflow setTimeout or stall shipping for
+    // days). Either way, record that we were rate-limited.
     if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
-      this.serverHintMs = retryAfterMs
+      this.serverHintMs = Math.min(retryAfterMs, MAX_SERVER_HINT_MS)
     }
 
     this.rateLimited = true

@@ -15,6 +15,16 @@ export interface AnalyticsFlushSchedulerDeps {
    */
   isEnabled: () => boolean
   /**
+   * M5.4 (ENG-2658): live "is the backend currently rate-limiting us?" gate,
+   * wired to `AnalyticsBackoffPolicy.isRateLimited()`. When true, the
+   * threshold (burst) trigger is suppressed so a 20-event burst cannot hammer a
+   * backend that returned 429/503 and asked us to wait — the periodic tick,
+   * already stretched to the server's `Retry-After` via `nextIntervalMs`, ships
+   * the backlog once the window elapses. Defaults to never-rate-limited so the
+   * periodic-tick path and existing callers/tests are unaffected.
+   */
+  isRateLimited?: () => boolean
+  /**
    * M4.5: live next-tick delay in milliseconds. Read AFTER each tick
    * settles, when the scheduler arms its `setTimeout` for the next
    * tick — so the latest backoff state (advanced by the just-finished
@@ -73,9 +83,13 @@ export type FlushFinalOptions = {
  *     invoke `notifyPushed()` after enqueuing a record; if the queue
  *     has grown by `thresholdCount` since the last threshold fire, a
  *     flush is scheduled via `setImmediate` so `track()` stays
- *     synchronous from the consumer's view. The threshold path is
- *     intentionally NOT throttled by backoff — single-flight rate-limits
- *     it, and gating the 20-event burst would defeat its purpose.
+ *     synchronous from the consumer's view. The threshold path is NOT
+ *     throttled by the M4.5 *backoff schedule* (failures) — single-flight
+ *     rate-limits it, and gating the 20-event burst on transient failures
+ *     would defeat its batching purpose. It IS suppressed, however, while
+ *     an explicit server *rate-limit* is active (M5.4 / ENG-2658
+ *     `isRateLimited`): a 429/503 means "stop sending", so the burst path
+ *     stands down and the stretched periodic tick ships the backlog.
  *
  * Single-flight: while a flush is in flight, any new trigger is dropped
  * (NOT queued). The in-flight promise is exposed via `flushFinal()` so
@@ -122,6 +136,7 @@ export class AnalyticsFlushScheduler {
     this.deps = {
       flush: deps.flush,
       isEnabled: deps.isEnabled,
+      isRateLimited: deps.isRateLimited ?? (() => false),
       nextIntervalMs: deps.nextIntervalMs ?? (() => DEFAULT_INTERVAL_MS),
       pendingCount: deps.pendingCount,
       queueSize: deps.queueSize,
@@ -186,6 +201,13 @@ export class AnalyticsFlushScheduler {
    */
   public notifyPushed(): void {
     if (!this.deps.isEnabled()) return
+    // M5.4 (ENG-2658): while the backend is rate-limiting us (429/503), suppress
+    // the burst trigger so a 20-event burst cannot hammer a backend that asked
+    // us to wait. The periodic tick — already stretched to the server's
+    // Retry-After via `nextIntervalMs` — ships the backlog once the window
+    // elapses. The threshold baseline is intentionally left untouched here, so
+    // once the rate-limit clears the next push can still trigger a flush.
+    if (this.deps.isRateLimited()) return
     const size = this.deps.queueSize()
     if (size < this.lastTriggerQueueSize) this.lastTriggerQueueSize = 0
     if (size - this.lastTriggerQueueSize < this.deps.thresholdCount) return
