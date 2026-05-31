@@ -157,7 +157,7 @@ prompt: |
   - Domains (dynamically created from content) and topics under each domain.
   - Optional subtopics (max one level under topics).
   - Each topic is a single HTML file at `.brv/context-tree/<domain>/<topic>[/<subtopic>].html`, rooted in a `<bv-topic>` element with frontmatter on attributes (`path`, `title`, `summary`, `tags`, `keywords`, `related`).
-  - Body sections are dedicated `<bv-*>` elements: `<bv-reason>`, `<bv-task>`, `<bv-changes>`, `<bv-files>`, `<bv-flow>`, `<bv-timestamp>`, `<bv-author>`, `<bv-pattern>`, `<bv-structure>`, `<bv-dependencies>`, `<bv-highlights>`, `<bv-rule>`, `<bv-examples>`, `<bv-diagram>`, `<bv-fact>`, `<bv-decision>`, `<bv-bug>`, `<bv-fix>`. Standard inline HTML (h1-h6, p, ul, ol, li, code, pre, strong, em) is allowed inside block-content elements.
+  - Body sections are dedicated `<bv-*>` elements: `<bv-reason>`, `<bv-task>`, `<bv-changes>`, `<bv-files>`, `<bv-flow>`, `<bv-timestamp>`, `<bv-author>`, `<bv-pattern>`, `<bv-structure>`, `<bv-dependencies>`, `<bv-highlights>`, `<bv-rule>`, `<bv-examples>`, `<bv-diagram>`, `<bv-fact>`, `<bv-decision>`, `<bv-bug>`, `<bv-fix>`. Standard inline HTML (h1-h6, p, ul, ol, li, code, pre, strong, em, img) is allowed inside block-content elements.
   - The element vocabulary is closed and described in detail in the `curate` tool description.
 
   ---
@@ -381,7 +381,13 @@ prompt: |
 
   Standard inline HTML inside block-content elements (`<bv-topic>`,
   `<bv-decision>`, `<bv-bug>`, `<bv-fix>`, narrative-block elements):
-  `h1`–`h6`, `p`, `ul`, `ol`, `li`, `code`, `pre`, `strong`, `em`.
+  `h1`–`h6`, `p`, `ul`, `ol`, `li`, `code`, `pre`, `strong`, `em`, `img`.
+
+  `<img src="..." alt="...">` embeds a visual reference by URL — useful
+  for architecture diagrams, screenshots, UI mocks. The renderer translates
+  to CommonMark `![alt](src)` for LLM consumption; the indexer surfaces
+  both alt text and URL tokens for BM25. Always include a descriptive
+  `alt` — it's the primary search handle.
 
   Inline-content elements (`<bv-rule>`, `<bv-task>`, `<bv-flow>`,
   `<bv-fact>`, `<bv-pattern>`, `<bv-timestamp>`, `<bv-author>`) only allow

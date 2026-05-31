@@ -1,6 +1,6 @@
 import type {ElementNode, ParsedNode} from '../../../core/domain/render/element-types.js'
 
-import {getInnerText, parseHtml} from './html-parser.js'
+import {parseHtml} from './html-parser.js'
 
 /**
  * Render a parsed `<bv-topic>` document into a markdown-like string for
@@ -57,10 +57,18 @@ export function renderHtmlTopicForLlm(html: string): string {
 }
 
 function renderChild(element: ElementNode): string {
-  const text = getInnerText(element).trim()
-  if (text.length === 0) return ''
-
   const {attributes, tagName} = element
+
+  // `<img>` reaches `renderChild` only when it appears as a top-level
+  // sibling of `<bv-*>` elements (rare). Inline `<img>` inside a `<bv-*>`
+  // body is handled by `getInlineMarkdown` below, which is what the
+  // `<bv-*>` cases call into.
+  if (tagName === 'img') {
+    return renderImgMarkdown(attributes)
+  }
+
+  const text = getInlineMarkdown(element)
+  if (text.length === 0) return ''
 
   switch (tagName) {
     case 'bv-author': {
@@ -171,4 +179,68 @@ function findFirstElement(root: ParsedNode, tagName: string): ElementNode | unde
   }
 
   return undefined
+}
+
+/**
+ * Markdown-aware inner-text extractor.
+ *
+ * Behaves like `getInnerText` from `html-parser` — concatenates text-node
+ * descendants in document order — but additionally translates inline
+ * `<img src alt/>` into CommonMark `![alt](src)`. Void elements like
+ * `<img>` contribute no text under the shared `getInnerText`, so a
+ * `<bv-decision>` body with an embedded image used to silently drop
+ * everything but the surrounding prose. This helper restores the URL +
+ * alt text in standard markdown form.
+ *
+ * `<img>` is the only inline element this helper specialises. Other
+ * non-text children continue to recurse via their own text content;
+ * `<a href>` (which has visible inner text and a parallel "href is
+ * dropped" bug) is tracked as a separate task in the inline-html
+ * milestone.
+ */
+function getInlineMarkdown(node: ParsedNode): string {
+  return collapseInlineWhitespace(getInlineMarkdownRaw(node))
+}
+
+function getInlineMarkdownRaw(node: ParsedNode): string {
+  if (node.type === 'text') return node.text
+  if (node.type === 'element') {
+    if (node.tagName === 'img') return renderImgMarkdown(node.attributes)
+    return node.children.map((c) => getInlineMarkdownRaw(c)).join(' ')
+  }
+
+  if (node.type === 'document') {
+    return node.children.map((c) => getInlineMarkdownRaw(c)).join(' ')
+  }
+
+  return ''
+}
+
+function collapseInlineWhitespace(text: string): string {
+  return text.replaceAll(/\s+/g, ' ').trim()
+}
+
+/**
+ * Translate `<img src alt/>` attributes into CommonMark `![alt](src)`.
+ *
+ * Defensive on malformed inputs:
+ *   - missing `src` → empty string (don't pollute markdown with broken
+ *     image syntax). The alt text is still surfaced for BM25 separately
+ *     via `extractImageContent` in the reader.
+ *   - missing `alt` → `![](src)`. Valid CommonMark; renders as a link
+ *     target without alt text.
+ *   - `]` in alt → replaced with space. Cheaper than emitting an escape
+ *     sequence and keeps the markdown one-line.
+ *   - `)` in src → fall back to `<src>` autolink form. CommonMark's
+ *     angle-bracket syntax handles parenthesised URLs without a broken
+ *     close-paren parse.
+ */
+function renderImgMarkdown(attributes: Readonly<Record<string, string>>): string {
+  const src = (attributes.src ?? '').trim()
+  if (src.length === 0) return ''
+
+  const alt = collapseInlineWhitespace((attributes.alt ?? '').replaceAll(']', ' '))
+
+  if (src.includes(')')) return `<${src}>`
+  return `![${alt}](${src})`
 }

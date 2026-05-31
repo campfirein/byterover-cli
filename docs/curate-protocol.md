@@ -16,16 +16,27 @@ Tool mode is the only path for `brv curate` — no provider configuration, no en
 
 ### Continuation — `--session` carries the prior call's id
 
+The continuation payload is always a JSON envelope of the form `{"html": "...", "meta": {...}}`. Two equivalent ways to deliver it:
+
 ```bash
-brv curate --session <sessionId> --response "<calling agent's output>" --format json
+# Inline envelope on --response
+brv curate --session <sessionId> --response '{"html":"<bv-topic>...</bv-topic>","meta":{...}}' --format json
+
+# Envelope from a JSON file via --response-file (mutually exclusive with --response)
+brv curate --session <sessionId> --response-file envelope.json --format json
+
+# Same, with opt-in cleanup once the daemon dispatch returns
+brv curate --session <sessionId> --response-file envelope.json --delete-response-file --format json
 ```
 
-Presence of `--session` resumes an in-flight session created by a prior kickoff.
+Presence of `--session` resumes an in-flight session created by a prior kickoff. `--response-file -` (stdin) is not supported in v1.
+
+**`--delete-response-file` lifecycle.** The file is unlinked **after** the daemon dispatch returns, not before. A daemon-error throw (transport timeout, daemon down) skips the unlink entirely so the agent retains the envelope for retry. A non-throw return (`done`, `correct-html`, or any other status) honors the unlink. One consequence: on a `correct-html` continuation the source file is gone but the session is still live — the calling agent must re-author a fresh envelope and write a new file before the next continuation. The inline `--response` flow has no equivalent re-authoring tax.
 
 ### Overwrite intent — `--overwrite` on continuation
 
 ```bash
-brv curate --session <sessionId> --response "<calling agent's output>" --overwrite --format json
+brv curate --session <sessionId> --response-file envelope.json --overwrite --format json
 ```
 
 Default behavior: the writer refuses to clobber an existing topic at the resolved path and returns a `path-exists` correction step carrying the prior file's content. Pass `--overwrite` only when the calling agent has consciously decided to replace prior content. The flag is consumed on the continuation it appears on; subsequent continuations in the same session must repeat it if they still want to overwrite.
@@ -49,7 +60,7 @@ Every kickoff and continuation call returns the same JSON envelope under the sta
     "step": "generate-html" | "correct-html",
     "prompt": "<free-text>",      // free-text instruction for the calling agent's LLM
     "schema": { ... },            // optional per-step schema slice
-    "errors": [                   // present on correct-html and on failed
+    "errors": [                   // present on correct-html, on failed, AND on done envelopes that carry a non-fatal companion error (today only --delete-response-file cleanup failure — see response-file-delete-error row below)
       {
         "kind": "<machine-readable>",
         "tag": "<bv-element>?",
@@ -57,7 +68,8 @@ Every kickoff and continuation call returns the same JSON envelope under the sta
         "message": "<human-readable>"
       }
     ],
-    "filePath": "<relative-path>"  // relative to .brv/context-tree/; present when status = done
+    "filePath": "<relative-path>",  // relative to .brv/context-tree/; present when status = done
+    "warnings": [ "<advisory>" ]    // optional, only on done envelopes; non-fatal post-write notes from the writer
   },
   "timestamp": "<iso>"
 }
@@ -67,8 +79,8 @@ Every kickoff and continuation call returns the same JSON envelope under the sta
 
 | `status` | Meaning | Next action for calling agent |
 |---|---|---|
-| `needs-llm-step` | Byterover wants an LLM completion. `prompt` + `step` describe what. | Run the calling agent's own LLM on `prompt`, then `brv curate --session <sessionId> --response "<output>"`. |
-| `done` | Curate complete. `filePath` is the location of the written topic. | Report success to user. Session is cleaned up. |
+| `needs-llm-step` | Byterover wants an LLM completion. `prompt` + `step` describe what. | Run the calling agent's own LLM on `prompt`, then `brv curate --session <sessionId> --response '{"html":"...","meta":{...}}'` or `--response-file envelope.json`. |
+| `done` | Curate complete. `filePath` is the location of the written topic. May also carry a non-empty `errors[]` for non-fatal companion failures — today only `response-file-delete-error` from `--delete-response-file` cleanup. Treat as success; surface the companion error to the user but don't abandon the result. | Report success to user. Session is cleaned up. |
 | `failed` | Terminal error. `errors[]` explains why. | Report failure to user; abandon session. |
 
 ### `step` values (when `status === 'needs-llm-step'`)
@@ -83,8 +95,12 @@ Every kickoff and continuation call returns the same JSON envelope under the sta
 | `kind` | Lifecycle | Terminal? | Notes |
 |---|---|---|---|
 | `missing-content` | Kickoff | **terminal** | Kickoff invoked without a context argument; no session created |
-| `missing-response` | Continuation | **terminal** | `--session` invoked without `--response`; session unaffected |
-| `invalid-flag-combination` | Continuation | **terminal** | Emitted before any session lookup when a flag is used outside its supported call shape. Today the only producer is `--overwrite` passed without `--session` (legacy curate path does not honour `--overwrite`). |
+| `missing-response` | Continuation | **terminal** | `--session` invoked without `--response` or `--response-file`; session unaffected |
+| `invalid-flag-combination` | Continuation | **terminal** | Emitted before any session lookup when a flag is used outside its supported call shape. Producers: `--overwrite`, `--response`, `--response-file`, or `--delete-response-file` without `--session`; `--response` and `--response-file` together; `--delete-response-file` without `--response-file`. |
+| `invalid-response-format` | Continuation | **terminal** | `--response` / `--response-file` body did not parse as a `{html, meta?}` envelope. Detected locally before any daemon I/O; the file (if any) is preserved so the agent can fix and retry. |
+| `response-file-not-regular` | Continuation | **terminal** | `--response-file` target is a directory, symlink, device, fifo, or socket. brv refuses to read or unlink non-regular files. |
+| `response-file-read-error` | Continuation | **terminal** | `lstat` or `readFile` on `--response-file` failed (e.g. ENOENT, EACCES). |
+| `response-file-delete-error` | Continuation | **non-terminal companion** | `--delete-response-file` was requested but `unlink` failed AFTER the daemon dispatch returned. The CLI emits the daemon's envelope verbatim (preserving its `status`, `ok`, `filePath`, etc.) and APPENDS this entry to `errors[]` so consumers can detect cleanup failure programmatically — `{ok: true, status: 'done', errors: [{kind: 'response-file-delete-error', …}]}` is the success-with-cleanup-hiccup shape. On a `status: 'failed'` dispatch, this entry joins the existing validation errors. |
 | `unknown-session` | Continuation | **terminal** | Session id doesn't exist, was already completed, or fails uuid validation |
 | `empty-response` | Continuation | **transient** (session kept live) | Continuation received an empty `--response`; caller retries with the same `sessionId` |
 | `retry-cap-exceeded` | Continuation | **terminal** | `MAX_ATTEMPTS = 4` (1 generate + 3 corrections) reached without valid HTML; session cleared. Accompanied by the validation errors that pushed the session over the cap. |
@@ -140,7 +156,9 @@ Response (placeholder):
 ### 3. Continuation
 
 ```bash
-brv curate --session 8c3f9e2a-... --response "<bv-topic ...>...</bv-topic>" --format json
+brv curate --session 8c3f9e2a-... --response '{"html":"<bv-topic ...>...</bv-topic>","meta":{"type":"ADD","impact":"high","reason":"Locks JWT alg.","summary":"JWT: RS256."}}' --format json
+# Or with the envelope on disk:
+brv curate --session 8c3f9e2a-... --response-file envelope.json [--delete-response-file] --format json
 ```
 
 Response on a valid HTML topic:

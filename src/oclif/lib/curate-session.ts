@@ -2,7 +2,7 @@ import type {ITransportClient, TaskAck} from '@campfirein/brv-transport-client'
 
 import {randomUUID} from 'node:crypto'
 import {existsSync} from 'node:fs'
-import {mkdir, readFile, rm, writeFile} from 'node:fs/promises'
+import {lstat, mkdir, readFile, rm, unlink, writeFile} from 'node:fs/promises'
 import {dirname, join} from 'node:path'
 import {z} from 'zod'
 
@@ -245,9 +245,145 @@ const CurateResponseEnvelopeSchema = z.object({
  * is not a well-formed envelope. Carries `kind: 'invalid-response-format'`
  * so the orchestrator can map it to the envelope's structured `errors[]`
  * shape without coupling parsing to envelope construction.
+ *
+ * Exported so the CLI command layer can narrow with `instanceof` instead
+ * of duck-typing on `error.kind`.
  */
-class InvalidResponseFormatError extends Error {
+export class InvalidResponseFormatError extends Error {
   readonly kind = 'invalid-response-format'
+}
+
+/**
+ * Discriminated `kind` for `InvalidResponseFileError`. Each branch maps
+ * 1:1 to a CLI envelope error kind so the calling agent can switch on
+ * `kind` without learning the helper's internals:
+ *
+ *   - `response-file-not-regular` — path resolves to a symlink, directory,
+ *     socket, fifo, etc. The CLI refuses to read or unlink anything that
+ *     isn't a plain file to avoid surprise filesystem mutation.
+ *   - `response-file-read-error` — `lstat` or `readFile` failed (ENOENT,
+ *     permissions, low-level I/O error).
+ *   - `response-file-delete-error` — `unlink` failed after a regular-file
+ *     guard succeeded. Could be EACCES, the file vanished between lstat
+ *     and unlink, or a filesystem error.
+ */
+export type ResponseFileErrorKind =
+  | 'response-file-delete-error'
+  | 'response-file-not-regular'
+  | 'response-file-read-error'
+
+/**
+ * Thrown by `loadCurateResponseFile` and `deleteCurateResponseFile` when
+ * the file path supplied via `--response-file` (or its deletion request)
+ * cannot be honored. Carries a structured `kind` so the CLI command can
+ * map the failure into a typed envelope error.
+ */
+export class InvalidResponseFileError extends Error {
+  readonly kind: ResponseFileErrorKind
+
+  constructor(kind: ResponseFileErrorKind, message: string) {
+    super(message)
+    this.kind = kind
+  }
+}
+
+/**
+ * Read the JSON envelope from `filePath` and return its raw contents.
+ *
+ * Guards against non-regular files (symlinks, directories, devices) via
+ * `lstat` before touching `readFile`. Returning a non-regular path's
+ * bytes would let a hostile symlink redirect the read to an unintended
+ * location, and a directory would surface as a misleading EISDIR. We
+ * reject up front with a stable structured error.
+ *
+ * Throws `InvalidResponseFileError` with one of:
+ *   - `kind: 'response-file-not-regular'` — path resolved to a non-file.
+ *   - `kind: 'response-file-read-error'` — lstat or readFile failed.
+ */
+export async function loadCurateResponseFile(filePath: string): Promise<string> {
+  const stats = await safeLstat(filePath, 'response-file-read-error', 'read')
+  if (!stats.isFile()) {
+    throw new InvalidResponseFileError(
+      'response-file-not-regular',
+      `--response-file expects a regular file; \`${filePath}\` is a ${describeFileKind(stats)}.`,
+    )
+  }
+
+  try {
+    return await readFile(filePath, 'utf8')
+  } catch (error) {
+    throw new InvalidResponseFileError(
+      'response-file-read-error',
+      `Cannot read --response-file at \`${filePath}\`: ${formatFsError(error)}.`,
+    )
+  }
+}
+
+/**
+ * Delete the JSON envelope file at `filePath` after it has been
+ * successfully consumed (read + parsed + envelope-validated upstream).
+ *
+ * Same regular-file guard as `loadCurateResponseFile` — never unlinks a
+ * symlink, directory, or device. Caller is expected to gate this on
+ * local validation success (the envelope was read, JSON-parsed, and
+ * schema-validated) before invoking — the file is only safe to remove
+ * once we've extracted everything we need from it.
+ *
+ * Throws `InvalidResponseFileError` with
+ * `kind: 'response-file-delete-error'` on any failure (non-regular path,
+ * lstat failure, unlink failure). The CLI command surfaces this as a
+ * structured envelope error and skips the daemon dispatch — we never
+ * pretend a curate succeeded when the requested cleanup did not.
+ */
+export async function deleteCurateResponseFile(filePath: string): Promise<void> {
+  const stats = await safeLstat(filePath, 'response-file-delete-error', 'delete')
+  if (!stats.isFile()) {
+    throw new InvalidResponseFileError(
+      'response-file-delete-error',
+      `Refusing to delete \`${filePath}\` — not a regular file (${describeFileKind(stats)}).`,
+    )
+  }
+
+  try {
+    await unlink(filePath)
+  } catch (error) {
+    throw new InvalidResponseFileError(
+      'response-file-delete-error',
+      `Failed to delete --response-file at \`${filePath}\`: ${formatFsError(error)}.`,
+    )
+  }
+}
+
+function describeFileKind(stats: Awaited<ReturnType<typeof lstat>>): string {
+  if (stats.isDirectory()) return 'directory'
+  if (stats.isSymbolicLink()) return 'symbolic link'
+  if (stats.isBlockDevice() || stats.isCharacterDevice()) return 'device'
+  if (stats.isFIFO()) return 'fifo'
+  if (stats.isSocket()) return 'socket'
+  return 'non-regular file'
+}
+
+// Node's `fs/promises` errors carry the errno code (e.g. "ENOENT") at the
+// start of `message` already, so we surface `message` verbatim — no extra
+// `${code}:` prefix to avoid the "ENOENT: ENOENT: …" double-tag.
+function formatFsError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
+async function safeLstat(
+  filePath: string,
+  errorKind: ResponseFileErrorKind,
+  verb: 'delete' | 'read',
+): Promise<Awaited<ReturnType<typeof lstat>>> {
+  try {
+    return await lstat(filePath)
+  } catch (error) {
+    throw new InvalidResponseFileError(
+      errorKind,
+      `Cannot ${verb} --response-file at \`${filePath}\`: ${formatFsError(error)}.`,
+    )
+  }
 }
 
 /**
@@ -284,6 +420,25 @@ export function parseCurateResponse(raw: string): {html: string; meta?: CurateMe
   }
 
   return {html: result.data.html, meta: result.data.meta}
+}
+
+/**
+ * Lookup an existing session without dispatching anything. Lets the CLI
+ * command layer prove the session is live before doing destructive side
+ * effects (e.g. unlinking a `--response-file`). Same UUID guard as
+ * `continueSession` to keep the path-traversal threat model intact.
+ *
+ * Returns a discriminator only — the actual `CurateSessionState` is
+ * internal. Callers that need state walk it via `continueSession` (which
+ * re-reads the same path; idempotent for safety).
+ */
+export async function peekCurateSession(
+  projectRoot: string,
+  sessionId: string,
+): Promise<{kind: 'invalid-format'} | {kind: 'not-found'} | {kind: 'ok'}> {
+  if (!SESSION_ID_RE.test(sessionId)) return {kind: 'invalid-format'}
+  const state = await readSessionState(projectRoot, sessionId)
+  return state ? {kind: 'ok'} : {kind: 'not-found'}
 }
 
 /**
@@ -481,7 +636,17 @@ async function dispatchCurateHtmlDirect(args: {
   return parsed
 }
 
-function unknownSessionEnvelope(sessionId: string, reason: 'invalid-format' | 'not-found'): CurateSessionEnvelope {
+/**
+ * Build the `unknown-session` failed envelope. Used both by
+ * `continueSession`'s own UUID / state-on-disk guards AND by the CLI
+ * command layer when it pre-flights the session before any destructive
+ * side effect (e.g. unlinking a `--response-file`). Exported so callers
+ * outside this module can emit a byte-identical envelope.
+ */
+export function unknownSessionEnvelope(
+  sessionId: string,
+  reason: 'invalid-format' | 'not-found',
+): CurateSessionEnvelope {
   const message =
     reason === 'invalid-format'
       ? `Invalid session id format: ${sessionId}. Expected a uuid returned by a prior kickoff.`

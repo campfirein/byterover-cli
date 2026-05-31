@@ -42,6 +42,16 @@ export type HtmlTopicRead = {
   bodyText: string
   /** Flat list of every typed `<bv-*>` element, in document order. */
   elements: readonly ElementAxisEntry[]
+  /**
+   * Searchable text aggregated from every `<img>` in the topic — `alt`
+   * attribute and `src` URL, space-joined in document order. Concatenated
+   * into the BM25 input by the indexer so queries for image alt phrases
+   * or URL tokens (host, path segments, filename) surface the topic.
+   * `<img>` is a void element with no text-node children, so the default
+   * `getInnerText` extraction returns nothing for it — this field is the
+   * indexer's view of image content.
+   */
+  imageContent: string
   /** Attributes on the bv-topic root, or empty if no bv-topic was present. */
   topicAttributes: TopicAttributes
 }
@@ -57,6 +67,7 @@ export function readHtmlTopicSync(html: string): HtmlTopicRead {
   const allElements = walkElements(document)
 
   const bodyText = getInnerText(document)
+  const imageContent = extractImageContent(allElements)
 
   const elements: ElementAxisEntry[] = []
   let topicAttributes: TopicAttributes = {}
@@ -82,7 +93,34 @@ export function readHtmlTopicSync(html: string): HtmlTopicRead {
     })
   }
 
-  return {bodyText, elements, topicAttributes}
+  return {bodyText, elements, imageContent, topicAttributes}
+}
+
+/**
+ * Aggregate every `<img>`'s `alt` and `src` into a single space-joined
+ * string. Public so the BM25 indexer can include image content in its
+ * input without re-walking the parsed tree.
+ *
+ * The full URL goes in verbatim — the BM25 tokenizer splits on `/`, `:`,
+ * `.`, `?`, etc. (already CJK-aware after ENG-2689), which decomposes
+ * URLs into useful tokens (`https`, `example`, `com`, `arch`, `png`).
+ * No explicit host extraction needed.
+ *
+ * Returns the empty string when the topic has no `<img>` elements, so
+ * the indexer's `[bodyText, summary, …, imageContent].filter(…)` step
+ * cleanly drops the entry instead of carrying an empty token.
+ */
+export function extractImageContent(elements: readonly {attributes: Readonly<Record<string, string>>; tagName: string}[]): string {
+  const parts: string[] = []
+  for (const el of elements) {
+    if (el.tagName !== 'img') continue
+    const alt = (el.attributes.alt ?? '').trim()
+    const src = (el.attributes.src ?? '').trim()
+    if (alt.length > 0) parts.push(alt)
+    if (src.length > 0) parts.push(src)
+  }
+
+  return parts.join(' ')
 }
 
 /**
