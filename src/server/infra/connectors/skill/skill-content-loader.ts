@@ -9,6 +9,7 @@ import type {IFileService} from '../../../core/interfaces/services/i-file-servic
  * Uses the same import.meta.url path resolution pattern as FsTemplateLoader.
  */
 export class SkillContentLoader {
+  private readonly agentDir: string
   private readonly skillDir: string
   private readonly templatesDir: string
 
@@ -19,6 +20,26 @@ export class SkillContentLoader {
     // Navigate from src/server/infra/connectors/skill/ to src/server/templates/
     this.templatesDir = path.join(currentDir, '..', '..', '..', 'templates')
     this.skillDir = path.join(this.templatesDir, 'skill')
+    this.agentDir = path.join(this.templatesDir, 'agent')
+  }
+
+  /**
+   * Loads a saved sub-agent definition file by name from the templates/agent/ directory.
+   *
+   * @param fileName - Name of the agent file including extension (e.g., 'brv-curate.md', 'brv-curate.toml')
+   * @returns Promise resolving to the file content
+   * @throws Error if the file cannot be read
+   */
+  async loadAgentFile(fileName: string): Promise<string> {
+    const fullPath = path.join(this.agentDir, fileName)
+
+    try {
+      return await this.fileService.read(fullPath)
+    } catch (error) {
+      throw new Error(
+        `Failed to load agent file '${fileName}': ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
   }
 
   /**

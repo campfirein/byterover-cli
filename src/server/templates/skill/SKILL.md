@@ -33,6 +33,48 @@ QUERY BEFORE THINKING. CURATE AFTER IMPLEMENTING.
 
 `brv query` first — retrieve relevant context from the context tree before forming an answer or starting a change. `brv curate` after — save new patterns, decisions, or learned facts before claiming done. **Violating the letter of the rule is violating the spirit of the rule.** No exceptions without your human partner's permission.
 
+## Curate Dispatch — Read This Before Calling `brv curate`
+
+`brv curate` is a multi-step session (kickoff → author → continuation → validate, ~10-60s per topic) that BLOCKS the user's conversation when run inline. Your default for any substantive curate is to dispatch it to the **saved `brv-curate` sub-agent** — the operational protocol (HTML contract, session state machine, envelope path, `--response-file` form, `path-exists` merging, retry cap, return shape) lives in the saved agent's definition, so your dispatch ONLY hands over the facts.
+
+**Claude Code** — tool-call dispatch:
+
+```ts
+Agent({
+  subagent_type: "brv-curate",
+  description: "brv curate (background)",
+  prompt: `Curate the following 1-5 facts:\n1. <summary>\n   Body: <context>\n...`,
+  run_in_background: true,
+})
+```
+
+**Codex** — conversational dispatch (Codex has no `subagent_type` tool param; it spawns named agents on explicit instruction):
+
+> Spawn the `brv-curate` agent with the following 1-5 facts. Return the aggregate `{ completed, pending_review, failed, file_paths }`.
+>
+> 1. `<summary>` — Body: `<context>`
+> 2. `<summary>` — Body: `<context>` ...
+
+**Decision in one line:**
+
+| Situation | Dispatch shape |
+|---|---|
+| 1 substantive curate | **One** dispatch carrying that one fact. |
+| 2-5 substantive curates this turn | **One** dispatch carrying all of them — the worker handles them sequentially. |
+| 6+ substantive curates (bootstrap / repo scan) | **Multiple** dispatches, each carrying a 2-5-fact chunk, fired sequentially (wait for chunk N's completion before firing chunk N+1). |
+| Trivial / one-fact / user said "wait" / turn-dependent on the result | Run inline. |
+
+**Do NOT** run a substantive curate inline. **Do NOT** fan out N parallel sub-agents on the same project — the daemon's overlap lock will reject every sub-agent after the first. **Do NOT** inline the curate protocol into the dispatch prompt — the saved agent definition has it.
+
+The saved agent definition MUST be deployed at the right path for each surface:
+
+| Surface | Deployed path | Falls back if missing |
+|---|---|---|
+| Claude Code | `.claude/agents/brv-curate.md` (project) or `~/.claude/agents/brv-curate.md` (user) | `subagent_type` resolves to the default general-purpose agent — which lacks `permissionMode: bypassPermissions` and hits the auto-deny problem. |
+| Codex | `.codex/agents/brv-curate.toml` (project) or `~/.codex/agents/brv-curate.toml` (user) | Named-agent dispatch fails — Codex runs the curate in the main thread instead of a worker. |
+
+Full dispatch shape, permission pre-authorization, the chunked-orchestrator pattern, and both saved-agent definitions all live in `curate.md`. Open it before your first curate dispatch in any session.
+
 ## When To Use This Skill
 
 Invoke `brv` when:
@@ -71,7 +113,11 @@ digraph brv_flow {
     swarm_q [label="brv swarm query <text>", shape=box, style=filled, fillcolor="#ccffcc"];
     work [label="Do the work", shape=box];
     learned [label="Made a change,\ndecision, or discovery\nworth persisting?", shape=diamond];
-    curate [label="brv curate <intent>\n(session protocol)", shape=box, style=filled, fillcolor="#ffcccc"];
+    bootstrap [label="6+ substantive curates\nin this turn?\n(bootstrap / repo scan)", shape=diamond];
+    substantive [label="Substantive?\n(decision / arch fact /\nbug+fix / convention)", shape=diamond];
+    bg_batch [label="Multiple brv-curate sub-agent\ndispatches, 2-5 facts per chunk,\nfired SEQUENTIALLY.\n\nSee curate.md § Bootstrap", shape=box, style=filled, fillcolor="#ffcccc"];
+    bg_curate [label="Dispatch the brv-curate\nsub-agent (Claude: Agent(...);\nCodex: 'Spawn brv-curate').\n\nDefault for substantive curates\n(handles up to 5 in one sub-agent).\nSee curate.md § Background Execution", shape=box, style=filled, fillcolor="#ffcccc"];
+    curate [label="brv curate <intent>\n(inline — session protocol)", shape=box, style=filled, fillcolor="#ffcccc"];
     done [label="Done", shape=ellipse];
 
     start -> need_context;
@@ -89,7 +135,13 @@ digraph brv_flow {
     swarm_q -> work;
     work -> learned;
     learned -> done [label="no"];
-    learned -> curate [label="yes"];
+    learned -> bootstrap [label="yes"];
+    bootstrap -> bg_batch [label="yes"];
+    bootstrap -> substantive [label="no"];
+    substantive -> bg_curate [label="yes (default)"];
+    substantive -> curate [label="trivial /\nturn-dependent /\nuser said wait"];
+    bg_batch -> done;
+    bg_curate -> done;
     curate -> done;
 }
 ```

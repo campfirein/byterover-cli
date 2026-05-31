@@ -403,6 +403,32 @@ describe('SkillConnector', () => {
       expect(soulContent).to.include('brv swarm query')
       expect(await fileService.exists(path.join(hermesHome, 'hermes-agent', 'AGENTS.md'))).to.be.false
     })
+
+    it('should deploy the saved brv-curate sub-agent to .claude/agents for Claude Code', async () => {
+      await skillConnector.install('Claude Code')
+
+      const agentPath = path.join(testDir, '.claude', 'agents', 'brv-curate.md')
+      const agentContent = await readFile(agentPath, 'utf8')
+      expect(agentContent).to.include('name: brv-curate')
+      expect(agentContent).to.include('permissionMode: bypassPermissions')
+    })
+
+    it('should deploy the saved brv-curate sub-agent to .codex/agents for Codex', async () => {
+      await skillConnector.install('Codex')
+
+      const agentPath = path.join(testDir, '.codex', 'agents', 'brv-curate.toml')
+      const agentContent = await readFile(agentPath, 'utf8')
+      expect(agentContent).to.include('name = "brv-curate"')
+      expect(agentContent).to.include('sandbox_mode = "workspace-write"')
+    })
+
+    it('should not create an agents directory for surfaces without agentFile config (Cursor)', async () => {
+      await skillConnector.install('Cursor')
+
+      expect(await fileService.exists(path.join(testDir, '.claude', 'agents'))).to.be.false
+      expect(await fileService.exists(path.join(testDir, '.codex', 'agents'))).to.be.false
+      expect(await fileService.exists(path.join(testDir, '.cursor', 'agents'))).to.be.false
+    })
   })
 
   describe('status', () => {
@@ -485,6 +511,18 @@ describe('SkillConnector', () => {
       expect(result.installed).to.be.true
     })
 
+    it('should report Claude Code not installed when skill files exist but the brv-curate agent file is missing', async () => {
+      const agent = 'Claude Code' as const
+      await skillConnector.install(agent)
+      // Simulate a partial install: skill dir intact, saved sub-agent file removed.
+      await rm(path.join(testDir, '.claude', 'agents', 'brv-curate.md'))
+
+      const result = await skillConnector.status(agent)
+
+      expect(result.installed).to.be.false
+      expect(result.configExists).to.be.false
+    })
+
     it('should report OpenClaw not installed when SKILL.md exists but the agent block is missing', async () => {
       const openClawStateDir = path.join(testDir, 'openclaw-state')
       const openClawConfigPath = path.join(openClawStateDir, 'openclaw.json')
@@ -542,6 +580,16 @@ describe('SkillConnector', () => {
 
       expect(result.success).to.be.false
       expect(result.message).to.include('does not support agent')
+    })
+
+    it('should remove the saved brv-curate agent file alongside the skill directory', async () => {
+      await skillConnector.install('Claude Code')
+      const agentPath = path.join(testDir, '.claude', 'agents', 'brv-curate.md')
+      expect(await fileService.exists(agentPath)).to.be.true
+
+      await skillConnector.uninstall('Claude Code')
+
+      expect(await fileService.exists(agentPath)).to.be.false
     })
   })
 

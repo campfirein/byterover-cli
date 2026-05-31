@@ -6,6 +6,17 @@ import type {Agent} from '../../../core/domain/entities/agent.js'
  */
 export type SkillConnectorConfig = {
   /**
+   * Optional saved sub-agent definition deployed alongside the skill files.
+   * `source` is a file name under `src/server/templates/agent/`; `target` is
+   * the destination path resolved against the project root (project scope) or
+   * home directory (global scope). Surfaces that don't support saved
+   * sub-agents (Cursor, Windsurf, etc.) omit this field.
+   */
+  agentFile?: {
+    source: string
+    target: string
+  }
+  /**
    * Optional autonomous-agent instruction target that receives the managed
    * ByteRover rules block in addition to the skill files.
    */
@@ -36,10 +47,18 @@ export const SKILL_CONNECTOR_CONFIGS = {
     projectPath: '.augment/skills',
   },
   'Claude Code': {
+    agentFile: {
+      source: 'brv-curate.md',
+      target: '.claude/agents/brv-curate.md',
+    },
     globalPath: '.claude/skills',
     projectPath: '.claude/skills',
   },
   Codex: {
+    agentFile: {
+      source: 'brv-curate.toml',
+      target: '.codex/agents/brv-curate.toml',
+    },
     globalPath: '.agents/skills',
     projectPath: '.agents/skills',
   },

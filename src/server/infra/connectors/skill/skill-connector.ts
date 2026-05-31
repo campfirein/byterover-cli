@@ -12,6 +12,7 @@ import type {IFileService} from '../../../core/interfaces/services/i-file-servic
 import type {SkillConnectorConfig, SkillSupportedAgent} from './skill-connector-config.js'
 
 import {AGENT_CONNECTOR_CONFIG} from '../../../core/domain/entities/agent.js'
+import {resolveUserPath} from '../shared/agent-path-resolver.js'
 import {
   hasAutonomousAgentBlocks,
   removeAutonomousAgentBlocks,
@@ -131,6 +132,12 @@ export class SkillConnector implements IConnector {
         }),
       )
 
+      if (config.agentFile) {
+        const agentContent = await this.contentLoader.loadAgentFile(config.agentFile.source)
+        const agentFilePath = this.resolveAgentFilePath(config, scope)
+        await this.fileService.write(agentContent, agentFilePath, 'overwrite')
+      }
+
       await this.upsertAutonomousAttachment(config)
 
       return {
@@ -184,7 +191,9 @@ export class SkillConnector implements IConnector {
       // Check project scope first
       if (config.projectPath) {
         const projectDir = this.resolveFullPath(config, 'project', BRV_SKILL_NAME)
-        if (attachmentOk && (await this.hasAllManagedSkillFiles(projectDir))) {
+        const filesOk = await this.hasAllManagedSkillFiles(projectDir)
+        const agentFileOk = await this.hasAgentFile(config, 'project')
+        if (attachmentOk && filesOk && agentFileOk) {
           return {
             configExists: true,
             configPath: path.join(
@@ -199,7 +208,9 @@ export class SkillConnector implements IConnector {
       // Check global scope
       if (config.globalPath) {
         const globalDir = this.resolveFullPath(config, 'global', BRV_SKILL_NAME)
-        if (attachmentOk && (await this.hasAllManagedSkillFiles(globalDir))) {
+        const filesOk = await this.hasAllManagedSkillFiles(globalDir)
+        const agentFileOk = await this.hasAgentFile(config, 'global')
+        if (attachmentOk && filesOk && agentFileOk) {
           return {
             configExists: true,
             configPath: path.join(
@@ -254,6 +265,7 @@ export class SkillConnector implements IConnector {
         const projectDir = this.resolveFullPath(config, 'project', BRV_SKILL_NAME)
         const projectSkillFile = path.join(projectDir, SKILL_FILE_NAMES[0])
         if (await this.fileService.exists(projectSkillFile)) {
+          await this.deleteAgentFile(config, 'project')
           await this.fileService.deleteDirectory(projectDir)
           await this.removeAutonomousAttachment(config)
           return {
@@ -273,6 +285,7 @@ export class SkillConnector implements IConnector {
         const globalDir = this.resolveFullPath(config, 'global', BRV_SKILL_NAME)
         const globalSkillFile = path.join(globalDir, SKILL_FILE_NAMES[0])
         if (await this.fileService.exists(globalSkillFile)) {
+          await this.deleteAgentFile(config, 'global')
           await this.fileService.deleteDirectory(globalDir)
           await this.removeAutonomousAttachment(config)
           return {
@@ -351,11 +364,29 @@ export class SkillConnector implements IConnector {
   }
 
   /**
+   * Delete the saved sub-agent file if the config declares one and the file
+   * exists. No-op when `config.agentFile` is undefined.
+   */
+  private async deleteAgentFile(config: SkillConnectorConfig, scope: 'global' | 'project'): Promise<void> {
+    if (!config.agentFile) return
+
+    const agentFilePath = this.resolveAgentFilePath(config, scope)
+    if (await this.fileService.exists(agentFilePath)) {
+      await this.fileService.delete(agentFilePath)
+    }
+  }
+
+  /**
    * Get the skill connector config for an agent, typed as SkillConnectorConfig
    * to allow safe optional property access on union types from `as const`.
    */
   private getConfig(agent: Agent): SkillConnectorConfig {
     return SKILL_CONNECTOR_CONFIGS[agent as SkillSupportedAgent]
+  }
+
+  private async hasAgentFile(config: SkillConnectorConfig, scope: 'global' | 'project'): Promise<boolean> {
+    if (!config.agentFile) return true
+    return this.fileService.exists(this.resolveAgentFilePath(config, scope))
   }
 
   private async hasAllManagedSkillFiles(skillDir: string): Promise<boolean> {
@@ -387,6 +418,23 @@ export class SkillConnector implements IConnector {
     if (!config.attachment) return false
 
     return removeAutonomousAgentBlocks(config.attachment, this.pathResolverOptions())
+  }
+
+  /** Project root or home directory + config.agentFile.target. Custom global roots are unsupported. */
+  private resolveAgentFilePath(config: SkillConnectorConfig, scope: 'global' | 'project'): string {
+    if (!config.agentFile) {
+      throw new Error('Agent file is not configured for this agent')
+    }
+
+    if (scope === 'global') {
+      if (config.globalRoot && config.globalRoot !== 'home') {
+        throw new Error(`Agent file deployment not supported for globalRoot '${config.globalRoot}'`)
+      }
+
+      return path.join(resolveUserPath('~', this.pathResolverOptions()), config.agentFile.target)
+    }
+
+    return path.join(this.projectRoot, config.agentFile.target)
   }
 
   /**
