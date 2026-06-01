@@ -99,6 +99,15 @@ export const AGENT_POOL_MAX_SIZE = 10
 export const AGENT_PROCESS_READY_TIMEOUT_MS = 30_000 // 30s max wait for child process to register
 export const AGENT_PROCESS_STOP_TIMEOUT_MS = 5000 // 5s max wait for child process to stop gracefully
 
+// === Channel (multi-agent collaboration) ===
+
+/**
+ * Max wait for an ACP agent subprocess to answer the `initialize` handshake
+ * during `AcpDriver.start()`. Exceeding it fails the start with
+ * AgentHandshakeFailedError instead of hanging the channel turn.
+ */
+export const CHANNEL_ACP_HANDSHAKE_TIMEOUT_MS = 10_000 // 10s
+
 // Curate log
 export const CURATE_LOG_DIR = 'curate-log'
 export const CURATE_LOG_ID_PREFIX = 'cur'

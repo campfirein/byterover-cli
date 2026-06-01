@@ -291,6 +291,18 @@ export const TurnEventSchema = z.discriminatedUnion('kind', [
   z
     .object({
       ...TurnEventBaseShape,
+      kind: z.literal('tool_call_update'),
+      toolCallId: z.string(),
+      // `status` is any agent-emitted progress string (e.g. 'pending',
+      // 'completed') — not a closed enum, since real ACP agents vary.
+      status: z.string().optional(),
+      output: z.unknown().optional(),
+      error: z.string().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...TurnEventBaseShape,
       kind: z.literal('permission_request'),
       permissionRequestId: z.string(),
       // Flattened + driver-agnostic (Q2): no ACP `sessionId` here — the
