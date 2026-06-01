@@ -135,7 +135,7 @@ These are excuses agents reach for. Each one is wrong. If you catch yourself thi
 | "I'll use `brv query` even though I know the path" | If you know the path, use `brv read` — no ranking overhead. |
 | "`brv query` returned no matches, nothing to do" | `no-matches` is a *signal to curate*, not a dead end. If you produced an answer worth keeping, save it. |
 | "Curate must be slow because it uses an LLM" | It doesn't. ByteRover validates HTML *you* author; the session is short — kickoff, write, continue. No provider needed. |
-| "I'll claim 'done' after submitting the response" | Not until `data.status: "done"`. If you got `needs-llm-step` you owe another `--session/--response` turn. |
+| "I'll claim 'done' after submitting the response" | Not until `data.status: "done"`. If you got `needs-llm-step` you owe another `--session` turn with `--response` or `--response-file`. |
 | "`path-exists` is blocking me — let me kick off fresh" | The guard doesn't clear by re-kickoff. Handle it in this session: merge + `--overwrite`, different path, or replace. |
 | "I'll pass `--overwrite` to clear `path-exists` quickly" | Not without reading `existingContent` first and surfacing the diff to the user. Overwrite is data-destructive. |
 | "ByteRover only matters for code work" | No. Curate covers decisions, design notes, conventions, organizational facts — anything worth recalling. |
@@ -168,7 +168,7 @@ Each detail file lives in this skill directory. Read the relevant one before inv
 - `brv query <text> [--format json]` — single-shot retrieval. Returns ranked topics with `rendered_md` for YOU to synthesise from. brv does not call its own LLM. See `query.md`.
 - `brv search <text>` — ranked paths/excerpts via BM25, no rendered content. See `query.md`.
 - `brv read <path>` — fetch ONE topic by its path under `.brv/context-tree/`. Returns rendered markdown. See `query.md`.
-- `brv curate <intent>` — multi-step session: kickoff → author `<bv-topic>` HTML → continue with `--session/--response`. See `curate.md`.
+- `brv curate <intent>` — multi-step session: kickoff → author `<bv-topic>` HTML → continue with `--session/--response` (inline JSON envelope) or `--session/--response-file` (envelope from a JSON file). See `curate.md`.
 - `brv review <pending|approve|reject>` — HITL approval for pending operations. See `review.md`.
 - `brv swarm <query|curate|status>` — cross-source memory federation. See `swarm.md`.
 - `brv vc <init|status|add|commit|...>` — git-style version control of the context tree. See `vc.md`.

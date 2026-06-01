@@ -58,7 +58,10 @@ brv query "What do I need to know about [relevant topic]?"
 # CONTEXT argument is the kickoff intent — author the topic HTML on the continuation
 brv curate "Specific insight with details" --format json
 # → parse the response, author <bv-topic> HTML inlining any file content you need
-brv curate --session <id> --response "<bv-topic>...</bv-topic>" --format json
+brv curate --session <id> --response '{"html":"<bv-topic>...</bv-topic>","meta":{...}}' --format json
+# Or, for non-trivial envelopes, write envelope.json with your editor and pass the path
+# (add --delete-response-file to clean the file up after local validation succeeds):
+brv curate --session <id> --response-file envelope.json --delete-response-file --format json
 ```
 
 **GOOD:** `brv curate "Auth uses JWT 24h expiry, refresh in httpOnly cookies" --format json`

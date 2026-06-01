@@ -618,7 +618,12 @@ async function readIndexableContent(
       // a 3x field boost via the `title` column and is intentionally
       // omitted here.
       const {keywords, related, summary, tags} = parsed.topicAttributes
-      const indexedContent = [parsed.bodyText, summary, tags, keywords, related]
+      // `parsed.imageContent` aggregates every `<img>`'s alt + src in
+      // document order. Without it, queries for image alt phrases or URL
+      // tokens silently miss image-bearing topics — the writer accepts
+      // `<img>` but `getInnerText` (which feeds `bodyText`) returns
+      // nothing for void elements. See ENG-3021 / inline-html milestone.
+      const indexedContent = [parsed.bodyText, summary, tags, keywords, related, parsed.imageContent]
         .filter((part): part is string => typeof part === 'string' && part.length > 0)
         .join(' ')
       return {

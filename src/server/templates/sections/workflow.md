@@ -30,7 +30,7 @@ After curating, use `brv curate view <logId>` to verify what was stored (logId p
 Curate is a two-call session protocol:
 
 1. **Kickoff** — `brv curate "<intent>" --format json` returns the next prompt + `sessionId`. Both kickoff and continuation are short — wait for each.
-2. **Continuation** — `brv curate --session <id> --response "<bv-topic>...</bv-topic>" --format json` writes the topic and returns `status: done` with the file path, or `status: needs-llm-step` with `step: correct-html` if validation failed.
+2. **Continuation** — pass the `{html, meta?}` envelope either inline via `--response '{"html":"<bv-topic>...</bv-topic>","meta":{...}}'` or from a file via `--response-file envelope.json` (add `--delete-response-file` to clean the file up after local validation succeeds). The CLI writes the topic and returns `status: done` with the file path, or `status: needs-llm-step` with `step: correct-html` if validation failed.
 
 Any follow-up step (query, search, read, or a later curate that builds on this one) needs the just-curated topic live in the context tree — finish the continuation before moving on.
 
