@@ -46,6 +46,7 @@ import {
   HEARTBEAT_FILE,
   TASK_HEARTBEAT_INTERVAL_MS,
   WEBUI_DEFAULT_PORT,
+  WEBUI_MAX_FALLBACK_ATTEMPTS,
 } from '../../constants.js'
 import {WebUiPortInUseError} from '../../core/domain/errors/webui-error.js'
 import {
@@ -150,6 +151,7 @@ function cleanupOldLogs(logsDir: string, keep: number): void {
   }
 }
 
+// eslint-disable-next-line complexity
 async function main(): Promise<void> {
   // 1. Setup daemon logging at <global-data-dir>/logs/server-<timestamp>.log
   const daemonLogsDir = join(getGlobalDataDir(), 'logs')
@@ -204,6 +206,7 @@ async function main(): Promise<void> {
   let agentPool: AgentPool | undefined
   let webuiServer: undefined | WebUiServer
   let webuiBootFailure: undefined | {conflictPort: number; status: 'port_in_use'}
+  let webuiRequestedPort: number | undefined
 
   try {
     // 4a. Construct transport server. start() is deferred to step 11 so all handlers register before sockets connect.
@@ -215,12 +218,17 @@ async function main(): Promise<void> {
     const webuiDistDir = join(projectRoot, 'dist', 'webui')
     // Port priority: env var > persisted preference > default
     const webuiPortEnv = process.env.BRV_WEBUI_PORT
-    const webuiPort = webuiPortEnv
+    const webuiPreferredPort = webuiPortEnv
       ? Number.parseInt(webuiPortEnv, 10)
       : (readWebuiPreferredPort() ?? WEBUI_DEFAULT_PORT)
 
     const webuiApp = createWebUiMiddleware({
-      getConfig: () => ({daemonPort: port, port: webuiPort, projectCwd: process.cwd(), version}),
+      getConfig: () => ({
+        daemonPort: port,
+        port: webuiServer?.getPort() ?? webuiPreferredPort,
+        projectCwd: process.cwd(),
+        version,
+      }),
       webuiDistDir,
     })
 
@@ -228,19 +236,46 @@ async function main(): Promise<void> {
     app.use(webuiApp)
 
     webuiServer = new WebUiServer(app)
-    try {
-      await webuiServer.start(webuiPort)
-      writeWebuiState(webuiPort)
-      log(`Web UI server started on port ${webuiPort}`)
-    } catch (webuiError) {
-      if (webuiError instanceof WebUiPortInUseError) {
-        webuiBootFailure = {conflictPort: webuiError.port, status: 'port_in_use'}
-        log(`Web UI port ${webuiError.port} is already in use — Web UI unavailable`)
-      } else {
-        log(`Web UI start error: ${webuiError instanceof Error ? webuiError.message : String(webuiError)}`)
-      }
+    let webuiStartError: unknown
+    let webuiActualPort: number | undefined
+    for (let offset = 0; offset < WEBUI_MAX_FALLBACK_ATTEMPTS; offset++) {
+      const attemptPort = webuiPreferredPort + offset
+      try {
+        // eslint-disable-next-line no-await-in-loop -- intentional sequential fallback
+        await webuiServer.start(attemptPort)
+        webuiActualPort = attemptPort
+        break
+      } catch (error) {
+        if (error instanceof WebUiPortInUseError) {
+          webuiStartError = error
+          continue
+        }
 
+        webuiStartError = error
+        break
+      }
+    }
+
+    if (webuiActualPort === undefined) {
       webuiServer = undefined
+      if (webuiStartError instanceof WebUiPortInUseError) {
+        webuiBootFailure = {conflictPort: webuiPreferredPort, status: 'port_in_use'}
+        log(
+          `Web UI ports ${webuiPreferredPort}-${webuiPreferredPort + WEBUI_MAX_FALLBACK_ATTEMPTS - 1} are all in use — Web UI unavailable`,
+        )
+      } else {
+        log(
+          `Web UI start error: ${webuiStartError instanceof Error ? webuiStartError.message : String(webuiStartError)}`,
+        )
+      }
+    } else {
+      writeWebuiState(webuiActualPort)
+      if (webuiActualPort === webuiPreferredPort) {
+        log(`Web UI server started on port ${webuiActualPort}`)
+      } else {
+        webuiRequestedPort = webuiPreferredPort
+        log(`Web UI port ${webuiPreferredPort} was in use — started on ${webuiActualPort} instead`)
+      }
     }
 
     // 5. Start heartbeat writer. Must run before transport.start(): pollForDaemon SIGTERMs daemons with stale heartbeat.
@@ -577,8 +612,13 @@ async function main(): Promise<void> {
 
     // Web UI port endpoint — used by `brv webui` to discover the stable port
     transportServer.onRequest<void, WebuiGetPortResponse>(WebuiEvents.GET_PORT, () => {
-      const port = webuiServer?.getPort()
-      if (port !== undefined) return {port, status: 'ok'}
+      const activePort = webuiServer?.getPort()
+      if (activePort !== undefined) {
+        return webuiRequestedPort !== undefined && webuiRequestedPort !== activePort
+          ? {port: activePort, requestedPort: webuiRequestedPort, status: 'ok'}
+          : {port: activePort, status: 'ok'}
+      }
+
       return webuiBootFailure ?? {status: 'not_started'}
     })
 
@@ -617,6 +657,7 @@ async function main(): Promise<void> {
       }
 
       webuiBootFailure = undefined
+      webuiRequestedPort = undefined
       writeWebuiState(newPort)
       writeWebuiPreferredPort(newPort)
       log(`Web UI server restarted on port ${newPort} (persisted)`)
