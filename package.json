@@ -180,6 +180,9 @@
     ],
     "topicSeparator": " ",
     "topics": {
+      "channel": {
+        "description": "Multi-agent collaboration channels"
+      },
       "hub": {
         "description": "Browse and manage skills & bundles registry",
         "subtopics": {
