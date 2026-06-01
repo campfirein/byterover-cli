@@ -1,3 +1,5 @@
+export {AnalyticsDisclosureHandler} from './analytics-disclosure-handler.js'
+export type {AnalyticsDisclosureHandlerDeps} from './analytics-disclosure-handler.js'
 export {AnalyticsHandler} from './analytics-handler.js'
 export type {AnalyticsHandlerDeps} from './analytics-handler.js'
 export {AnalyticsListHandler} from './analytics-list-handler.js'

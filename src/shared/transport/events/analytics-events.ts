@@ -4,10 +4,23 @@ import {CliRequestBaseSchema} from '../../analytics/cli-metadata-schema.js'
 import {StoredAnalyticsRecordSchema} from '../../analytics/stored-record.js'
 
 export const AnalyticsEvents = {
+  GET_DISCLOSURE: 'analytics:getDisclosure',
   LIST: 'analytics:list',
   STATUS: 'analytics:status',
   TRACK: 'analytics:track',
 } as const
+
+/**
+ * Response schema for `analytics:getDisclosure`. Exposes the canonical
+ * disclosure markdown shipped at `src/shared/assets/analytics-disclosure.md`
+ * so the local web UI can render the same text the CLI consent prompt
+ * (`brv settings set analytics.share true`) shows.
+ */
+export const AnalyticsDisclosureResponseSchema = z.object({
+  markdown: z.string().min(1),
+})
+
+export type AnalyticsDisclosureResponse = z.infer<typeof AnalyticsDisclosureResponseSchema>
 
 /**
  * M4.6 `analytics:status` response. Surfaces operational metrics for
