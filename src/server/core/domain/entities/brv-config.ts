@@ -264,32 +264,6 @@ export class BrvConfig {
   }
 
   /**
-   * Creates a new BrvConfig with the language preference replaced
-   * (or cleared via `undefined`), preserving all other fields.
-   *
-   * Used by `brv config set language.*` to mutate the per-project
-   * language preference without re-instantiating fields by hand.
-   */
-  public withLanguage(language?: BrvConfigLanguage): BrvConfig {
-    return new BrvConfig({
-      chatLogPath: this.chatLogPath,
-      cipherAgentContext: this.cipherAgentContext,
-      cipherAgentModes: this.cipherAgentModes,
-      cipherAgentSystemPrompt: this.cipherAgentSystemPrompt,
-      createdAt: this.createdAt,
-      cwd: this.cwd,
-      ide: this.ide,
-      language,
-      reviewDisabled: this.reviewDisabled,
-      spaceId: this.spaceId,
-      spaceName: this.spaceName,
-      teamId: this.teamId,
-      teamName: this.teamName,
-      version: this.version,
-    })
-  }
-
-  /**
    * Creates a new BrvConfig with space fields cleared, preserving all other fields.
    */
   public withoutSpace(): BrvConfig {

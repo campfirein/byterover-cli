@@ -403,49 +403,4 @@ describe('BrvConfig', () => {
     })
   })
 
-  describe('withLanguage', () => {
-    it('replaces an existing language preference', () => {
-      const original = new BrvConfig({...validConstructorArgs, language: {code: 'ru', mode: 'fixed'}})
-      const updated = original.withLanguage({code: 'zh', mode: 'fixed'})
-
-      expect(updated.language).to.deep.equal({code: 'zh', mode: 'fixed'})
-    })
-
-    it('sets language when previously unset', () => {
-      const original = new BrvConfig(validConstructorArgs)
-      const updated = original.withLanguage({mode: 'auto'})
-
-      expect(updated.language).to.deep.equal({mode: 'auto'})
-    })
-
-    it('clears language when called with undefined', () => {
-      const original = new BrvConfig({...validConstructorArgs, language: {code: 'ru', mode: 'fixed'}})
-      const updated = original.withLanguage()
-
-      expect(updated.language).to.be.undefined
-    })
-
-    it('does not mutate the original config', () => {
-      const original = new BrvConfig({...validConstructorArgs, language: {mode: 'auto'}})
-      original.withLanguage({code: 'ru', mode: 'fixed'})
-
-      expect(original.language).to.deep.equal({mode: 'auto'})
-    })
-
-    it('preserves all other fields', () => {
-      const original = new BrvConfig({
-        ...validConstructorArgs,
-        cipherAgentContext: 'context-payload',
-        reviewDisabled: true,
-      })
-      const updated = original.withLanguage({code: 'ja', mode: 'fixed'})
-
-      expect(updated.spaceId).to.equal(original.spaceId)
-      expect(updated.teamId).to.equal(original.teamId)
-      expect(updated.cipherAgentContext).to.equal('context-payload')
-      expect(updated.reviewDisabled).to.be.true
-      expect(updated.createdAt).to.equal(original.createdAt)
-      expect(updated.version).to.equal(original.version)
-    })
-  })
 })

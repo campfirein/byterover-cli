@@ -14,8 +14,10 @@
  *   - `curate-session.test.ts` — orchestrator threading
  *
  * This file proves the layers compose end-to-end against a real config
- * file on disk — the scenario a real user hits when they run
- * `brv config set language.code <iso>` (commit 05) and then `brv curate`.
+ * file on disk — the legacy per-project fallback tier of
+ * `resolveLanguagePreference`. The canonical write surface is now
+ * `brv settings set language.code <iso>`; this test still exercises the
+ * `.brv/config.json` fallback used by mid-migration users.
  *
  * Out of scope: actual LLM-honoring of the clause. That requires a real
  * calling agent (Claude Code, Cursor) and is validated manually pre-release.
