@@ -51,6 +51,19 @@ describe('channel-schemas', () => {
     turnId: 'turn-1',
   }
 
+  const toolCallUpdateEvent: TurnEvent = {
+    channelId: 'chan-1',
+    deliveryId: 'del-1',
+    emittedAt: '2026-05-25T10:00:03.000Z',
+    kind: 'tool_call_update',
+    memberHandle: '@mock',
+    output: 'done\n',
+    seq: 2,
+    status: 'completed',
+    toolCallId: 'tc-1',
+    turnId: 'turn-1',
+  }
+
   describe('round-trip', () => {
     it('a Turn survives parse(JSON round-trip)', () => {
       const parsed = TurnSchema.parse(jsonRoundTrip(turn))
@@ -65,6 +78,11 @@ describe('channel-schemas', () => {
     it('a tool_call TurnEvent survives parse(JSON round-trip)', () => {
       const parsed = TurnEventSchema.parse(jsonRoundTrip(toolCallEvent))
       expect(parsed).to.deep.equal(toolCallEvent)
+    })
+
+    it('a tool_call_update TurnEvent survives parse(JSON round-trip)', () => {
+      const parsed = TurnEventSchema.parse(jsonRoundTrip(toolCallUpdateEvent))
+      expect(parsed).to.deep.equal(toolCallUpdateEvent)
     })
   })
 
