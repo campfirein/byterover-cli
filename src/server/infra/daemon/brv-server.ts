@@ -100,6 +100,7 @@ import {IdleTimeoutPolicy} from './idle-timeout-policy.js'
 import {selectDaemonPort} from './port-selector.js'
 import {bootstrapSettings} from './settings-bootstrap.js'
 import {ShutdownHandler} from './shutdown-handler.js'
+import {startWebUiWithFallback} from './start-webui-with-fallback.js'
 
 function log(msg: string): void {
   processLog(`[Daemon] ${msg}`)
@@ -151,7 +152,6 @@ function cleanupOldLogs(logsDir: string, keep: number): void {
   }
 }
 
-// eslint-disable-next-line complexity
 async function main(): Promise<void> {
   // 1. Setup daemon logging at <global-data-dir>/logs/server-<timestamp>.log
   const daemonLogsDir = join(getGlobalDataDir(), 'logs')
@@ -218,9 +218,11 @@ async function main(): Promise<void> {
     const webuiDistDir = join(projectRoot, 'dist', 'webui')
     // Port priority: env var > persisted preference > default
     const webuiPortEnv = process.env.BRV_WEBUI_PORT
-    const webuiPreferredPort = webuiPortEnv
-      ? Number.parseInt(webuiPortEnv, 10)
-      : (readWebuiPreferredPort() ?? WEBUI_DEFAULT_PORT)
+    const explicitWebuiPort = webuiPortEnv ? Number.parseInt(webuiPortEnv, 10) : readWebuiPreferredPort()
+    const webuiPreferredPort = explicitWebuiPort ?? WEBUI_DEFAULT_PORT
+    // Explicit user intent (env/persisted) is honored strictly. The default
+    // port is the only one that may fall back to neighbors when busy.
+    const webuiMaxAttempts = explicitWebuiPort === undefined ? WEBUI_MAX_FALLBACK_ATTEMPTS : 1
 
     const webuiApp = createWebUiMiddleware({
       getConfig: () => ({
@@ -236,45 +238,30 @@ async function main(): Promise<void> {
     app.use(webuiApp)
 
     webuiServer = new WebUiServer(app)
-    let webuiStartError: unknown
-    let webuiActualPort: number | undefined
-    for (let offset = 0; offset < WEBUI_MAX_FALLBACK_ATTEMPTS; offset++) {
-      const attemptPort = webuiPreferredPort + offset
-      try {
-        // eslint-disable-next-line no-await-in-loop -- intentional sequential fallback
-        await webuiServer.start(attemptPort)
-        webuiActualPort = attemptPort
-        break
-      } catch (error) {
-        if (error instanceof WebUiPortInUseError) {
-          webuiStartError = error
-          continue
-        }
+    const webuiOutcome = await startWebUiWithFallback(webuiServer, webuiPreferredPort, webuiMaxAttempts)
 
-        webuiStartError = error
-        break
-      }
-    }
-
-    if (webuiActualPort === undefined) {
-      webuiServer = undefined
-      if (webuiStartError instanceof WebUiPortInUseError) {
-        webuiBootFailure = {conflictPort: webuiPreferredPort, status: 'port_in_use'}
-        log(
-          `Web UI ports ${webuiPreferredPort}-${webuiPreferredPort + WEBUI_MAX_FALLBACK_ATTEMPTS - 1} are all in use — Web UI unavailable`,
-        )
+    if ('actualPort' in webuiOutcome) {
+      writeWebuiState(webuiOutcome.actualPort)
+      if (webuiOutcome.actualPort === webuiOutcome.requestedPort) {
+        log(`Web UI server started on port ${webuiOutcome.actualPort}`)
       } else {
-        log(
-          `Web UI start error: ${webuiStartError instanceof Error ? webuiStartError.message : String(webuiStartError)}`,
-        )
+        webuiRequestedPort = webuiOutcome.requestedPort
+        log(`Web UI port ${webuiOutcome.requestedPort} was in use — started on ${webuiOutcome.actualPort} instead`)
       }
     } else {
-      writeWebuiState(webuiActualPort)
-      if (webuiActualPort === webuiPreferredPort) {
-        log(`Web UI server started on port ${webuiActualPort}`)
+      webuiServer = undefined
+      if (webuiOutcome.error instanceof WebUiPortInUseError) {
+        webuiBootFailure = {conflictPort: webuiPreferredPort, status: 'port_in_use'}
+        const rangeEnd = webuiPreferredPort + webuiMaxAttempts - 1
+        log(
+          webuiMaxAttempts > 1
+            ? `Web UI ports ${webuiPreferredPort}-${rangeEnd} are all in use — Web UI unavailable`
+            : `Web UI port ${webuiPreferredPort} is already in use — Web UI unavailable`,
+        )
       } else {
-        webuiRequestedPort = webuiPreferredPort
-        log(`Web UI port ${webuiPreferredPort} was in use — started on ${webuiActualPort} instead`)
+        log(
+          `Web UI start error: ${webuiOutcome.error instanceof Error ? webuiOutcome.error.message : String(webuiOutcome.error)}`,
+        )
       }
     }
 

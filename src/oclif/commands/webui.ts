@@ -55,7 +55,7 @@ export default class Webui extends Command {
 
   private resolvePortOrExit(result: WebuiGetPortResponse | WebuiSetPortResponse): number {
     if (result.status === 'ok') {
-      if ('requestedPort' in result && result.requestedPort !== undefined && result.requestedPort !== result.port) {
+      if (result.requestedPort !== undefined && result.requestedPort !== result.port) {
         this.log(`Port ${result.requestedPort} was in use — using port ${result.port} instead.`)
       }
 
