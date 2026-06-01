@@ -3,13 +3,14 @@ export const WebuiEvents = {
   SET_PORT: 'webui:setPort',
 } as const
 
-type WebuiOkResponse = {port: number; requestedPort?: number; status: 'ok'}
+type WebuiGetPortOkResponse = {port: number; requestedPort?: number; status: 'ok'}
 type WebuiPortInUseResponse = {conflictPort: number; status: 'port_in_use'}
+type WebuiSetPortOkResponse = {port: number; status: 'ok'}
 
-export type WebuiGetPortResponse = WebuiOkResponse | WebuiPortInUseResponse | {status: 'not_started'}
+export type WebuiGetPortResponse = WebuiGetPortOkResponse | WebuiPortInUseResponse | {status: 'not_started'}
 
 export interface WebuiSetPortRequest {
   port: number
 }
 
-export type WebuiSetPortResponse = WebuiOkResponse | WebuiPortInUseResponse
+export type WebuiSetPortResponse = WebuiPortInUseResponse | WebuiSetPortOkResponse

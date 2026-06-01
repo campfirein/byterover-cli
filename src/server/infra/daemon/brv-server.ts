@@ -240,7 +240,7 @@ async function main(): Promise<void> {
     webuiServer = new WebUiServer(app)
     const webuiOutcome = await startWebUiWithFallback(webuiServer, webuiPreferredPort, webuiMaxAttempts)
 
-    if ('actualPort' in webuiOutcome) {
+    if (webuiOutcome.status === 'ok') {
       writeWebuiState(webuiOutcome.actualPort)
       if (webuiOutcome.actualPort === webuiOutcome.requestedPort) {
         log(`Web UI server started on port ${webuiOutcome.actualPort}`)

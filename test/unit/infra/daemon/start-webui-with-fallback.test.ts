@@ -24,7 +24,7 @@ describe('startWebUiWithFallback', () => {
 
     const outcome = await startWebUiWithFallback(server, 7700, 10)
 
-    expect(outcome).to.deep.equal({actualPort: 7700, requestedPort: 7700})
+    expect(outcome).to.deep.equal({actualPort: 7700, requestedPort: 7700, status: 'ok'})
     expect(startStub.calledOnceWithExactly(7700)).to.be.true
   })
 
@@ -34,7 +34,7 @@ describe('startWebUiWithFallback', () => {
 
     const outcome = await startWebUiWithFallback(server, 7700, 10)
 
-    expect(outcome).to.deep.equal({actualPort: 7701, requestedPort: 7700})
+    expect(outcome).to.deep.equal({actualPort: 7701, requestedPort: 7700, status: 'ok'})
     expect(startStub.callCount).to.equal(2)
     expect(startStub.firstCall.args[0]).to.equal(7700)
     expect(startStub.secondCall.args[0]).to.equal(7701)
@@ -45,8 +45,8 @@ describe('startWebUiWithFallback', () => {
 
     const outcome = await startWebUiWithFallback(server, 7700, 3)
 
-    expect('error' in outcome).to.be.true
-    if ('error' in outcome) {
+    expect(outcome.status).to.equal('error')
+    if (outcome.status === 'error') {
       expect(outcome.error).to.be.an.instanceOf(WebUiPortInUseError)
     }
 
@@ -58,7 +58,7 @@ describe('startWebUiWithFallback', () => {
 
     const outcome = await startWebUiWithFallback(server, 9090, 1)
 
-    expect('error' in outcome).to.be.true
+    expect(outcome.status).to.equal('error')
     expect(startStub.calledOnceWithExactly(9090)).to.be.true
   })
 
@@ -68,8 +68,8 @@ describe('startWebUiWithFallback', () => {
 
     const outcome = await startWebUiWithFallback(server, 7700, 10)
 
-    expect('error' in outcome).to.be.true
-    if ('error' in outcome) {
+    expect(outcome.status).to.equal('error')
+    if (outcome.status === 'error') {
       expect(outcome.error).to.equal(genericError)
     }
 

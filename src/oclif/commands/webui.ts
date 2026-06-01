@@ -21,9 +21,8 @@ export default class Webui extends Command {
   public async run(): Promise<void> {
     const {flags} = await this.parse(Webui)
 
-    const result = flags.port ? await this.requestSetPort(flags.port) : await this.requestGetPort()
-    const webuiPort = this.resolvePortOrExit(result)
-    const url = `http://localhost:${webuiPort}`
+    const webuiPort = flags.port ? await this.resolveSetPort(flags.port) : await this.resolveGetPort()
+    const url = `http://127.0.0.1:${webuiPort}`
     this.log(`ByteRover Web UI: ${url}`)
 
     await open(url).catch(() => {
@@ -31,29 +30,17 @@ export default class Webui extends Command {
     })
   }
 
-  private async requestGetPort(): Promise<WebuiGetPortResponse> {
+  private async resolveGetPort(): Promise<number> {
+    let result: WebuiGetPortResponse
     try {
-      return await withDaemonRetry(
+      result = await withDaemonRetry(
         async (client) => client.requestWithAck<WebuiGetPortResponse>(WebuiEvents.GET_PORT),
         {projectPath: process.cwd()},
       )
     } catch (error) {
       return this.error(formatConnectionError(error))
     }
-  }
 
-  private async requestSetPort(port: number): Promise<WebuiSetPortResponse> {
-    try {
-      return await withDaemonRetry(
-        async (client) => client.requestWithAck<WebuiSetPortResponse>(WebuiEvents.SET_PORT, {port}),
-        {projectPath: process.cwd()},
-      )
-    } catch (error) {
-      return this.error(formatConnectionError(error))
-    }
-  }
-
-  private resolvePortOrExit(result: WebuiGetPortResponse | WebuiSetPortResponse): number {
     if (result.status === 'ok') {
       if (result.requestedPort !== undefined && result.requestedPort !== result.port) {
         this.log(`Port ${result.requestedPort} was in use — using port ${result.port} instead.`)
@@ -69,5 +56,23 @@ export default class Webui extends Command {
     }
 
     return this.error('Web UI did not start. Run `brv restart` and try again.')
+  }
+
+  private async resolveSetPort(port: number): Promise<number> {
+    let result: WebuiSetPortResponse
+    try {
+      result = await withDaemonRetry(
+        async (client) => client.requestWithAck<WebuiSetPortResponse>(WebuiEvents.SET_PORT, {port}),
+        {projectPath: process.cwd()},
+      )
+    } catch (error) {
+      return this.error(formatConnectionError(error))
+    }
+
+    if (result.status === 'ok') return result.port
+
+    return this.error(
+      `Web UI port ${result.conflictPort} is already in use. Run \`brv webui --port <port>\` to choose a different port.`,
+    )
   }
 }

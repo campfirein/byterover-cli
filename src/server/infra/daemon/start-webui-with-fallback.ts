@@ -4,7 +4,9 @@ export interface WebUiStarter {
   start(port: number): Promise<void>
 }
 
-export type StartWebUiOutcome = {actualPort: number; requestedPort: number} | {error: unknown}
+export type StartWebUiOutcome =
+  | {actualPort: number; requestedPort: number; status: 'ok'}
+  | {error: unknown; status: 'error'}
 
 export async function startWebUiWithFallback(
   server: WebUiStarter,
@@ -17,7 +19,7 @@ export async function startWebUiWithFallback(
     try {
       // eslint-disable-next-line no-await-in-loop -- intentional sequential fallback
       await server.start(attemptPort)
-      return {actualPort: attemptPort, requestedPort: preferredPort}
+      return {actualPort: attemptPort, requestedPort: preferredPort, status: 'ok'}
     } catch (error) {
       lastError = error
       if (error instanceof WebUiPortInUseError) continue
@@ -25,5 +27,5 @@ export async function startWebUiWithFallback(
     }
   }
 
-  return {error: lastError}
+  return {error: lastError, status: 'error'}
 }
