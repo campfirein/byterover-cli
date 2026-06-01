@@ -22,7 +22,7 @@ export default class Webui extends Command {
     const {flags} = await this.parse(Webui)
 
     const webuiPort = flags.port ? await this.resolveSetPort(flags.port) : await this.resolveGetPort()
-    const url = `http://127.0.0.1:${webuiPort}`
+    const url = `http://localhost:${webuiPort}`
     this.log(`ByteRover Web UI: ${url}`)
 
     await open(url).catch(() => {
