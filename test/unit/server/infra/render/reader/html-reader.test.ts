@@ -17,7 +17,12 @@ import {mkdtemp, rm, writeFile} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 
-import {readHtmlTopic, readHtmlTopicSync} from '../../../../../../src/server/infra/render/reader/html-reader.js'
+import {parseHtml, walkElements} from '../../../../../../src/server/infra/render/reader/html-parser.js'
+import {extractImageContent, readHtmlTopic, readHtmlTopicSync} from '../../../../../../src/server/infra/render/reader/html-reader.js'
+
+function elementsForImgTests(html: string): readonly {attributes: Readonly<Record<string, string>>; tagName: string}[] {
+  return walkElements(parseHtml(html))
+}
 
 describe('html-reader', () => {
   describe('readHtmlTopicSync', () => {
@@ -111,6 +116,53 @@ describe('html-reader', () => {
       const html = '<bv-topic></bv-topic><bv-topic path="b" title="second"></bv-topic>'
       const result = readHtmlTopicSync(html)
       expect(Object.keys(result.topicAttributes)).to.have.lengthOf(0)
+    })
+  })
+
+  describe('extractImageContent + imageContent field (ENG-3021)', () => {
+    it('returns empty string for a topic with no <img>', () => {
+      const els = elementsForImgTests('<bv-topic path="x" title="t"><bv-rule severity="must">r</bv-rule></bv-topic>')
+      expect(extractImageContent(els)).to.equal('')
+    })
+
+    it('aggregates alt + src for a single <img>', () => {
+      const els = elementsForImgTests('<bv-topic path="x" title="t"><bv-decision><img src="https://example.com/a.png" alt="System diagram"/></bv-decision></bv-topic>')
+      const out = extractImageContent(els)
+      expect(out).to.include('System diagram')
+      expect(out).to.include('https://example.com/a.png')
+    })
+
+    it('joins multiple <img>s in document order', () => {
+      const els = elementsForImgTests(
+        '<bv-topic path="x" title="t"><bv-decision><img src="https://a.com/1.png" alt="first"/></bv-decision><bv-decision><img src="https://b.com/2.png" alt="second"/></bv-decision></bv-topic>',
+      )
+      const out = extractImageContent(els)
+      // Both alts and both srcs surface; document-order is preserved
+      expect(out.indexOf('first')).to.be.lessThan(out.indexOf('second'))
+      expect(out).to.include('https://a.com/1.png')
+      expect(out).to.include('https://b.com/2.png')
+    })
+
+    it('skips empty attributes — no stray spaces from missing alt or src', () => {
+      const els = elementsForImgTests('<bv-topic path="x" title="t"><bv-decision><img src="https://x.com/a.png"/><img alt="caption only"/></bv-decision></bv-topic>')
+      const out = extractImageContent(els)
+      // First img contributes only src (no alt to add); second only alt.
+      expect(out).to.include('https://x.com/a.png')
+      expect(out).to.include('caption only')
+      expect(out).to.not.match(/\s{2,}/) // no double spaces
+    })
+
+    it('readHtmlTopicSync surfaces imageContent on the parsed result', () => {
+      const result = readHtmlTopicSync(
+        '<bv-topic path="x" title="t"><bv-decision><img src="https://example.com/sys.png" alt="System overview"/></bv-decision></bv-topic>',
+      )
+      expect(result.imageContent).to.include('System overview')
+      expect(result.imageContent).to.include('https://example.com/sys.png')
+    })
+
+    it('readHtmlTopicSync returns empty imageContent when no <img> present', () => {
+      const result = readHtmlTopicSync('<bv-topic path="x" title="t"><bv-rule severity="must">r</bv-rule></bv-topic>')
+      expect(result.imageContent).to.equal('')
     })
   })
 

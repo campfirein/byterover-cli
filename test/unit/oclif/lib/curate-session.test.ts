@@ -31,9 +31,15 @@ import {
   continueSession,
   CURATE_SESSION_PREFIX,
   CURATE_SESSIONS_DIR,
+  deleteCurateResponseFile,
+  InvalidResponseFileError,
+  InvalidResponseFormatError,
   kickoffSession,
+  loadCurateResponseFile,
   parseCurateResponse,
+  peekCurateSession,
   resolveProjectRoot,
+  unknownSessionEnvelope,
 } from '../../../../src/oclif/lib/curate-session.js'
 import {BRV_DIR} from '../../../../src/server/constants.js'
 import {decodeCurateHtmlContent} from '../../../../src/shared/transport/curate-html-content.js'
@@ -845,6 +851,224 @@ describe('curate-session', () => {
       }
 
       expect((caught as Error & {kind?: string}).kind).to.equal('invalid-response-format')
+    })
+  })
+
+  // ─── loadCurateResponseFile + deleteCurateResponseFile — file helpers ──────
+
+  describe('loadCurateResponseFile', () => {
+    let workDir: string
+
+    beforeEach(async () => {
+      workDir = await mkdtemp(join(tmpdir(), 'curate-response-file-load-'))
+    })
+
+    afterEach(async () => {
+      await rm(workDir, {force: true, recursive: true})
+    })
+
+    it('returns the file contents verbatim for a regular file', async () => {
+      const filePath = join(workDir, 'envelope.json')
+      const contents = JSON.stringify({html: VALID_TOPIC_HTML_RAW})
+      await writeFile(filePath, contents, 'utf8')
+      const result = await loadCurateResponseFile(filePath)
+      expect(result).to.equal(contents)
+    })
+
+    it('throws InvalidResponseFileError kind=response-file-read-error when the path does not exist', async () => {
+      const missing = join(workDir, 'no-such.json')
+      let caught: unknown
+      try {
+        await loadCurateResponseFile(missing)
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).to.be.instanceOf(InvalidResponseFileError)
+      const err = caught as InvalidResponseFileError
+      expect(err.kind).to.equal('response-file-read-error')
+      expect(err.message).to.include(missing)
+    })
+
+    it('throws InvalidResponseFileError kind=response-file-not-regular for a directory path', async () => {
+      const dirPath = join(workDir, 'subdir')
+      await mkdir(dirPath)
+      let caught: unknown
+      try {
+        await loadCurateResponseFile(dirPath)
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).to.be.instanceOf(InvalidResponseFileError)
+      expect((caught as InvalidResponseFileError).kind).to.equal('response-file-not-regular')
+    })
+
+    it('throws InvalidResponseFileError kind=response-file-not-regular for a symlink (even to a regular file)', async () => {
+      const target = join(workDir, 'real.json')
+      const link = join(workDir, 'envelope.json')
+      await writeFile(target, JSON.stringify({html: VALID_TOPIC_HTML_RAW}), 'utf8')
+      const {symlink} = await import('node:fs/promises')
+      await symlink(target, link)
+
+      let caught: unknown
+      try {
+        await loadCurateResponseFile(link)
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).to.be.instanceOf(InvalidResponseFileError)
+      expect((caught as InvalidResponseFileError).kind).to.equal('response-file-not-regular')
+    })
+  })
+
+  describe('deleteCurateResponseFile', () => {
+    let workDir: string
+
+    beforeEach(async () => {
+      workDir = await mkdtemp(join(tmpdir(), 'curate-response-file-del-'))
+    })
+
+    afterEach(async () => {
+      await rm(workDir, {force: true, recursive: true})
+    })
+
+    it('unlinks a regular file', async () => {
+      const filePath = join(workDir, 'envelope.json')
+      await writeFile(filePath, '{}', 'utf8')
+      await deleteCurateResponseFile(filePath)
+      expect(existsSync(filePath)).to.equal(false)
+    })
+
+    it('throws InvalidResponseFileError kind=response-file-delete-error when the path does not exist', async () => {
+      const missing = join(workDir, 'absent.json')
+      let caught: unknown
+      try {
+        await deleteCurateResponseFile(missing)
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).to.be.instanceOf(InvalidResponseFileError)
+      expect((caught as InvalidResponseFileError).kind).to.equal('response-file-delete-error')
+    })
+
+    it('refuses to unlink a directory (kind=response-file-delete-error)', async () => {
+      const dirPath = join(workDir, 'sub')
+      await mkdir(dirPath)
+      let caught: unknown
+      try {
+        await deleteCurateResponseFile(dirPath)
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).to.be.instanceOf(InvalidResponseFileError)
+      expect((caught as InvalidResponseFileError).kind).to.equal('response-file-delete-error')
+      // Directory must still exist — guard rejected before unlink.
+      expect(existsSync(dirPath)).to.equal(true)
+    })
+
+    it('refuses to unlink a symlink even when its target is a regular file (kind=response-file-delete-error)', async () => {
+      const target = join(workDir, 'real.json')
+      const link = join(workDir, 'envelope.json')
+      await writeFile(target, '{}', 'utf8')
+      const {symlink} = await import('node:fs/promises')
+      await symlink(target, link)
+
+      let caught: unknown
+      try {
+        await deleteCurateResponseFile(link)
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).to.be.instanceOf(InvalidResponseFileError)
+      expect((caught as InvalidResponseFileError).kind).to.equal('response-file-delete-error')
+      // Both link and target must still exist — guard fired before unlink.
+      expect(existsSync(link)).to.equal(true)
+      expect(existsSync(target)).to.equal(true)
+    })
+  })
+
+  // ─── peekCurateSession + buildUnknownSessionEnvelope — pre-flight helpers ──
+
+  describe('peekCurateSession', () => {
+    let projectRoot: string
+
+    beforeEach(async () => {
+      projectRoot = await mkdtemp(join(tmpdir(), 'curate-session-peek-'))
+    })
+
+    afterEach(async () => {
+      await rm(projectRoot, {force: true, recursive: true})
+    })
+
+    it('returns kind=invalid-format for a non-uuid session id', async () => {
+      const result = await peekCurateSession(projectRoot, '../../etc/passwd')
+      expect(result.kind).to.equal('invalid-format')
+    })
+
+    it('returns kind=not-found for a well-formed but unknown session id', async () => {
+      const result = await peekCurateSession(projectRoot, '00000000-0000-0000-0000-000000000000')
+      expect(result.kind).to.equal('not-found')
+    })
+
+    it('returns kind=ok for an existing session', async () => {
+      const kickoff = await kickoffSession({content: 'x', projectRoot})
+      assertDefined(kickoff.sessionId, 'sessionId')
+      const result = await peekCurateSession(projectRoot, kickoff.sessionId)
+      expect(result.kind).to.equal('ok')
+    })
+
+    it('returns kind=not-found after the session has been completed and cleaned up', async () => {
+      const kickoff = await kickoffSession({content: 'x', projectRoot})
+      assertDefined(kickoff.sessionId, 'sessionId')
+      const {client, simulateEvent} = createMockClient()
+      respondWith({client, envelope: okEnvelope(), simulateEvent})
+
+      await continueSession({
+        client,
+        projectRoot,
+        response: VALID_TOPIC_HTML,
+        sessionId: kickoff.sessionId,
+      })
+
+      const result = await peekCurateSession(projectRoot, kickoff.sessionId)
+      expect(result.kind).to.equal('not-found')
+    })
+  })
+
+  describe('unknownSessionEnvelope', () => {
+    it('produces the standard failed envelope with kind=unknown-session for invalid-format', () => {
+      const env = unknownSessionEnvelope('not-a-uuid', 'invalid-format')
+      expect(env.ok).to.equal(false)
+      expect(env.status).to.equal('failed')
+      expect(env.errors?.[0]?.kind).to.equal('unknown-session')
+      expect(env.errors?.[0]?.message).to.match(/Invalid session id format/i)
+    })
+
+    it('produces the standard failed envelope with kind=unknown-session for not-found', () => {
+      const env = unknownSessionEnvelope('00000000-0000-0000-0000-000000000000', 'not-found')
+      expect(env.ok).to.equal(false)
+      expect(env.status).to.equal('failed')
+      expect(env.errors?.[0]?.kind).to.equal('unknown-session')
+      expect(env.errors?.[0]?.message).to.match(/No active session/i)
+    })
+  })
+
+  describe('parseCurateResponse — exported error class', () => {
+    it('throws InvalidResponseFormatError so callers can narrow with `instanceof`', () => {
+      let caught: unknown
+      try {
+        parseCurateResponse('{not valid json')
+      } catch (error) {
+        caught = error
+      }
+
+      expect(caught).to.be.instanceOf(InvalidResponseFormatError)
+      expect((caught as InvalidResponseFormatError).kind).to.equal('invalid-response-format')
     })
   })
 })
