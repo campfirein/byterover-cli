@@ -7,6 +7,8 @@
  * structured view instead of dumping the raw JSON.
  */
 
+import {safeJsonParse} from './safe-json-parse'
+
 export interface CurateHtmlDirectInputPayload {
   confirmOverwrite?: boolean
   html: string
@@ -121,12 +123,4 @@ function isWriteError(value: unknown): value is CurateHtmlWriteError {
   if (typeof value !== 'object' || value === null) return false
   const obj = value as Record<string, unknown>
   return typeof obj.kind === 'string' && typeof obj.message === 'string'
-}
-
-function safeJsonParse(content: string): unknown {
-  try {
-    return JSON.parse(content)
-  } catch {
-    return undefined
-  }
 }

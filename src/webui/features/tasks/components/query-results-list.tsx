@@ -7,11 +7,13 @@ import {type ComponentRef, useLayoutEffect, useRef, useState} from 'react'
 
 import type {QueryToolModeMatchedDoc} from '../utils/query-tool-mode-results'
 
+import {useNavigateToContextPath} from '../../context/hooks/use-navigate-to-context-path'
 import {MarkdownInline} from './markdown-inline'
 import {SectionLabel, TerminalDot} from './task-detail-shared'
 
 export function QueryResultsList({matchedDocs}: {matchedDocs: QueryToolModeMatchedDoc[]}) {
   const label = `Result · ${matchedDocs.length} ${matchedDocs.length === 1 ? 'match' : 'matches'}`
+  const openPath = useNavigateToContextPath()
 
   return (
     <section className="relative pl-8">
@@ -22,7 +24,7 @@ export function QueryResultsList({matchedDocs}: {matchedDocs: QueryToolModeMatch
       ) : (
         <div className="flex flex-col gap-3">
           {matchedDocs.map((doc, index) => (
-            <QueryResultRow doc={doc} key={`${doc.path}-${index}`} />
+            <QueryResultRow doc={doc} key={`${doc.path}-${index}`} onOpenPath={openPath} />
           ))}
         </div>
       )}
@@ -30,8 +32,8 @@ export function QueryResultsList({matchedDocs}: {matchedDocs: QueryToolModeMatch
   )
 }
 
-function QueryResultRow({doc}: {doc: QueryToolModeMatchedDoc}) {
-  const hasBody = typeof doc.rendered_md === 'string' && doc.rendered_md.length > 0
+function QueryResultRow({doc, onOpenPath}: {doc: QueryToolModeMatchedDoc; onOpenPath: (path: string) => void}) {
+  const body = typeof doc.rendered_md === 'string' ? doc.rendered_md : undefined
   const bodyRef = useRef<ComponentRef<'div'>>(null)
   const [expanded, setExpanded] = useState(false)
   const [overflowing, setOverflowing] = useState(false)
@@ -60,11 +62,17 @@ function QueryResultRow({doc}: {doc: QueryToolModeMatchedDoc}) {
           <TooltipContent>Match score</TooltipContent>
         </Tooltip>
       </div>
-      <p className="text-muted-foreground mono pl-5 text-[11px] break-all">{doc.path}</p>
-      {hasBody && (
+      <button
+        className="text-muted-foreground hover:text-foreground mono w-fit cursor-pointer pl-5 text-left text-[11px] break-all hover:underline"
+        onClick={() => onOpenPath(doc.path)}
+        type="button"
+      >
+        {doc.path}
+      </button>
+      {body && (
         <div className="pl-5">
           <div className={cn('overflow-hidden', {'max-h-36': !expanded})} ref={bodyRef}>
-            <MarkdownInline className="text-foreground/70 text-xs">{doc.rendered_md ?? ''}</MarkdownInline>
+            <MarkdownInline className="text-foreground/70 text-xs">{body}</MarkdownInline>
           </div>
           {overflowing && (
             <button

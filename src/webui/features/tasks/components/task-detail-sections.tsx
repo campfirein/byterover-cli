@@ -13,7 +13,7 @@ import {
 } from '../utils/curate-tool-mode'
 import {shortTaskId} from '../utils/format-time'
 import {isBvTopicHtml} from '../utils/is-bv-topic-html'
-import {isQueryToolModeType, parseQueryToolModeResult} from '../utils/query-tool-mode-results'
+import {isQueryToolModeType, parseQueryToolModeResult, queryToolModeRowTitle} from '../utils/query-tool-mode-results'
 import {isActiveStatus} from '../utils/task-status'
 import {AttachmentChip} from './attachment-chip'
 import {CurateHtmlDirectInputView, CurateHtmlDirectResultView} from './curate-tool-mode-sections'
@@ -27,6 +27,8 @@ export function InputSection({task}: {task: StoredTask}) {
     if (payload) return <CurateHtmlDirectInputView payload={payload} />
   }
 
+  const queryInput = isQueryToolModeType(task.type) ? queryToolModeRowTitle(task.content) : undefined
+  const displayContent = queryInput ?? task.content
   const {folderPath} = task
   const files = task.files ?? []
   const hasAttachments = Boolean(folderPath) || files.length > 0
@@ -34,7 +36,7 @@ export function InputSection({task}: {task: StoredTask}) {
     <section>
       <SectionLabel>Input</SectionLabel>
       <div className="border-blue-400 text-foreground/90 mono border-l-2 pl-3 text-sm leading-relaxed whitespace-pre-wrap">
-        {task.content || <span className="text-muted-foreground italic">(empty)</span>}
+        {displayContent || <span className="text-muted-foreground italic">(empty)</span>}
       </div>
       {hasAttachments && (
         <div className="mt-3 flex flex-wrap gap-1.5 pl-3">
@@ -89,8 +91,8 @@ export function ResultSection({content, taskType}: {content: string; taskType?: 
   }
 
   if (taskType && isQueryToolModeType(taskType)) {
-    const payload = parseQueryToolModeResult(content)
-    if (payload) return <QueryResultsList matchedDocs={payload.matchedDocs} />
+    const docs = parseQueryToolModeResult(content)
+    if (docs) return <QueryResultsList matchedDocs={docs} />
   }
 
   return (

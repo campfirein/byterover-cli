@@ -4,6 +4,7 @@ import {expect} from 'chai'
 import {
   isQueryToolModeType,
   parseQueryToolModeResult,
+  queryToolModeRowTitle,
 } from '../../../../../../src/webui/features/tasks/utils/query-tool-mode-results.js'
 
 const doc = (overrides: Record<string, unknown> = {}) => ({
@@ -34,10 +35,10 @@ describe('query-tool-mode result parser', () => {
     it('parses a tool-mode result with matched docs', () => {
       const content = JSON.stringify({matchedDocs: [doc()], metadata: {}, status: 'ok'})
       const parsed = parseQueryToolModeResult(content)
-      if (!parsed) throw new Error('expected a parsed payload')
+      if (!parsed) throw new Error('expected parsed docs')
 
-      expect(parsed.matchedDocs).to.have.lengthOf(1)
-      const [first] = parsed.matchedDocs
+      expect(parsed).to.have.lengthOf(1)
+      const [first] = parsed
       expect(first.title).to.equal('Analytics Lifecycle Pipeline')
       expect(first.path).to.equal('analytics/lifecycle_pipeline.html')
       expect(first.score).to.equal(0.85)
@@ -50,14 +51,14 @@ describe('query-tool-mode result parser', () => {
         status: 'ok',
       })
       const parsed = parseQueryToolModeResult(content)
-      if (!parsed) throw new Error('expected a parsed payload')
+      if (!parsed) throw new Error('expected parsed docs')
 
-      expect(parsed.matchedDocs.map((entry) => entry.title)).to.deep.equal(['A', 'B'])
+      expect(parsed.map((entry) => entry.title)).to.deep.equal(['A', 'B'])
     })
 
-    it('returns an empty grid for a no-matches result', () => {
+    it('returns an empty array for a no-matches result', () => {
       const content = JSON.stringify({matchedDocs: [], metadata: {}, status: 'no-matches'})
-      expect(parseQueryToolModeResult(content)).to.deep.equal({matchedDocs: []})
+      expect(parseQueryToolModeResult(content)).to.deep.equal([])
     })
 
     it('drops entries that are missing a required field', () => {
@@ -71,9 +72,9 @@ describe('query-tool-mode result parser', () => {
         status: 'ok',
       })
       const parsed = parseQueryToolModeResult(content)
-      if (!parsed) throw new Error('expected a parsed payload')
+      if (!parsed) throw new Error('expected parsed docs')
 
-      expect(parsed.matchedDocs).to.have.lengthOf(1)
+      expect(parsed).to.have.lengthOf(1)
     })
 
     it('returns undefined for malformed JSON', () => {
@@ -90,6 +91,25 @@ describe('query-tool-mode result parser', () => {
 
     it('returns undefined for a non-object payload', () => {
       expect(parseQueryToolModeResult(JSON.stringify('a string'))).to.equal(undefined)
+    })
+  })
+
+  describe('queryToolModeRowTitle', () => {
+    it('returns the decoded query from an encoded payload', () => {
+      const content = JSON.stringify({limit: 10, query: 'agent loop and computer use automation'})
+      expect(queryToolModeRowTitle(content)).to.equal('agent loop and computer use automation')
+    })
+
+    it('returns undefined when query is missing', () => {
+      expect(queryToolModeRowTitle(JSON.stringify({limit: 10}))).to.equal(undefined)
+    })
+
+    it('returns undefined for malformed JSON', () => {
+      expect(queryToolModeRowTitle('not-json{')).to.equal(undefined)
+    })
+
+    it('returns undefined for a non-object payload', () => {
+      expect(queryToolModeRowTitle(JSON.stringify('a string'))).to.equal(undefined)
     })
   })
 })

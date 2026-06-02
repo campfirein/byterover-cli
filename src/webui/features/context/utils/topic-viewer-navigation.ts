@@ -1,3 +1,5 @@
+export const stalePathMessage = (path: string): string => `Path not found in context tree: ${path}`
+
 interface TopicViewerNavigationDeps {
   navigate: (path: string) => void
   onStalePath: (path: string) => void

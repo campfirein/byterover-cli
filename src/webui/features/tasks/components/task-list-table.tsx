@@ -15,11 +15,11 @@ import {CircleStop, LoaderCircle, Trash2} from 'lucide-react'
 import type {StatusFilter} from '../stores/task-store'
 import type {StoredTask} from '../types/stored-task'
 
-import {curateHtmlDirectRowTitle, isCurateHtmlDirectType} from '../utils/curate-tool-mode'
 import {getCurrentActivity} from '../utils/current-activity'
 import {formatDuration, formatRelative, formatTimeOfDay, shortTaskId} from '../utils/format-time'
 import {isInterrupted} from '../utils/is-interrupted'
 import {rowActionKind} from '../utils/row-action-kind'
+import {taskDisplayTitle} from '../utils/task-display-title'
 import {displayTaskType, isTerminalStatus} from '../utils/task-status'
 import {StatusPill} from './status-pill'
 import {NoMatchState} from './task-list-empty'
@@ -141,9 +141,7 @@ function TaskRow({
   const isRunning = !terminal
   const interrupted = isInterrupted(task)
   const activity = getCurrentActivity(task)
-  // For curate-tool-mode, task.content is a JSON blob — decode it so the
-  // row shows the user's intent (CLI) or topic path (MCP) instead.
-  const displayInput = isCurateHtmlDirectType(task.type) ? curateHtmlDirectRowTitle(task.content) : task.content
+  const displayInput = taskDisplayTitle(task)
   const actionKind = rowActionKind(task.status)
 
   const row = (
