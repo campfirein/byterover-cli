@@ -57,17 +57,19 @@ See `.claude/skills/byterover/curate.md` § HTML Topic Contract for the full voc
 
 ### 3. Write the envelope
 
-ALWAYS use the file-based continuation. The inline `--response "$(cat ...)"` form requires a Bash command-substitution permission prompt that background sub-agents cannot answer.
+ALWAYS use the file-based continuation. The inline `--response "$(cat ...)"` form relies on shell command-substitution behavior that varies across permission modes and sandbox configs; `--response-file` is portable.
 
-Write the envelope JSON to:
+Resolve the temp directory **once** with Bash, then build the envelope path from it:
 
+```bash
+TMP="${TMPDIR:-/tmp}"
+TMP="${TMP%/}"
+ENVELOPE="$TMP/brv-curate-envelope-<sessionId>.json"
 ```
-/tmp/brv-curate-envelope-<sessionId>.json
-```
 
-That path is the only location whose Write tool calls are pre-authorized for background sub-agents. The project root, `.brv/`, and `~/` are NOT pre-authorized; writes there will be auto-denied silently.
+On Linux and Claude Code, `$TMP` resolves to `/tmp`. On macOS Codex it resolves to the per-user `/var/folders/.../T` directory that `workspace-write` covers. Either way the file lands outside the project tree — clean git status, no cross-curate collisions, and no extra Write allow-rule needed under restrictive sandbox configs.
 
-Envelope shape:
+Write the envelope JSON to `$ENVELOPE`. Shape:
 
 ```json
 {
@@ -80,7 +82,7 @@ Envelope shape:
 
 ```bash
 brv curate --session <sessionId> \
-  --response-file /tmp/brv-curate-envelope-<sessionId>.json \
+  --response-file "$ENVELOPE" \
   --delete-response-file \
   --format json
 ```
@@ -92,7 +94,7 @@ brv curate --session <sessionId> \
 | `data.status` | Action |
 |---|---|
 | `done` | Record `data.filePath` in the result's `file_paths`. Move on to the next fact. |
-| `needs-llm-step` with `step: "correct-html"` | Fix the HTML per `data.errors[]`, rewrite the envelope to the same `/tmp/` path, re-run the continuation. Max 4 attempts; if you hit attempt 4 with `needs-llm-step` still, record as `failed`. |
+| `needs-llm-step` with `step: "correct-html"` | Fix the HTML per `data.errors[]`, rewrite the envelope to the same `$ENVELOPE` path, re-run the continuation. Max 4 attempts; if you hit attempt 4 with `needs-llm-step` still, record as `failed`. |
 | `failed` | Record `{summary, error: data.errors[0].message}` and **continue to the next fact**. Do not abort the batch. |
 | `pending_review` | Record `data.filePath` in `file_paths` and increment `pending_review`. The user must approve via `brv review` separately. |
 
@@ -102,12 +104,12 @@ If `data.errors[]` includes `kind: "path-exists"` during continuation:
 
 1. Read `data.errors[0].existingContent`.
 2. Merge the new facts with the existing topic — preserve every prior fact; enrich, never shrink.
-3. Rewrite the envelope to the same `/tmp/` path with the merged HTML.
+3. Rewrite the envelope to `$ENVELOPE` with the merged HTML.
 4. Continue with `--overwrite`:
 
 ```bash
 brv curate --session <sessionId> \
-  --response-file /tmp/brv-curate-envelope-<sessionId>.json \
+  --response-file "$ENVELOPE" \
   --delete-response-file \
   --overwrite \
   --format json
@@ -141,6 +143,6 @@ The calling agent uses this to summarize "9/10 curated, 1 pending review, 0 fail
 - **NEVER** call `brv review approve` or `brv review reject` — HITL stays human-driven. You may run `brv review pending --format json` to read the queue (read-only) if you need to confirm a pending status, but you do not act on it.
 - **NEVER** spawn nested sub-agents. You are leaf-level. If the batch is too big, return the partial result and let the calling agent fire another invocation for the remainder.
 - **NEVER** use `brv curate --detach` — you are already detached from the user's conversation; double-detaching would orphan the session.
-- **NEVER** write the envelope outside `/tmp/`. Permissions outside `/tmp/` are auto-denied for background sub-agents and your Write call will silently fail.
-- **NEVER** use inline `--response "$(cat /tmp/*.json)"`. The Bash command substitution requires a separate permission grant that background mode auto-denies.
+- **NEVER** write the envelope inside the project tree or under `~/`. Use `${TMPDIR:-/tmp}` so the envelope stays out of git and survives clean. The path also stays inside Codex's `workspace-write` sandbox on macOS (where `$TMPDIR` is `/var/folders/...`, not `/tmp`).
+- **NEVER** use the inline `--response "$(cat ...)"` form. Use `--response-file` so the call works the same regardless of shell-substitution permissions across surfaces.
 - **NEVER** author Markdown, plain text, or JSON as the session response. Only one bare `<bv-topic>` HTML document per fact.

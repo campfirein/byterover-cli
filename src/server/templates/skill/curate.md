@@ -139,6 +139,8 @@ The full agent body ships in `src/server/templates/agent/brv-curate.md` (Claude)
 
 ### Permission prerequisites
 
+**Scope of this section:** these rules are for the **foreground / non-saved-agent** path — they let an interactive `brv curate` succeed when the user runs it directly without dispatching to the worker. The saved sub-agent uses `permissionMode: bypassPermissions` (Claude) / `sandbox_mode = "workspace-write"` (Codex), so the allow-list entries below are inert for dispatched curates. Keep them so an interactive curate (without the sub-agent) also works.
+
 The saved agent's `permissionMode: bypassPermissions` is the primary unblock; allow-list rules are belt-and-braces. Recommended for `.claude/settings.json` (or `settings.local.json`):
 
 ```jsonc

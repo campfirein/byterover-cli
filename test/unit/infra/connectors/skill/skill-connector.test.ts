@@ -50,6 +50,27 @@ describe('SkillConnector', () => {
 
       expect([...SKILL_FILE_NAMES].sort()).to.deep.equal(templateFileNames)
     })
+
+    it('should reference an existing template file for every agentFile.source', async () => {
+      const agentTemplateDir = path.resolve('src/server/templates/agent')
+      const referencedSources: string[] = []
+      for (const config of Object.values(SKILL_CONNECTOR_CONFIGS)) {
+        if ('agentFile' in config && config.agentFile) {
+          referencedSources.push(config.agentFile.source)
+        }
+      }
+
+      expect(referencedSources.length, 'expected at least one agentFile.source in SKILL_CONNECTOR_CONFIGS').to.be.greaterThan(0)
+      const checks = await Promise.all(
+        referencedSources.map(async (source) => {
+          const templatePath = path.join(agentTemplateDir, source)
+          return {exists: await fileService.exists(templatePath), templatePath}
+        }),
+      )
+      for (const {exists, templatePath} of checks) {
+        expect(exists, `Missing agent template: ${templatePath}`).to.be.true
+      }
+    })
   })
 
   describe('getSupportedAgents', () => {
