@@ -8,7 +8,6 @@ import {useTickingNow} from '../hooks/use-ticking-now'
 import {useTaskById} from '../stores/task-store'
 import {taskHistoryEntryToStoredTask} from '../utils/task-history-entry-to-stored-task'
 import {isActiveStatus} from '../utils/task-status'
-import {EventLogSection} from './task-detail-event-log'
 import {DetailHeader} from './task-detail-header'
 import {ErrorSection, InputSection, LiveStreamSection, NotFound, ResultSection} from './task-detail-sections'
 
@@ -81,7 +80,6 @@ export function TaskDetailView({cancelling, onCancel, taskId}: TaskDetailViewPro
         ref={scrollRef}
       >
         <InputSection task={task} />
-        <EventLogSection now={now} task={task} />
         {showLive && <LiveStreamSection task={task} />}
         {result && <ResultSection content={result} taskType={task.type} />}
         {error && <ErrorSection task={task} />}
