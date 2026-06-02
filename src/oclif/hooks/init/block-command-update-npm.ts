@@ -2,7 +2,7 @@ import type {Hook} from '@oclif/core'
 
 import {execSync} from 'node:child_process'
 
-import {isNpmGlobalInstall} from './update-notifier.js'
+import {isNpmGlobalInstallCached} from './update-notifier.js'
 
 export type BlockCommandUpdateNpmDeps = {
   commandId: string | undefined
@@ -17,10 +17,17 @@ export function handleBlockCommandUpdateNpm(deps: BlockCommandUpdateNpmDeps): vo
 }
 
 const hook: Hook<'init'> = async function (opts): Promise<void> {
+  // This hook only acts when the user runs `brv update`, but previously it
+  // called `npm list -g byterover-cli` (a 3-5s subprocess on slow systems)
+  // on EVERY brv invocation, just so it could decide whether to error out
+  // when the command happened to be `update`. Gate the npm check on the
+  // commandId so every other command path skips it entirely.
+  if (opts.id !== 'update') return
+
   handleBlockCommandUpdateNpm({
     commandId: opts.id,
     errorFn: this.error.bind(this),
-    isNpmGlobalInstalled: isNpmGlobalInstall(execSync),
+    isNpmGlobalInstalled: isNpmGlobalInstallCached(this.config.root, execSync),
   })
 }
 
