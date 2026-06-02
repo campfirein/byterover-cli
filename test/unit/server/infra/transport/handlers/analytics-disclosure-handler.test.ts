@@ -33,6 +33,24 @@ describe('AnalyticsDisclosureHandler', () => {
     })
   })
 
+  it('loads and parses the markdown once, then serves the cached sections', async () => {
+    const transport = createMockTransportServer()
+    let calls = 0
+    const loadDisclosure = async () => {
+      calls += 1
+      return FIXTURE
+    }
+
+    new AnalyticsDisclosureHandler({loadDisclosure, transport}).setup()
+
+    const handler = transport._handlers.get(AnalyticsEvents.GET_DISCLOSURE) as DisclosureHandler
+    await handler(undefined, 'client-1')
+    await handler(undefined, 'client-2')
+    await handler(undefined, 'client-3')
+
+    expect(calls).to.equal(1)
+  })
+
   it('throws when the markdown has no H2 sections so the webui surfaces an error state', async () => {
     const transport = createMockTransportServer()
     new AnalyticsDisclosureHandler({loadDisclosure: async () => '# Only H1\n\nIntro.', transport}).setup()
