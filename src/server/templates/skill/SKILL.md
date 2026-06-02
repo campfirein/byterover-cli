@@ -172,6 +172,7 @@ digraph brv_flow {
 | Inspect past curates/queries | `brv curate view` / `brv query-log view` | `history.md` |
 | Track context-tree changes (git-style) | `brv vc` | `vc.md` |
 | Consolidate / dedupe / prune the context tree | `brv dream` | `dream.md` |
+| Visually browse / view curated knowledge in a browser | `brv webui` | `curate.md` |
 | Find project paths | `brv locations` | `brv locations --help` |
 | Diagnose a `brv` error | `brv status` | `brv status --help` |
 
@@ -225,6 +226,7 @@ Each detail file lives in this skill directory. Read the relevant one before inv
 - `brv swarm <query|curate|status>` — cross-source memory federation. See `swarm.md`.
 - `brv vc <init|status|add|commit|...>` — git-style version control of the context tree. See `vc.md`.
 - `brv dream <scan|finalize|undo>` — three-phase context-tree cleanup (link / merge / prune / synthesize). See `dream.md`.
+- `brv webui [--port <n>]` — open or reconfigure the ByteRover dashboard when needed. For routine curate and onboarding closeouts, share `http://localhost:7700`; if a known custom Web UI port is already serving, share that localhost URL instead. The **Contexts page** renders everything saved under `.brv/context-tree/`. If that link does not open, tell the user they can run `brv webui` to open the dashboard; use `brv webui --port <port>` only when the user asks to open/change the dashboard port or the current port has a conflict. See `curate.md`.
 - `brv curate view` / `brv query-log view|summary` — inspect history. See `history.md`.
 - `brv locations` — list registered projects and their context tree paths. Use `-f json` for machine-readable output. Run `brv locations --help` for flags.
 - `brv status` — diagnose any `brv` error (auth + project state). Run first when a command misbehaves.

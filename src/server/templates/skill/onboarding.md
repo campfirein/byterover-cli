@@ -100,7 +100,7 @@ Saved:
 <pain-naming + commitment paragraph — 2 short sentences>
 
 Lives at .brv/context-tree/ — local-only.
-See it in your browser: http://localhost:7700
+See it in your browser: http://localhost:7700  — or run brv webui if that link doesn't open.
 Also version-controlled, cloud-syncable, and shareable across agents — more at the end.
 ```
 
@@ -135,7 +135,7 @@ Also version-controlled, cloud-syncable, and shareable across agents — more at
 
 The browser URL is the **verifiable** trust proof — the user can click it in 2 seconds and see their memory in a real local dashboard. Stronger than any worded assurance.
 
-Do NOT tell the user to "run `brv webui`" — the daemon auto-starts the web server on the persisted port (default 7700). The URL works as soon as the daemon is alive, which it already is.
+Use `http://localhost:7700` for the Web UI link unless a known custom Web UI port is already serving, in which case use that localhost URL. Do NOT run `brv webui` as part of every tour closeout just to produce this link. If that link does not open, tell the user they can run `brv webui` to open the dashboard. Use `brv webui --port <port>` only when the user asks to open/change the dashboard port or the current port has a conflict.
 
 Do NOT ask "is this right?" — that turns the artifact into a form. Users who want to correct it will; users who don't, won't be slowed down.
 
