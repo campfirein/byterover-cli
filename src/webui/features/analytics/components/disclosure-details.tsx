@@ -5,6 +5,7 @@ import type {AnalyticsDisclosureSection} from '../../../../shared/transport/even
 
 import {formatError} from '../../../lib/error-messages'
 import {noop} from '../../../lib/noop'
+import {MarkdownView} from '../../context/components/markdown-view'
 import {useGetAnalyticsDisclosure} from '../api/get-analytics-disclosure'
 
 const SECTION_ICONS: readonly LucideIcon[] = [Database, Eye, Server, Link2, PowerOff]
@@ -57,9 +58,10 @@ export function DisclosureDetails() {
               <span className="text-foreground text-[0.6875rem] font-semibold tracking-wider uppercase">
                 {section.label}
               </span>
-              <p className="text-muted-foreground whitespace-pre-line text-[0.8125rem] leading-relaxed">
-                {section.body}
-              </p>
+              <MarkdownView
+                className="text-muted-foreground space-y-2 break-words text-[0.8125rem] leading-relaxed"
+                content={section.body}
+              />
             </div>
           </div>
         )
