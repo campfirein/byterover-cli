@@ -5,11 +5,11 @@ import {ChevronDown, ExternalLink, ShieldCheck} from 'lucide-react'
 import {useState} from 'react'
 import {toast} from 'sonner'
 
+import {PRIVACY_POLICY_URL} from '../../../../shared/constants/privacy.js'
 import {formatError} from '../../../lib/error-messages'
 import {noop} from '../../../lib/noop'
 import {useGetGlobalConfig} from '../api/get-global-config'
 import {useSetAnalytics} from '../api/set-analytics'
-import {ANALYTICS_PRIVACY_URL} from '../constants'
 import {DisableConfirmDialog} from './disable-confirm-dialog'
 import {DisclosureDetails} from './disclosure-details'
 import {EnableConfirmDialog} from './enable-confirm-dialog'
@@ -103,12 +103,12 @@ export function AnalyticsPanel() {
 
           <a
             className="text-foreground/80 hover:text-foreground inline-flex items-center gap-2 border-t px-5 py-3 text-sm transition-colors"
-            href={ANALYTICS_PRIVACY_URL}
+            href={PRIVACY_POLICY_URL}
             rel="noopener noreferrer"
             target="_blank"
           >
             <ExternalLink className="size-3.5 text-primary" />
-            <span className="text-primary">docs.byterover.dev/privacy</span>
+            <span className="text-primary">{PRIVACY_POLICY_URL.replace(/^https?:\/\/(www\.)?/, '')}</span>
           </a>
         </div>
       )}

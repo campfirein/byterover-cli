@@ -68,6 +68,7 @@ import {createTokenStore} from '../storage/token-store.js'
 import {HttpTeamService} from '../team/http-team-service.js'
 import {FsTemplateLoader} from '../template/fs-template-loader.js'
 import {
+  AnalyticsDisclosureHandler,
   AnalyticsHandler,
   AnalyticsListHandler,
   AnalyticsStatusHandler,
@@ -299,6 +300,10 @@ export async function setupFeatureHandlers({
   // M2.6: route incoming analytics:track events from non-forked clients
   // (TUI, oclif, MCP, webui) to the same singleton.
   new AnalyticsHandler({analyticsClient, transport}).setup()
+
+  // Serves the canonical analytics disclosure markdown to the local
+  // web UI so it renders the same text as the CLI consent prompt.
+  new AnalyticsDisclosureHandler({transport}).setup()
 
   // Global SettingsHandler (no project context). Deferred from line 180 so
   // analyticsClient is in scope for M15.4 `setting_changed` / `setting_reset`
