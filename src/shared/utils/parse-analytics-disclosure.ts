@@ -10,13 +10,16 @@ export function parseAnalyticsDisclosure(markdown: string): AnalyticsDisclosureS
   let currentLabel: string | undefined
   let currentBodyLines: string[] = []
 
+  function pushCurrent() {
+    if (currentLabel === undefined) return
+    const body = currentBodyLines.join('\n').trim()
+    if (body.length > 0) sections.push({body, label: currentLabel})
+  }
+
   for (const line of markdown.split('\n')) {
     const match = H2_PATTERN.exec(line)
     if (match) {
-      if (currentLabel !== undefined) {
-        sections.push({body: currentBodyLines.join('\n').trim(), label: currentLabel})
-      }
-
+      pushCurrent()
       currentLabel = match[1]
       currentBodyLines = []
       continue
@@ -25,9 +28,6 @@ export function parseAnalyticsDisclosure(markdown: string): AnalyticsDisclosureS
     if (currentLabel !== undefined) currentBodyLines.push(line)
   }
 
-  if (currentLabel !== undefined) {
-    sections.push({body: currentBodyLines.join('\n').trim(), label: currentLabel})
-  }
-
+  pushCurrent()
   return sections
 }

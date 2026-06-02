@@ -43,7 +43,7 @@ is permanently linked to your ByteRover account.
 
 You can stop sharing at any time by running:
 
-```
+```bash
 brv settings set analytics.share false
 ```
 
@@ -53,4 +53,4 @@ You can also toggle the `analytics.share` setting from the Settings page in the 
 
 For full details on how ByteRover handles your data, see:
 
-https://byterover.dev/privacy
+https://byterover.dev/services/privacy

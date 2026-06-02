@@ -1,5 +1,5 @@
 import {Skeleton} from '@campfirein/byterover-packages/components/skeleton'
-import {Database, Eye, Link2, type LucideIcon, PowerOff, Server} from 'lucide-react'
+import {Database, Eye, Info, Link2, type LucideIcon, PowerOff, Server} from 'lucide-react'
 
 import type {AnalyticsDisclosureSection} from '../../../../shared/transport/events/analytics-events.js'
 
@@ -8,12 +8,20 @@ import {noop} from '../../../lib/noop'
 import {MarkdownView} from '../../context/components/markdown-view'
 import {useGetAnalyticsDisclosure} from '../api/get-analytics-disclosure'
 
-const SECTION_ICONS: readonly LucideIcon[] = [Database, Eye, Server, Link2, PowerOff]
+const SECTION_ICONS: Record<string, LucideIcon> = {
+  'cross-device alias': Link2,
+  'how to disable': PowerOff,
+  'what is collected': Database,
+  'where it goes': Server,
+  'which surfaces are tracked': Eye,
+}
 
-const PRIVACY_POLICY_LABEL = 'privacy policy'
+function iconForLabel(label: string): LucideIcon {
+  return SECTION_ICONS[label.trim().toLowerCase()] ?? Info
+}
 
 function isVisibleSection(section: AnalyticsDisclosureSection): boolean {
-  return section.label.trim().toLowerCase() !== PRIVACY_POLICY_LABEL
+  return !section.label.trim().toLowerCase().includes('privacy')
 }
 
 export function DisclosureDetails() {
@@ -49,11 +57,11 @@ export function DisclosureDetails() {
 
   return (
     <div className="grid grid-cols-1 gap-x-6 gap-y-5 md:grid-cols-2">
-      {sections.map((section, index) => {
-        const Icon = SECTION_ICONS[index]
+      {sections.map((section) => {
+        const Icon = iconForLabel(section.label)
         return (
           <div className="flex flex-col gap-2" key={section.label}>
-            {Icon && <Icon className="text-muted-foreground size-4" strokeWidth={1.75} />}
+            <Icon className="text-muted-foreground size-4" strokeWidth={1.75} />
             <div className="flex flex-col gap-1">
               <span className="text-foreground text-[0.6875rem] font-semibold tracking-wider uppercase">
                 {section.label}

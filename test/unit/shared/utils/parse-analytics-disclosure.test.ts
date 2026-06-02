@@ -57,6 +57,13 @@ describe('parseAnalyticsDisclosure', () => {
     expect(sections[1].body).to.equal('Body B.')
   })
 
+  it('drops sections whose body is empty so the webui never renders a blank card', () => {
+    const md = ['## Empty', '', '## Has body', 'Body text.'].join('\n')
+    const sections = parseAnalyticsDisclosure(md)
+
+    expect(sections.map((s) => s.label)).to.deep.equal(['Has body'])
+  })
+
   it('ignores H3+ headings inside a section body', () => {
     const md = ['## Outer', 'Lead paragraph.', '', '### Nested', 'Nested paragraph.', '', '## Next', 'Next body.'].join('\n')
 
