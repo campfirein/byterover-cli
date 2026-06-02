@@ -11,15 +11,21 @@ export const AnalyticsEvents = {
 } as const
 
 /**
- * Response schema for `analytics:getDisclosure`. Exposes the canonical
- * disclosure markdown shipped at `src/shared/assets/analytics-disclosure.md`
- * so the local web UI can render the same text the CLI consent prompt
- * (`brv settings set analytics.share true`) shows.
+ * Response schema for `analytics:getDisclosure`. Sections are parsed
+ * daemon-side from `src/shared/assets/analytics-disclosure.md` (one entry per
+ * `## H2` heading) so the local web UI can render them in its icon-grid
+ * layout. Single source of truth stays the markdown file.
  */
-export const AnalyticsDisclosureResponseSchema = z.object({
-  markdown: z.string().min(1),
+export const AnalyticsDisclosureSectionSchema = z.object({
+  body: z.string().min(1),
+  label: z.string().min(1),
 })
 
+export const AnalyticsDisclosureResponseSchema = z.object({
+  sections: z.array(AnalyticsDisclosureSectionSchema).min(1),
+})
+
+export type AnalyticsDisclosureSection = z.infer<typeof AnalyticsDisclosureSectionSchema>
 export type AnalyticsDisclosureResponse = z.infer<typeof AnalyticsDisclosureResponseSchema>
 
 /**

@@ -25,15 +25,19 @@ describe('getAnalyticsDisclosure', () => {
   })
 
   it('emits analytics:getDisclosure with no payload', async () => {
-    request.resolves({markdown: '# Disclosure'})
+    request.resolves({sections: [{body: 'b', label: 'a'}]})
     await getAnalyticsDisclosure()
     expect(request.firstCall.args[0]).to.equal(AnalyticsEvents.GET_DISCLOSURE)
   })
 
-  it('returns the markdown body from the daemon response', async () => {
-    request.resolves({markdown: '# Title\n\nBody.'})
+  it('returns the parsed sections from the daemon response', async () => {
+    const sections = [
+      {body: 'Event names.', label: 'What is collected'},
+      {body: 'Toggle off.', label: 'How to disable'},
+    ]
+    request.resolves({sections})
     const result = await getAnalyticsDisclosure()
-    expect(result).to.deep.equal({markdown: '# Title\n\nBody.'})
+    expect(result).to.deep.equal({sections})
   })
 
   it('rejects when the transport is not connected', async () => {
