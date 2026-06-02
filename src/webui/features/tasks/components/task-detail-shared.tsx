@@ -1,6 +1,5 @@
 import type {ReactNode} from 'react'
 
-import {Tooltip, TooltipContent, TooltipTrigger} from '@campfirein/byterover-packages/components/tooltip'
 import {cn} from '@campfirein/byterover-packages/lib/utils'
 import {Check, X} from 'lucide-react'
 
@@ -21,48 +20,6 @@ export function SectionLabel({children, count}: {children: ReactNode; count?: nu
       <span className="bg-border/50 h-px flex-1" />
       {count !== undefined && <span className="tabular-nums">{count}</span>}
     </div>
-  )
-}
-
-export type EventTone = 'completed' | 'error' | 'muted' | 'running'
-
-const DOT_BG: Record<EventTone, string> = {
-  completed: 'bg-emerald-500',
-  error: 'bg-red-400',
-  muted: 'bg-muted-foreground/60',
-  running: 'bg-blue-400',
-}
-
-export const RAIL_BG: Record<EventTone, string> = {
-  completed: 'bg-emerald-500/70',
-  error: 'bg-red-400/70',
-  muted: 'bg-muted-foreground/30',
-  running: 'rail-running',
-}
-
-export function EventDot({flash, tone, tooltip}: {flash?: boolean; tone: EventTone; tooltip?: ReactNode}) {
-  const dot = (
-    <span className="absolute top-1 left-0 grid size-3 place-items-center">
-      <span
-        className={cn(
-          'ring-background relative z-10 size-2 rounded-full ring-[1.5px]',
-          DOT_BG[tone],
-          flash && 'animate-dot-flash',
-        )}
-      />
-      {tone === 'running' && (
-        <span className="bg-blue-400 absolute inset-0 rounded-full opacity-50 animate-dot-pulse" />
-      )}
-    </span>
-  )
-
-  if (!tooltip) return dot
-
-  return (
-    <Tooltip>
-      <TooltipTrigger render={dot} />
-      <TooltipContent>{tooltip}</TooltipContent>
-    </Tooltip>
   )
 }
 

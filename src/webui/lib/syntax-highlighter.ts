@@ -5,8 +5,8 @@
  * react-syntax-highlighter — `Prism` eagerly bundles ~280 PrismJS language
  * definitions (~1MB minified), while `PrismLight` only ships languages we
  * explicitly register. This module is the single registration point so the
- * three call sites (markdown-inline, markdown-view, task-detail-tool-call)
- * share one configured highlighter.
+ * call sites (markdown-inline, markdown-view) share one configured
+ * highlighter.
  *
  * Add a language here when content using it appears in the UI; unregistered
  * languages render as plain text (no error, just no syntax colors).
