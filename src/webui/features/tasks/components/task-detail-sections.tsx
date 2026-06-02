@@ -13,10 +13,12 @@ import {
 } from '../utils/curate-tool-mode'
 import {shortTaskId} from '../utils/format-time'
 import {isBvTopicHtml} from '../utils/is-bv-topic-html'
+import {isQueryToolModeType, parseQueryToolModeResult} from '../utils/query-tool-mode-results'
 import {isActiveStatus} from '../utils/task-status'
 import {AttachmentChip} from './attachment-chip'
 import {CurateHtmlDirectInputView, CurateHtmlDirectResultView} from './curate-tool-mode-sections'
 import {MarkdownInline} from './markdown-inline'
+import {QueryResultsList} from './query-results-list'
 import {SectionLabel, TerminalDot} from './task-detail-shared'
 
 export function InputSection({task}: {task: StoredTask}) {
@@ -84,6 +86,11 @@ export function ResultSection({content, taskType}: {content: string; taskType?: 
   if (taskType && isCurateHtmlDirectType(taskType)) {
     const payload = parseCurateHtmlDirectResult(content)
     if (payload) return <CurateHtmlDirectResultView payload={payload} />
+  }
+
+  if (taskType && isQueryToolModeType(taskType)) {
+    const payload = parseQueryToolModeResult(content)
+    if (payload) return <QueryResultsList matchedDocs={payload.matchedDocs} />
   }
 
   return (
