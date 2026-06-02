@@ -24,6 +24,17 @@ describe('AnalyticsDisclosureHandler', () => {
     expect(result).to.deep.equal({markdown})
   })
 
+  it('throws when the loader returns an empty string so the webui surfaces an error state', async () => {
+    const transport = createMockTransportServer()
+    new AnalyticsDisclosureHandler({loadDisclosure: async () => '', transport}).setup()
+
+    const handler = transport._handlers.get(AnalyticsEvents.GET_DISCLOSURE) as DisclosureHandler
+    await handler(undefined, 'client-1').then(
+      () => expect.fail('expected promise to reject'),
+      (error: Error) => expect(error.message).to.include('missing'),
+    )
+  })
+
   it('propagates loader errors so the daemon does not silently serve empty disclosure', async () => {
     const transport = createMockTransportServer()
     const boom = new Error('ENOENT')

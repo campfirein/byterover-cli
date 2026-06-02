@@ -108,7 +108,7 @@ export function AnalyticsPanel() {
             target="_blank"
           >
             <ExternalLink className="size-3.5 text-primary" />
-            <span className="text-primary">byterover.dev/services/privacy</span>
+            <span className="text-primary">{PRIVACY_POLICY_URL.replace(/^https?:\/\/(www\.)?/, '')}</span>
           </a>
         </div>
       )}

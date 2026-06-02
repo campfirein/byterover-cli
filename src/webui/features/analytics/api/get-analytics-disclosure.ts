@@ -18,6 +18,7 @@ export const getAnalyticsDisclosureQueryOptions = () =>
   queryOptions({
     queryFn: getAnalyticsDisclosure,
     queryKey: ['analyticsDisclosure'],
+    staleTime: Number.POSITIVE_INFINITY,
   })
 
 type UseGetAnalyticsDisclosureOptions = {

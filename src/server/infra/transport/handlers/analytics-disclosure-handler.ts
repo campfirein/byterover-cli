@@ -30,6 +30,7 @@ export class AnalyticsDisclosureHandler {
   public setup(): void {
     this.transport.onRequest<void, AnalyticsDisclosureResponse>(AnalyticsEvents.GET_DISCLOSURE, async () => {
       const markdown = await this.loadDisclosure()
+      if (!markdown) throw new Error('Analytics disclosure markdown is missing or empty.')
       return {markdown}
     })
   }
