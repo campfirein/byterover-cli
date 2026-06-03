@@ -1,7 +1,21 @@
 import {TransportClient} from '@campfirein/brv-transport-client'
+import {randomUUID} from 'node:crypto'
+import {promises as fs} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
 
+import type {IChannelOrchestrator} from '../../src/server/core/interfaces/channel/i-channel-orchestrator.js'
 import type {TransportConnector} from '../../src/server/infra/transport/transport-connector.js'
 
+import {TransportChannelBroadcaster} from '../../src/server/infra/channel/channel-broadcaster.js'
+import {FileChannelStore} from '../../src/server/infra/channel/channel-store.js'
+import {FileDriverProfileStore} from '../../src/server/infra/channel/driver-profile-store.js'
+import {AcpDriver} from '../../src/server/infra/channel/drivers/acp-driver.js'
+import {DriverPool} from '../../src/server/infra/channel/drivers/driver-pool.js'
+import {ChannelOnboardService} from '../../src/server/infra/channel/onboard-service.js'
+import {ChannelOrchestrator} from '../../src/server/infra/channel/orchestrator.js'
+import {FileTranscriptStore} from '../../src/server/infra/channel/storage/file-transcript-store.js'
+import {TurnSequenceAllocator} from '../../src/server/infra/channel/turn-sequence-allocator.js'
 import {channelsEnabled, registerDisabledStubs} from '../../src/server/infra/transport/handlers/channel-disabled-handler.js'
 import {ChannelCancelHandler} from '../../src/server/infra/transport/handlers/channel/channel-cancel-handler.js'
 import {ChannelCreateHandler} from '../../src/server/infra/transport/handlers/channel/channel-create-handler.js'
@@ -24,24 +38,27 @@ export type ChannelHarness = {
   connector: TransportConnector
   /** Port the in-process transport server is bound to. */
   port: number
-  /** Disconnects clients, stops the server, and restores mutated env. */
+  /** Temp project root every request resolves to; tests read its `.brv/channel-history`. */
+  projectRoot: string
+  /** Disconnects clients, stops the server, removes temp dirs, and restores mutated env. */
   teardown: () => Promise<void>
 }
 
 /**
  * Boots a real {@link SocketIOTransportServer} in-process and registers the
- * channel handler surface exactly the way production does — gated through the
- * real {@link channelsEnabled} check. With `enabled` the 10 per-event handlers
- * are wired (so a `channel:*` request resolves to `CHANNEL_NOT_IMPLEMENTED`);
- * without it, {@link registerDisabledStubs} is used (resolving to
- * `CHANNEL_DISABLED`). The returned `connector` drives the actual oclif command
- * against this server with no subprocess and no daemon spawn.
+ * channel handler surface the way production does — gated through the real
+ * {@link channelsEnabled} check, with the live orchestrator + onboard service
+ * wired against a temp project root (so every request resolves there) and temp
+ * profile store. Without `enabled`, {@link registerDisabledStubs} is used.
  */
 export async function startChannelHarness(options: {enabled: boolean; port?: number}): Promise<ChannelHarness> {
   const previousSessionLog = process.env.BRV_SESSION_LOG
   const previousChannelsFlag = process.env.BRV_CHANNELS_ENABLED
   process.env.BRV_SESSION_LOG = '/dev/null'
   process.env.BRV_CHANNELS_ENABLED = options.enabled ? '1' : '0'
+
+  const projectRoot = await fs.mkdtemp(join(tmpdir(), 'brv-channel-project-'))
+  const dataDir = await fs.mkdtemp(join(tmpdir(), 'brv-channel-data-'))
 
   const port = options.port ?? nextPort++
   const server = new SocketIOTransportServer()
@@ -50,12 +67,39 @@ export async function startChannelHarness(options: {enabled: boolean; port?: num
   // Mirror feature-handlers.ts: register live handlers or disabled stubs based
   // on the real gate, so the harness exercises production registration logic.
   if (channelsEnabled()) {
-    new ChannelCreateHandler(server).setup()
+    const driverProfileStore = new FileDriverProfileStore({dataDir})
+    const driverFactory = (invocation: ConstructorParameters<typeof AcpDriver>[0]['invocation'], handle: string) =>
+      new AcpDriver({handle, invocation})
+    const onboardService = new ChannelOnboardService({clock: () => new Date(), driverFactory, store: driverProfileStore})
+
+    const orchestrators = new Map<string, IChannelOrchestrator>()
+    const getOrchestrator = (root: string): IChannelOrchestrator => {
+      const existing = orchestrators.get(root)
+      if (existing !== undefined) return existing
+      const orchestrator = new ChannelOrchestrator({
+        broadcaster: new TransportChannelBroadcaster(server),
+        clock: () => new Date(),
+        driverFactory,
+        idGenerator: randomUUID,
+        pool: new DriverPool(),
+        profileStore: driverProfileStore,
+        projectRoot: root,
+        seqAllocator: new TurnSequenceAllocator(),
+        store: new FileChannelStore({projectRoot: root}),
+        transcriptStore: new FileTranscriptStore(),
+      })
+      orchestrators.set(root, orchestrator)
+      return orchestrator
+    }
+
+    const resolveProjectPath = (): string => projectRoot
+
+    new ChannelCreateHandler({getOrchestrator, resolveProjectPath, transport: server}).setup()
+    new ChannelInviteHandler({getOrchestrator, resolveProjectPath, transport: server}).setup()
+    new ChannelOnboardHandler({onboardService, transport: server}).setup()
+    new ChannelMentionHandler({getOrchestrator, resolveProjectPath, transport: server}).setup()
     new ChannelListHandler(server).setup()
     new ChannelGetHandler(server).setup()
-    new ChannelInviteHandler(server).setup()
-    new ChannelOnboardHandler(server).setup()
-    new ChannelMentionHandler(server).setup()
     new ChannelShowHandler(server).setup()
     new ChannelListTurnsHandler(server).setup()
     new ChannelSubscribeHandler(server).setup()
@@ -83,11 +127,13 @@ export async function startChannelHarness(options: {enabled: boolean; port?: num
       await server.stop()
     }
 
+    await fs.rm(projectRoot, {force: true, recursive: true})
+    await fs.rm(dataDir, {force: true, recursive: true})
     restoreEnv('BRV_SESSION_LOG', previousSessionLog)
     restoreEnv('BRV_CHANNELS_ENABLED', previousChannelsFlag)
   }
 
-  return {connector, port, teardown}
+  return {connector, port, projectRoot, teardown}
 }
 
 function restoreEnv(key: string, previous: string | undefined): void {

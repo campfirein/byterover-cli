@@ -5,9 +5,11 @@
  * These handlers implement the TUI ↔ Server event contract.
  */
 
+import {randomUUID} from 'node:crypto'
 import {access} from 'node:fs/promises'
 import {join} from 'node:path'
 
+import type {IChannelOrchestrator} from '../../core/interfaces/channel/i-channel-orchestrator.js'
 import type {IConnectorManager} from '../../core/interfaces/connectors/i-connector-manager.js'
 import type {IProviderConfigStore} from '../../core/interfaces/i-provider-config-store.js'
 import type {IProviderKeychainStore} from '../../core/interfaces/i-provider-keychain-store.js'
@@ -24,12 +26,22 @@ import {getAuthConfig} from '../../config/auth.config.js'
 import {getCurrentConfig} from '../../config/environment.js'
 import {API_V1_PATH, BRV_DIR} from '../../constants.js'
 import {TransportStateEventNames} from '../../core/domain/transport/schemas.js'
+import {getGlobalDataDir} from '../../utils/global-data-path.js'
 import {getProjectDataDir} from '../../utils/path-utils.js'
 import {OAuthService} from '../auth/oauth-service.js'
 import {OidcDiscoveryService} from '../auth/oidc-discovery-service.js'
 import {HttpBillingService} from '../billing/http-billing-service.js'
 import {createPaidOrganizationsHandler} from '../billing/paid-organizations-endpoint.js'
 import {SystemBrowserLauncher} from '../browser/system-browser-launcher.js'
+import {TransportChannelBroadcaster} from '../channel/channel-broadcaster.js'
+import {FileChannelStore} from '../channel/channel-store.js'
+import {FileDriverProfileStore} from '../channel/driver-profile-store.js'
+import {AcpDriver} from '../channel/drivers/acp-driver.js'
+import {DriverPool} from '../channel/drivers/driver-pool.js'
+import {ChannelOnboardService} from '../channel/onboard-service.js'
+import {ChannelOrchestrator} from '../channel/orchestrator.js'
+import {FileTranscriptStore} from '../channel/storage/file-transcript-store.js'
+import {TurnSequenceAllocator} from '../channel/turn-sequence-allocator.js'
 import {HttpCogitPullService} from '../cogit/http-cogit-pull-service.js'
 import {HttpCogitPushService} from '../cogit/http-cogit-push-service.js'
 import {ProjectConfigStore} from '../config/file-config-store.js'
@@ -150,12 +162,42 @@ export async function setupFeatureHandlers({
   // Channel handlers are gated behind BRV_CHANNELS_ENABLED (opt-out). When the
   // surface is disabled, register stubs so `channel:*` requests still ack.
   if (channelsEnabled()) {
-    new ChannelCreateHandler(transport).setup()
+    // Profiles are global (reusable across projects); the onboard service is
+    // project-independent.
+    const driverProfileStore = new FileDriverProfileStore({dataDir: getGlobalDataDir()})
+    const driverFactory = (invocation: ConstructorParameters<typeof AcpDriver>[0]['invocation'], handle: string) =>
+      new AcpDriver({handle, invocation})
+    const onboardService = new ChannelOnboardService({clock: () => new Date(), driverFactory, store: driverProfileStore})
+
+    // One orchestrator per project: a driver registered at invite time must
+    // survive (in the same pool) to the subsequent mention request.
+    const orchestrators = new Map<string, IChannelOrchestrator>()
+    const getOrchestrator = (projectRoot: string): IChannelOrchestrator => {
+      const existing = orchestrators.get(projectRoot)
+      if (existing !== undefined) return existing
+      const orchestrator = new ChannelOrchestrator({
+        broadcaster: new TransportChannelBroadcaster(transport),
+        clock: () => new Date(),
+        driverFactory,
+        idGenerator: randomUUID,
+        pool: new DriverPool(),
+        profileStore: driverProfileStore,
+        projectRoot,
+        seqAllocator: new TurnSequenceAllocator(),
+        store: new FileChannelStore({projectRoot}),
+        transcriptStore: new FileTranscriptStore(),
+      })
+      orchestrators.set(projectRoot, orchestrator)
+      return orchestrator
+    }
+
+    new ChannelCreateHandler({getOrchestrator, resolveProjectPath, transport}).setup()
+    new ChannelInviteHandler({getOrchestrator, resolveProjectPath, transport}).setup()
+    new ChannelOnboardHandler({onboardService, transport}).setup()
+    new ChannelMentionHandler({getOrchestrator, resolveProjectPath, transport}).setup()
+    // Remaining read/lifecycle handlers stay stubbed until their milestones.
     new ChannelListHandler(transport).setup()
     new ChannelGetHandler(transport).setup()
-    new ChannelInviteHandler(transport).setup()
-    new ChannelOnboardHandler(transport).setup()
-    new ChannelMentionHandler(transport).setup()
     new ChannelShowHandler(transport).setup()
     new ChannelListTurnsHandler(transport).setup()
     new ChannelSubscribeHandler(transport).setup()

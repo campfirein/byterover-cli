@@ -24,9 +24,9 @@ export abstract class ChannelCommand extends Command {
   }
 
   /**
-   * Sends `payload` to a `channel:*` event and returns the response. Every event
-   * currently resolves to a typed error, so this routes through `handleError`;
-   * the success path is added once an event gains behavior.
+   * Sends `payload` to a `channel:*` event and returns the response. On a
+   * {@link ChannelClientError} this routes through `handleError` (which exits
+   * non-zero); other errors rethrow.
    */
   protected async dispatch<TResponse = unknown>(event: string, payload: unknown, asJson: boolean): Promise<TResponse> {
     try {
@@ -37,6 +37,36 @@ export abstract class ChannelCommand extends Command {
     } catch (error) {
       return this.handleError(error, asJson)
     }
+  }
+
+  /**
+   * Sends `payload` and renders the success response: a JSON envelope in
+   * `--json` mode (optionally reshaped via `toJson`), otherwise `render`. Errors
+   * route through `handleError`.
+   */
+  protected async dispatchAndRender<TResponse = unknown>(args: {
+    asJson: boolean
+    event: string
+    payload: unknown
+    render: (response: TResponse) => void
+    toJson?: (response: TResponse) => unknown
+  }): Promise<void> {
+    let response: TResponse
+    try {
+      response = await withChannelClient<TResponse>(
+        (client: ChannelClient) => client.request<TResponse>(args.event, args.payload),
+        this.channelClientOptions(),
+      )
+    } catch (error) {
+      return this.handleError(error, args.asJson)
+    }
+
+    if (args.asJson) {
+      this.log(JSON.stringify(args.toJson === undefined ? response : args.toJson(response)))
+      return
+    }
+
+    args.render(response)
   }
 
   /**

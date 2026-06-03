@@ -1,58 +1,73 @@
-import type {Channel, ContentBlock, Turn} from '../../../../shared/types/index.js'
+import type {
+  AgentDriverProfileInvocation,
+  Channel,
+  ChannelMember,
+  ChannelMentionSyncResult,
+  ContentBlock,
+  Turn,
+  TurnDelivery,
+} from '../../../../shared/types/index.js'
 
-/** Cancel an in-flight turn. */
-export type CancelTurnArgs = {
-  readonly channelId: string
-  readonly turnId: string
-}
-
-/** Create a new channel. */
+/** Create a new channel. `channelId` is generated when omitted. */
 export type CreateChannelArgs = {
-  readonly channelId: string
+  readonly channelId?: string
   readonly title?: string
 }
 
-/** Post a new turn (a user or local-agent prompt) into a channel. */
-export type PostTurnArgs = {
+/** Invite one local ACP agent — by saved profile name OR inline invocation. */
+export type InviteMemberArgs = {
   readonly channelId: string
-  /** Optional client-supplied idempotency key for safe retries. */
+  readonly handle: string
+  readonly invocation?: AgentDriverProfileInvocation
+  readonly profileName?: string
+}
+
+/** Dispatch a prompt turn addressed at channel members. */
+export type DispatchMentionArgs = {
+  readonly channelId: string
+  /** Client-supplied dedupe key (honored in a later milestone). */
   readonly idempotencyKey?: string
-  /** Handles explicitly mentioned in the prompt; drives dispatch. */
+  /** Handles addressed explicitly, unioned with those parsed from the prompt. */
   readonly mentions?: string[]
-  readonly promptBlocks: ContentBlock[]
+  /** `'sync'` registers a pending result settled on terminal state. */
+  readonly mode?: 'async' | 'sync'
+  readonly prompt?: string
+  readonly promptBlocks?: ContentBlock[]
+  /** When true, `agent_thought_chunk` events are dropped from wire + transcript. */
+  readonly suppressThoughts?: boolean
+  /** Override for the sync wait budget (ms). */
+  readonly timeoutMs?: number
+}
+
+/** Snapshot returned synchronously by `dispatchMention`. */
+export type DispatchMentionResult = {
+  readonly deliveries: TurnDelivery[]
+  readonly turn: Turn
 }
 
 /**
- * Thin application-facing coordinator for the channel subsystem. Deliberately
- * smaller than the POC's god-object: it exposes only the read + lifecycle
- * operations the foundation needs. The interface is EXTENDED (never replaced) as
- * the subsystem grows — member management, streaming dispatch, quorum fan-out,
- * and permission decisions land additively once their domain types and consumers
- * exist.
+ * Thin application-facing coordinator for the channel subsystem. Bound to one
+ * project; the daemon keeps one instance per project so a member's driver,
+ * registered at invite time, survives to mention time.
  *
- * Implementations validate inputs against the transport request schemas before
- * these methods run (the handler does this), so orchestrator methods can trust
- * their arguments.
+ * Consumer-driven: each method exists because a transport handler needs it
+ * (create / invite / mention). Read + cancel + fan-out + quorum land additively
+ * as their consumers arrive.
  */
 export interface IChannelOrchestrator {
-  /** Cancels an in-flight turn and its deliveries. */
-  cancelTurn(args: CancelTurnArgs): Promise<void>
+  /** Returns the pending sync result for a turn (registered by `dispatchMention`). */
+  awaitSyncMention(turnId: string): Promise<ChannelMentionSyncResult>
 
   /** Creates a new channel and returns its record. */
   createChannel(args: CreateChannelArgs): Promise<Channel>
 
-  /** Reads one channel, or `undefined` when it does not exist. */
-  getChannel(channelId: string): Promise<Channel | undefined>
+  /**
+   * Resolves the addressed member, creates the turn + delivery, kicks the
+   * background stream, and returns the dispatch snapshot. In `sync` mode a
+   * pending result is registered first; callers then await `awaitSyncMention`.
+   */
+  dispatchMention(args: DispatchMentionArgs): Promise<DispatchMentionResult>
 
-  /** Reads one turn within a channel, or `undefined` when it does not exist. */
-  getTurn(channelId: string, turnId: string): Promise<Turn | undefined>
-
-  /** Lists all channels. */
-  listChannels(): Promise<Channel[]>
-
-  /** Lists the turns of a channel; ordering is defined by the adapter. */
-  listTurns(channelId: string): Promise<Turn[]>
-
-  /** Posts a new turn into a channel and returns the created turn record. */
-  postTurn(args: PostTurnArgs): Promise<Turn>
+  /** Spawns + registers the agent's driver and persists the member record. */
+  inviteMember(args: InviteMemberArgs): Promise<ChannelMember>
 }

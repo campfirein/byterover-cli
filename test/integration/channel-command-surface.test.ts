@@ -6,9 +6,7 @@ import type {TransportConnector} from '../../src/server/infra/transport/transpor
 import ChannelInvite from '../../src/oclif/commands/channel/invite.js'
 import ChannelListTurns from '../../src/oclif/commands/channel/list-turns.js'
 import ChannelList from '../../src/oclif/commands/channel/list.js'
-import ChannelMention from '../../src/oclif/commands/channel/mention.js'
 import ChannelNew from '../../src/oclif/commands/channel/new.js'
-import ChannelOnboard from '../../src/oclif/commands/channel/onboard.js'
 import ChannelShow from '../../src/oclif/commands/channel/show.js'
 import {ChannelCommand} from '../../src/oclif/lib/channel-command.js'
 import {type ChannelHarness, startChannelHarness} from '../helpers/channel-test-harness.js'
@@ -93,13 +91,14 @@ function parseEnvelope(logs: string[]): unknown {
   return JSON.parse(logs.at(-1) ?? '{}')
 }
 
-/** One representative, schema-valid invocation per command. */
+/**
+ * One representative, schema-valid invocation per still-stubbed command. The
+ * create/invite/onboard/mention commands now have behavior, so their happy
+ * paths live in the dedicated channel sync-mention integration tests; the read
+ * commands below remain stubbed until their milestones.
+ */
 const COMMAND_CASES: ReadonlyArray<{argv: string[]; commandClass: ChannelCommandClass; label: string}> = [
-  {argv: ['my-channel', '--json'], commandClass: ChannelNew, label: 'new'},
   {argv: ['--json'], commandClass: ChannelList, label: 'list'},
-  {argv: ['my-channel', '@codex', '--json'], commandClass: ChannelInvite, label: 'invite'},
-  {argv: ['@codex', '--channel', 'my-channel', '--json'], commandClass: ChannelOnboard, label: 'onboard'},
-  {argv: ['my-channel', 'hello @codex', '--json'], commandClass: ChannelMention, label: 'mention'},
   {argv: ['my-channel', 'turn-1', '--json'], commandClass: ChannelShow, label: 'show'},
   {argv: ['my-channel', '--json'], commandClass: ChannelListTurns, label: 'list-turns'},
 ]
@@ -136,7 +135,7 @@ describe('channel-command-surface', () => {
     }
 
     it('emits a `{success:false, code, error}` envelope on stdout in JSON mode', async () => {
-      const {exitCode, logs} = await runInProcess(ChannelNew, config, harness.connector, ['x', '--json'])
+      const {exitCode, logs} = await runInProcess(ChannelShow, config, harness.connector, ['x', 'turn-1', '--json'])
 
       expect(exitCode).to.equal(1)
       const parsed = parseEnvelope(logs)
@@ -149,7 +148,7 @@ describe('channel-command-surface', () => {
     })
 
     it('renders a [CODE] message to stderr in text mode', async () => {
-      const {exitCode, stderrLogs} = await runInProcess(ChannelNew, config, harness.connector, ['x'])
+      const {exitCode, stderrLogs} = await runInProcess(ChannelShow, config, harness.connector, ['x', 'turn-1'])
 
       expect(exitCode).to.equal(1)
       expect(stderrLogs.join('\n')).to.include('[CHANNEL_NOT_IMPLEMENTED]')

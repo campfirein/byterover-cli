@@ -357,3 +357,50 @@ export const ChannelSchema = z
   .strict()
 
 export type Channel = z.infer<typeof ChannelSchema>
+
+// ─── Agent driver profile ─────────────────────────────────────────────────
+
+/**
+ * How to launch an agent subprocess. Shared by a saved profile and a channel
+ * member, so a probed profile maps onto an invite invocation unchanged.
+ */
+export const AgentDriverProfileInvocationSchema = z.object({
+  command: z.string(),
+  args: z.array(z.string()),
+  cwd: z.string(),
+  env: z.record(z.string()).optional(),
+})
+
+export type AgentDriverProfileInvocation = z.infer<typeof AgentDriverProfileInvocationSchema>
+
+/**
+ * A reusable, probed launch spec for an agent. `onboard` writes one after
+ * probing a candidate; `invite --profile <name>` resolves it instead of
+ * re-passing the inline invocation.
+ */
+export const AgentDriverProfileSchema = z.object({
+  name: z.string().min(1),
+  displayName: z.string(),
+  driverClass: z.enum(['A', 'B', 'C-prime']),
+  invocation: AgentDriverProfileInvocationSchema,
+  detectedAcpVersion: z.string().optional(),
+  capabilities: z.array(z.string()).optional(),
+  probedAt: z.string().datetime().optional(),
+})
+
+export type AgentDriverProfile = z.infer<typeof AgentDriverProfileSchema>
+
+// ─── Synchronous mention result ───────────────────────────────────────────
+
+/**
+ * The settled result of a `mode: 'sync'` mention: the assembled answer plus
+ * the terminal turn state. A turn only ever ends `completed` or `cancelled`.
+ */
+export const ChannelMentionSyncResultSchema = z.object({
+  turnId: z.string(),
+  endedState: z.enum(['cancelled', 'completed']),
+  finalAnswer: z.string(),
+  durationMs: z.number().int().nonnegative(),
+})
+
+export type ChannelMentionSyncResult = z.infer<typeof ChannelMentionSyncResultSchema>

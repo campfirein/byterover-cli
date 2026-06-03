@@ -1,7 +1,10 @@
 import {z} from 'zod'
 
 import {
+  AgentDriverProfileInvocationSchema,
+  AgentDriverProfileSchema,
   ChannelMemberSchema,
+  ChannelMentionSyncResultSchema,
   ChannelSchema,
   ContentBlockSchema,
   HandleSchema,
@@ -78,13 +81,13 @@ export const ChannelGetResponseSchema = z.object({
 export type ChannelGetResponse = z.infer<typeof ChannelGetResponseSchema>
 
 /**
- * channel:invite — `invocation` is intentionally loose at the skeleton layer;
- * the launch-spec shape is tightened when the driver/profile machinery lands.
+ * channel:invite — either references a saved profile by name (`profileName`)
+ * or carries an inline launch spec (`invocation`).
  */
 export const ChannelInviteRequestSchema = z.object({
   channelId: z.string(),
   handle: HandleSchema,
-  invocation: z.unknown().optional(),
+  invocation: AgentDriverProfileInvocationSchema.optional(),
   profileName: z.string().optional(),
 })
 
@@ -96,35 +99,55 @@ export const ChannelInviteResponseSchema = z.object({
 
 export type ChannelInviteResponse = z.infer<typeof ChannelInviteResponseSchema>
 
-/** channel:onboard */
+/** A single advisory emitted while probing/onboarding an agent. */
+export const DoctorDiagnosticSchema = z.object({
+  code: z.string(),
+  details: z.unknown().optional(),
+  message: z.string(),
+  severity: z.enum(['error', 'info', 'warning']),
+})
+
+export type DoctorDiagnostic = z.infer<typeof DoctorDiagnosticSchema>
+
+/** channel:onboard — probe a candidate agent and persist a reusable profile. */
 export const ChannelOnboardRequestSchema = z.object({
-  channelId: z.string(),
-  handle: HandleSchema,
-  invocation: z.unknown().optional(),
+  displayName: z.string(),
+  invocation: AgentDriverProfileInvocationSchema,
+  profileName: z.string().min(1),
 })
 
 export type ChannelOnboardRequest = z.infer<typeof ChannelOnboardRequestSchema>
 
 export const ChannelOnboardResponseSchema = z.object({
-  member: ChannelMemberSchema,
+  diagnostics: z.array(DoctorDiagnosticSchema),
+  profile: AgentDriverProfileSchema,
 })
 
 export type ChannelOnboardResponse = z.infer<typeof ChannelOnboardResponseSchema>
 
-/** channel:mention — carries the M0-1 ContentBlock/Handle shapes unchanged. */
+/**
+ * channel:mention — `mode: 'sync'` blocks until the turn settles and returns
+ * the assembled answer; `mode: 'async'` (later milestone) accepts the turn and
+ * returns its snapshot. `suppressThoughts` drops `agent_thought_chunk` events
+ * from both the wire and the transcript.
+ */
 export const ChannelMentionRequestSchema = z.object({
   channelId: z.string(),
   idempotencyKey: z.string().optional(),
   mentions: z.array(HandleSchema).optional(),
+  mode: z.enum(['async', 'sync']).optional(),
   prompt: z.string().optional(),
   promptBlocks: z.array(ContentBlockSchema).optional(),
+  suppressThoughts: z.boolean().optional(),
+  timeoutMs: z.number().int().positive().optional(),
 })
 
 export type ChannelMentionRequest = z.infer<typeof ChannelMentionRequestSchema>
 
-export const ChannelMentionResponseSchema = z.object({
-  turn: TurnSchema,
-})
+export const ChannelMentionResponseSchema = z.union([
+  z.object({kind: z.literal('sync'), result: ChannelMentionSyncResultSchema}),
+  z.object({kind: z.literal('accepted'), turn: TurnSchema}),
+])
 
 export type ChannelMentionResponse = z.infer<typeof ChannelMentionResponseSchema>
 

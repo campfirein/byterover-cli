@@ -1,39 +1,47 @@
+import type {IChannelOrchestrator} from '../../../../core/interfaces/channel/i-channel-orchestrator.js'
 import type {ITransportServer} from '../../../../core/interfaces/transport/index.js'
+import type {ProjectPathResolver} from '../handler-types.js'
 import type {ITransportHandler} from '../i-transport-handler.js'
 
 import {
   ChannelEvents,
-  ChannelInviteRequest,
+  type ChannelInviteRequest,
   ChannelInviteRequestSchema,
-  ChannelInviteResponse,
+  type ChannelInviteResponse,
 } from '../../../../../shared/transport/events/channel-events.js'
-import {ChannelNotImplementedError} from '../../../../core/domain/channel/errors.js'
+import {resolveRequiredProjectPath} from '../handler-types.js'
 import {parseOrThrow} from './parse-or-throw.js'
 
-/**
- * Handles `channel:invite`. `handle` validates the payload, then throws
- * {@link ChannelNotImplementedError}; the invite behavior lands in a later
- * milestone, written after the validation step in `handle`.
- */
-export class ChannelInviteHandler
-  implements ITransportHandler<ChannelInviteRequest, ChannelInviteResponse>
-{
-  private readonly event: string
-  private readonly transportServer: ITransportServer
+export type ChannelInviteHandlerDeps = {
+  readonly getOrchestrator: (projectRoot: string) => IChannelOrchestrator
+  readonly resolveProjectPath: ProjectPathResolver
+  readonly transport: ITransportServer
+}
 
-  public constructor(transportServer: ITransportServer) {
-    this.event = ChannelEvents.INVITE
-    this.transportServer = transportServer
+/** Handles `channel:invite` by spawning + registering the agent's driver. */
+export class ChannelInviteHandler implements ITransportHandler<ChannelInviteRequest, ChannelInviteResponse> {
+  private readonly deps: ChannelInviteHandlerDeps
+  private readonly event = ChannelEvents.INVITE
+
+  public constructor(deps: ChannelInviteHandlerDeps) {
+    this.deps = deps
   }
 
-  public async handle(request: ChannelInviteRequest): Promise<ChannelInviteResponse> {
-    parseOrThrow(ChannelInviteRequestSchema, request)
-    throw new ChannelNotImplementedError(this.event)
+  public async handle(request: ChannelInviteRequest, clientId: string): Promise<ChannelInviteResponse> {
+    const valid = parseOrThrow(ChannelInviteRequestSchema, request)
+    const projectRoot = resolveRequiredProjectPath(this.deps.resolveProjectPath, clientId)
+    const member = await this.deps.getOrchestrator(projectRoot).inviteMember({
+      channelId: valid.channelId,
+      handle: valid.handle,
+      invocation: valid.invocation,
+      profileName: valid.profileName,
+    })
+    return {member}
   }
 
   public setup(): void {
-    this.transportServer.onRequest<ChannelInviteRequest, ChannelInviteResponse>(this.event, (request) =>
-      this.handle(request),
+    this.deps.transport.onRequest<ChannelInviteRequest, ChannelInviteResponse>(this.event, (request, clientId) =>
+      this.handle(request, clientId),
     )
   }
 }

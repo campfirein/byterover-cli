@@ -37,6 +37,21 @@ describe('AcpDriver', () => {
     }
   })
 
+  it('captures the initialize snapshot and probes session/new for onboarding', async () => {
+    const driver = new AcpDriver({
+      handle: '@mock',
+      invocation: {args: [MOCK_ACP], command: process.execPath, cwd: process.cwd()},
+    })
+    await driver.start()
+    try {
+      expect(driver.protocolVersion).to.equal(1)
+      expect(driver.acpInitialize?.agentCapabilities?.promptCapabilities?.embeddedContext).to.equal(false)
+      expect(await driver.probeSession()).to.equal(true)
+    } finally {
+      await driver.stop()
+    }
+  })
+
   it('drops malformed and cross-session updates, yielding only this session’s chunks', async () => {
     const driver = new AcpDriver({
       handle: '@mock',

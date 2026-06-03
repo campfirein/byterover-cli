@@ -7,11 +7,18 @@
  * land with the milestones that introduce them.
  */
 export const CHANNEL_ERROR_CODE = {
+  ACP_SESSION_FAILED: 'CHANNEL_ACP_SESSION_FAILED',
   AGENT_BINARY_NOT_FOUND: 'CHANNEL_AGENT_BINARY_NOT_FOUND',
   AGENT_HANDSHAKE_FAILED: 'CHANNEL_AGENT_HANDSHAKE_FAILED',
+  DELIVERY_FAILED: 'CHANNEL_DELIVERY_FAILED',
   DISABLED: 'CHANNEL_DISABLED',
+  DRIVER_NOT_REGISTERED: 'CHANNEL_DRIVER_NOT_REGISTERED',
+  DRIVER_PROFILE_NOT_FOUND: 'CHANNEL_DRIVER_PROFILE_NOT_FOUND',
   INVALID_REQUEST: 'CHANNEL_INVALID_REQUEST',
-  NOT_IMPLEMENTED: 'CHANNEL_NOT_IMPLEMENTED'
+  MENTION_EMPTY: 'CHANNEL_MENTION_EMPTY',
+  NOT_FOUND: 'CHANNEL_NOT_FOUND',
+  NOT_IMPLEMENTED: 'CHANNEL_NOT_IMPLEMENTED',
+  SYNC_TIMEOUT: 'CHANNEL_SYNC_TIMEOUT'
 } as const
 
 /**
@@ -109,5 +116,67 @@ export class AgentHandshakeFailedError extends ChannelError {
       {handle, reason},
     )
     this.name = 'AgentHandshakeFailedError'
+  }
+}
+
+/** Signals that an agent spawned + initialized but its `session/new` probe failed. */
+export class AcpSessionFailedError extends ChannelError {
+  public constructor(reason: string) {
+    super(reason, CHANNEL_ERROR_CODE.ACP_SESSION_FAILED)
+    this.name = 'AcpSessionFailedError'
+  }
+}
+
+/** Signals that no channel exists for the requested id. */
+export class ChannelNotFoundError extends ChannelError {
+  public constructor(channelId: string) {
+    super(`channel #${channelId} not found`, CHANNEL_ERROR_CODE.NOT_FOUND, {channelId})
+    this.name = 'ChannelNotFoundError'
+  }
+}
+
+/** Signals that a mention resolved to no addressable channel member. */
+export class ChannelMentionEmptyError extends ChannelError {
+  public constructor() {
+    super(
+      'no addressable member was mentioned (address an agent with @handle)',
+      CHANNEL_ERROR_CODE.MENTION_EMPTY,
+    )
+    this.name = 'ChannelMentionEmptyError'
+  }
+}
+
+/** Signals that `invite --profile <name>` referenced a profile that does not exist. */
+export class AgentDriverProfileNotFoundError extends ChannelError {
+  public constructor(profileName: string) {
+    super(
+      `driver profile '${profileName}' not found (run: brv channel onboard ${profileName} -- <command>)`,
+      CHANNEL_ERROR_CODE.DRIVER_PROFILE_NOT_FOUND,
+      {profileName},
+    )
+    this.name = 'AgentDriverProfileNotFoundError'
+  }
+}
+
+/** Signals that a synchronous mention exceeded its wait budget before completing. */
+export class ChannelSyncTimeoutError extends ChannelError {
+  public constructor(turnId: string, timeoutMs: number) {
+    super(
+      `synchronous mention for turn ${turnId} timed out after ${timeoutMs}ms`,
+      CHANNEL_ERROR_CODE.SYNC_TIMEOUT,
+      {timeoutMs, turnId},
+    )
+    this.name = 'ChannelSyncTimeoutError'
+  }
+}
+
+/**
+ * Signals that a turn reached a terminal state with a failed delivery, so the
+ * synchronous caller gets a real failure instead of a misleading empty answer.
+ */
+export class ChannelDeliveryFailedError extends ChannelError {
+  public constructor(turnId: string, details?: unknown) {
+    super(`delivery failed for turn ${turnId}`, CHANNEL_ERROR_CODE.DELIVERY_FAILED, details)
+    this.name = 'ChannelDeliveryFailedError'
   }
 }

@@ -2,6 +2,7 @@ import type {ChildProcessWithoutNullStreams} from 'node:child_process'
 
 import {spawn} from 'node:child_process'
 import {randomUUID} from 'node:crypto'
+import {z} from 'zod'
 
 import type {PermissionOption} from '../../../../shared/types/index.js'
 import type {
@@ -10,11 +11,41 @@ import type {
   IAgentDriver,
   TurnEventPayload,
 } from '../../../core/interfaces/channel/i-agent-driver.js'
+import type {ClassifyDriverArgs} from '../driver-class-classifier.js'
 
 import {AGENT_PROCESS_STOP_TIMEOUT_MS, CHANNEL_ACP_HANDSHAKE_TIMEOUT_MS} from '../../../constants.js'
 import {AgentBinaryNotFoundError, AgentHandshakeFailedError} from '../../../core/domain/channel/errors.js'
 import {projectSessionUpdate} from './acp-event-projector.js'
 import {AcpRpcClient, AcpRpcError} from './acp-rpc-client.js'
+
+/**
+ * Snapshot of the agent's `initialize` response, captured during {@link
+ * AcpDriver.start}. ACP-specific, so it lives on the concrete driver (NOT on
+ * the transport-agnostic {@link IAgentDriver}). The onboard probe reads it to
+ * classify the driver.
+ */
+export type AcpInitializeSnapshot = {
+  readonly _meta?: Readonly<Record<string, unknown>>
+  readonly agentCapabilities?: ClassifyDriverArgs['agentCapabilities']
+}
+
+/** Loose parse of the ACP `initialize` result — fields the probe consumes. */
+const AcpInitializeResultSchema = z
+  .object({
+    _meta: z.record(z.unknown()).optional(),
+    agentCapabilities: z
+      .object({
+        promptCapabilities: z
+          .object({embeddedContext: z.boolean().optional(), image: z.boolean().optional()})
+          .passthrough()
+          .optional(),
+        toolCallSupport: z.boolean().optional(),
+      })
+      .passthrough()
+      .optional(),
+    protocolVersion: z.number().optional(),
+  })
+  .passthrough()
 
 /** Grace before escalating a graceful stop from `SIGTERM` to `SIGKILL`. */
 const SIGTERM_GRACE_MS = 1000
@@ -113,7 +144,11 @@ async function* iteratePromptQueue(
  * driver stays transport-specific; nothing ACP leaks past the projector.
  */
 export class AcpDriver implements IAgentDriver {
+  /** Raw `initialize` snapshot, captured during {@link start}; `undefined` before start. */
+  public acpInitialize: AcpInitializeSnapshot | undefined
   public readonly handle: string
+  /** ACP protocol version the agent reported at `initialize`; `undefined` before start. */
+  public protocolVersion: number | undefined
   public status: AgentDriverStatus = 'idle'
   private child: ChildProcessWithoutNullStreams | undefined
   private currentPromptState: PromptQueueState | undefined
@@ -156,6 +191,20 @@ export class AcpDriver implements IAgentDriver {
     }
   }
 
+  /**
+   * Probes `session/new` for onboarding classification. Returns `true` when a
+   * session is established (caching it so the next `prompt` reuses it), `false`
+   * on any failure. Never throws.
+   */
+  async probeSession(): Promise<boolean> {
+    try {
+      await this.openSession()
+      return true
+    } catch {
+      return false
+    }
+  }
+
   prompt(args: AgentDriverPromptArgs): AsyncIterableIterator<TurnEventPayload> {
     if (this.rpc === undefined) {
       throw new Error('AcpDriver: prompt() called before start() resolved')
@@ -169,18 +218,6 @@ export class AcpDriver implements IAgentDriver {
     }
 
     const {rpc} = this
-    const ensureSession = async (): Promise<string> => {
-      if (this.sessionId !== undefined) return this.sessionId
-      const result = await rpc.call('session/new', {cwd: this.invocation.cwd, mcpServers: []})
-      const sessionId = typeof result === 'object' && result !== null && 'sessionId' in result ? result.sessionId : undefined
-      if (typeof sessionId !== 'string') {
-        throw new AcpRpcError(-32_000, 'session/new did not return a sessionId')
-      }
-
-      this.sessionId = sessionId
-      return sessionId
-    }
-
     const state: PromptQueueState = {cancelled: false, done: false, queue: [], resolveNext: undefined}
     const wakeup = (): void => {
       if (state.resolveNext !== undefined) {
@@ -237,7 +274,10 @@ export class AcpDriver implements IAgentDriver {
         }),
     )
 
-    return iteratePromptQueue(state, this.dispatchPrompt({args, ensureSession, rpc, state, wakeup}))
+    return iteratePromptQueue(
+      state,
+      this.dispatchPrompt({args, ensureSession: () => this.openSession(), rpc, state, wakeup}),
+    )
   }
 
   /** Resolves a pending permission request the driver surfaced. */
@@ -317,6 +357,14 @@ export class AcpDriver implements IAgentDriver {
       }
 
       if (spawnError !== undefined) throw new AgentBinaryNotFoundError(this.invocation.command)
+
+      // Capture the handshake result for the onboard probe. The race already
+      // resolved on `initializeCall`, so this await returns immediately.
+      const initResult = AcpInitializeResultSchema.safeParse(await initializeCall)
+      if (initResult.success) {
+        this.protocolVersion = initResult.data.protocolVersion
+        this.acpInitialize = {_meta: initResult.data._meta, agentCapabilities: initResult.data.agentCapabilities}
+      }
     } catch (error) {
       this.status = 'errored'
       await this.stop()
@@ -403,5 +451,27 @@ export class AcpDriver implements IAgentDriver {
       this.currentPromptWakeup = undefined
       if (this.status === 'streaming') this.status = 'idle'
     }
+  }
+
+  /**
+   * Establishes (and caches) the ACP session via `session/new`. Reused by both
+   * the lazy `prompt` path and the onboard `probeSession` probe so the
+   * session/new contract lives in one place.
+   */
+  private async openSession(): Promise<string> {
+    if (this.sessionId !== undefined) return this.sessionId
+    if (this.rpc === undefined) {
+      throw new AcpRpcError(-32_000, 'openSession() called before start() resolved')
+    }
+
+    const result = await this.rpc.call('session/new', {cwd: this.invocation.cwd, mcpServers: []})
+    const sessionId =
+      typeof result === 'object' && result !== null && 'sessionId' in result ? result.sessionId : undefined
+    if (typeof sessionId !== 'string') {
+      throw new AcpRpcError(-32_000, 'session/new did not return a sessionId')
+    }
+
+    this.sessionId = sessionId
+    return sessionId
   }
 }

@@ -1,20 +1,44 @@
 import {Args, Flags} from '@oclif/core'
 
+import type {ChannelOnboardResponse} from '../../../shared/transport/events/channel-events.js'
+
 import {ChannelEvents} from '../../../shared/transport/events/channel-events.js'
 import {ChannelCommand} from '../../lib/channel-command.js'
 
 export default class ChannelOnboard extends ChannelCommand {
   public static args = {
-    handle: Args.string({description: "Agent handle to onboard (e.g. '@codex')", required: true}),
+    name: Args.string({description: 'Profile name (used by `brv channel invite --profile <name>`)', required: true}),
   }
-public static description = 'Onboard an agent profile into a channel'
-public static examples = ['<%= config.bin %> <%= command.id %> @codex --channel my-channel']
-public static flags = {
-    channel: Flags.string({description: 'Channel id to onboard the agent into', required: true}),
+  public static description = 'Probe an ACP agent and save a reusable driver profile'
+  public static examples = ['<%= config.bin %> <%= command.id %> mock -- node test/fixtures/mock-acp.js']
+  public static flags = {
+    'display-name': Flags.string({description: 'Friendly display name (defaults to the profile name)'}),
   }
+  // Accept the trailing invocation tokens after `--`.
+  public static strict = false
 
   public async run(): Promise<void> {
-    const {args, flags} = await this.parse(ChannelOnboard)
-    await this.dispatch(ChannelEvents.ONBOARD, {channelId: flags.channel, handle: args.handle}, flags.json)
+    const {args, argv, flags} = await this.parse(ChannelOnboard)
+    const tail = argv.slice(1).filter((token): token is string => typeof token === 'string')
+    if (tail.length === 0) {
+      this.error('Inline invocation is required: `brv channel onboard <name> -- <command> [args...]`', {exit: 1})
+    }
+
+    const [command, ...commandArgs] = tail
+    await this.dispatchAndRender<ChannelOnboardResponse>({
+      asJson: flags.json,
+      event: ChannelEvents.ONBOARD,
+      payload: {
+        displayName: flags['display-name'] ?? args.name,
+        invocation: {args: commandArgs, command, cwd: process.cwd()},
+        profileName: args.name,
+      },
+      render: (response) => {
+        const caps = response.profile.capabilities?.length
+          ? `, capabilities: [${response.profile.capabilities.join(', ')}]`
+          : ''
+        this.log(`✓ Profile \`${response.profile.name}\` saved (class: ${response.profile.driverClass}${caps})`)
+      },
+    })
   }
 }
