@@ -12,6 +12,7 @@ set -eu
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 CONFIG_PATH="$HOME/.openclaw/openclaw.json"
+BYTEROVER_OPENCLAW_PLUGIN_VERSION="1.1.8"
 
 # ─── Colors (respects NO_COLOR and non-terminal) ─────────────────────────────
 
@@ -378,9 +379,9 @@ configure_context_plugin() {
   # Clean slate: remove old local files + previous CLI install to avoid conflicts
   remove_existing_byterover_plugin
 
-  info "Installing @byterover/byterover plugin..."
-  if ! retry_with_backoff openclaw plugins install @byterover/byterover@latest; then
-    error "Failed to install @byterover/byterover plugin after multiple attempts."
+  info "Installing @byterover/byterover plugin v${BYTEROVER_OPENCLAW_PLUGIN_VERSION}..."
+  if ! retry_with_backoff openclaw plugins install "@byterover/byterover@${BYTEROVER_OPENCLAW_PLUGIN_VERSION}"; then
+    error "Failed to install @byterover/byterover plugin v${BYTEROVER_OPENCLAW_PLUGIN_VERSION} after multiple attempts."
   fi
   success "Plugin installed."
 
