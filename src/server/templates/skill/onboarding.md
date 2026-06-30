@@ -5,7 +5,7 @@ description: "Use when the user asks for a tour, intro, or overview of ByteRover
 
 # ByteRover Onboarding Tour
 
-A 90-second guided introduction. Three agent messages total: **learn → demonstrate → wrap**.
+A 90-second guided introduction. Three beats — **learn → demonstrate → wrap** — with **one question per turn**. The learn beat asks the language question first (its own message), then the persona interview.
 
 The tour teaches the user that ByteRover remembers facts about them and their work — and that this memory is local, private, and starts shaping the agent's behavior immediately.
 
@@ -22,7 +22,9 @@ If the user already knows ByteRover and asks a specific question, do NOT run the
 
 ## Budget
 
-Three **agent** messages, with natural user turns in between. Roughly 90 seconds end-to-end. Do not exceed three agent messages. Do not feature-dump.
+Three **agent** beats — **learn → demonstrate → wrap** — with natural user turns in between. Roughly 90 seconds end-to-end. Do not feature-dump.
+
+**Ask one question per turn — never two in the same message.** The learn beat (Message 1) has two short asks: the **language question first**, on its own, then the **persona interview** as a separate message only after the user has answered the language question. Do NOT bundle them. Asking both at once forces the user to juggle two unrelated answers and buries the language choice.
 
 The agent does NOT auto-fire the next message. Each message ends and waits for the user to respond — even a one-word "ok" or "go" is enough. This gives the user space to look at the artifact (or the web UI URL) before the next step. If the user asks a clarifying question instead of acknowledging, answer it briefly and resume the tour at the next agent turn — the question doesn't burn a tour-message slot.
 
@@ -46,7 +48,31 @@ Example:
 
 Keep it to **one sentence**. Don't enumerate features. Don't explain mechanics (the save/retrieve loop is named later in this message, after the demo). The primer answers "what is this thing?" — nothing more.
 
-Then run a **quick interview** — one combined open question that asks both about their work **and** about the pain that brought them to ByteRover. Do not present a form, a list of options, or a multiple-choice menu. Let the user answer however feels natural.
+**Then ask which written language to save their memory in — and ask ONLY this.** This is the tour's **first question**, and it gets its own message. Right after the trust opener and the one-line primer, ask the language question, then **stop and wait** — do NOT also ask the persona/interview question in the same message (that comes next, after the user answers). One question per turn. Frame it warmly (reuse the primer's "I'll … by default" cadence so trust → orient → language reads as one continuous breath), offer 2-3 example languages at most, and never print the full supported-language list. This is NOT a heading and NOT a confirmation form — just one open line.
+
+Example (the whole of Message 1's first turn — trust, primer, then this and nothing more):
+
+> "One quick thing before we dive in: what language should I save your memory in? I'll match however you write to me by default — or just name one (Vietnamese, 日本語, Spanish…) and I'll keep everything in that."
+
+**Then stop and wait for their answer.** Do not ask the interview question yet.
+
+**When the user answers, act on it before you ask anything else** (set the language first, so the saved artifact later renders in it):
+
+- **English, blank, or "match me / doesn't matter / whatever"** → run nothing. `auto` mode already matches the user's input language, so the saved artifact comes out in their language with zero commands. Don't announce "leaving it on auto" — just move to the interview (next message).
+- **A supported non-default language** → map the free-text answer (English name, an endonym like "tiếng việt" / "日本語", or a bare code) to its exact lowercase ISO-639-1 code yourself, then silently run the two commands below. At most one natural acknowledgement ("Done — I'll write everything in Vietnamese."). No confirmation form.
+- **An unsupported or unresolvable language** → acknowledge in one half-sentence, fall back to auto (run nothing), keep moving. Never dump the supported list.
+
+Supported codes (anything else → auto): `ar de el en es fi fr he hi id it ja ko nl no pl pt ru sv th tr uk vi zh`
+
+```bash
+# code FIRST, then mode — a rejected code then leaves mode at its safe `auto` default
+brv settings set language.code <code> --format json
+brv settings set language.mode fixed --format json
+```
+
+Treat the language as set only when BOTH calls return `success: true` (`{"data":{"restartRequired":false,"value":"<v>"},"success":true}`). Because `restartRequired` is `false`, it applies live to the very next `brv curate` — do NOT tell the user to restart. On failure the error is nested at `data.error` (e.g. `{"data":{"error":{"code":"invalid_value",...}},"success":false}`), never a top-level `error`. If the `language.code` call fails, STOP: don't run the `mode` call, don't retry a guessed code, don't surface the JSON — because `mode` was never flipped, the tour just continues in `auto`.
+
+**Now — as the next message, only after the language question is answered and set — run a quick interview.** This is Message 1's second ask, on its own. Lead with at most a one-line acknowledgement of the language (if you set one), then ask **one combined open question** about both their work **and** the pain that brought them to ByteRover. Do not present a form, a list of options, or a multiple-choice menu. Do not re-ask about language here. Let the user answer however feels natural.
 
 Example phrasing:
 
@@ -283,12 +309,14 @@ If the user invokes the tour again later, run it again — there is no state tra
 
 ## What NOT To Do
 
-- Do NOT extend past 3 messages.
-- Do NOT present a form, multiple-choice menu, or rigid field list. Ask one open question.
+- Do NOT extend past the three beats (learn → demonstrate → wrap). Asking the language question and the persona interview as two short turns within the learn beat is expected; adding new beats or feature-dumping is not.
+- Do NOT ask the language question and the persona interview in the same message. Language first, on its own turn; the interview comes only after the user answers it.
+- Do NOT present a form, multiple-choice menu, or rigid field list. Ask one open question. This includes the language line: offer 2-3 example languages at most, never print the 23-language list, and never re-confirm the language with a follow-up form.
 - Do NOT drill down if the user gives a short answer. Save what they shared.
 - Do NOT skip the trust statement in Message 1. It is the foundation of the user's willingness to share.
 - Do NOT explain the architecture, the daemon, connector types, or the full command list.
-- Do NOT prompt for an LLM provider, login, or any configuration. The tour runs with zero setup.
+- Do NOT prompt for an LLM provider, login, or any other configuration — the tour runs with zero setup. **The single exception is the written-language question in Message 1**: you may ask which language to save memory in, and — ONLY if the user explicitly names a supported non-default language — silently run `brv settings set language.code <code>` then `brv settings set language.mode fixed` (code first, both `--format json`) before the first `brv curate`. That one GLOBAL `language.*` setting is the only configuration the tour ever touches; it applies live (no restart). If the user picks English or says "match me / doesn't matter," run nothing — auto mode already matches their input language.
+- Do NOT make the language step heavy. Map the user's free-text answer to an exact lowercase ISO-639-1 code yourself (the enum is case-sensitive — emit `vi`, not `VI` or `vie`). If the named language isn't among the 23 supported, or the `language.code` set returns `invalid_value` (error nested at `data.error`), acknowledge in one half-sentence, fall back to auto, and keep the tour moving — never dump the supported list, never retry a guessed code, never surface the raw error JSON. `brv settings set` is GLOBAL (every project), unlike the per-project context tree; only mention that if the user asks.
 - Do NOT skip the persona-shaped tailoring in Message 2 in favor of a generic "here's how retrieve works" explanation. The tailored example IS the value demo.
 - Do NOT tailor with hollow phrases like "As a Rust developer, you'll love…" or "Since you work on a CLI, you might want to…" — these read as templated personalization and erode trust faster than no tailoring at all. The tailored example must reference something **specific** the user said, paired with a **specific** action the agent will take.
 - Do NOT turn the visible artifact in Message 1 into a confirmation step. No "Does this look right?" prompts. The artifact is shown so the user *feels* what was captured, not so they validate it.

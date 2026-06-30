@@ -12,6 +12,7 @@ import type {HtmlWriteError} from '../../render/writer/html-writer.js'
 import {CurateMetaSchema} from '../../../../shared/curate-meta.js'
 import {encodeCurateHtmlContent} from '../../../../shared/transport/curate-html-content.js'
 import {CURATE_SCHEMA_PROMPT} from '../../../core/domain/render/curate-prompt-builder.js'
+import {buildLanguageClause} from '../../../core/domain/render/language-clause.js'
 import {TransportTaskEventNames} from '../../../core/domain/transport/schemas.js'
 import {appendDriftFooter} from './drift-footer.js'
 import {associateProjectWithRetry, type McpStartupProjectContext, resolveMcpTaskContext} from './mcp-project-context.js'
@@ -47,6 +48,16 @@ const TOOL_DESCRIPTION = [
   '- Do not emit `importance`, `maturity`, `recency`, `createdat`, or `updatedat` on <bv-topic> — those are system-managed.',
   '- Inside `<li>`, write plain text only — no leading `-`, `*`, `•`, `1.`/`2.` markers; the renderer adds them via CSS.',
   '- `<bv-diagram>` body: emit directly with HTML entities for `<`, `>`, `&`. Do NOT wrap in `<![CDATA[…]]>` — HTML5 parses CDATA as a bogus comment that the first `-->` closes. Example: `<bv-diagram type="mermaid">graph LR; A --&gt;|x| B</bv-diagram>`.',
+  '',
+  // Auto clause unconditional: the MCP tool description is built once at
+  // server-boot, so it cannot read live config. Per-call fixed-mode is
+  // honored via the oclif `brv curate` kickoff prompt (which IS dynamic).
+  // MCP-only consumers under `language: { mode: 'fixed' }` see the auto
+  // clause here; their input language still gets preserved because auto
+  // says "match the input language".
+  '# Language',
+  '',
+  buildLanguageClause(),
   '',
   '# Path format',
   '- The `path` attribute on <bv-topic> is `<domain>/<topic>` or `<domain>/<topic>/<subtopic>`, snake_case segments.',

@@ -298,6 +298,27 @@ describe('brv-curate-tool', () => {
       // dropping it would silently regress the Skill ↔ MCP output parity.
       expect(description).to.include('Place section titles INSIDE the container')
     })
+
+    it('embeds the auto-mode language-preservation clause', () => {
+      // MCP's TOOL_DESCRIPTION is built once at server-boot and cannot
+      // read live config, so it carries the auto clause unconditionally:
+      // "match the user's input language". Per-call fixed-mode is honored
+      // via the oclif `brv curate` kickoff prompt instead.
+      // The schema-key carve-out (tag names / attribute names / enum values
+      // stay English) prevents the calling agent's LLM from translating
+      // `<bv-decision>` for non-English input — which would fail Zod
+      // validation at the writer boundary.
+      const {getDescription} = setupHandler({
+        getClient: () => createMockClient().client,
+        getWorkingDirectory: () => '/project/root',
+      })
+
+      const description = getDescription()
+      expect(description).to.include('# Language')
+      expect(description).to.include("Match the user's input language")
+      expect(description).to.include('tag names')
+      expect(description).to.include('enum values')
+    })
   })
 
   describe('dispatch — task type + payload', () => {

@@ -294,6 +294,34 @@ describe('SkillConnector', () => {
       expect(troubleshootingContent).to.include('does NOT invoke any LLM')
     })
 
+    it('should create onboarding.md documenting the language-selection step', async () => {
+      const agent = 'Claude Code' as const
+      const {projectPath} = SKILL_CONNECTOR_CONFIGS[agent]
+      await skillConnector.install(agent)
+
+      const skillDir = path.join(testDir, projectPath, BRV_SKILL_NAME)
+      const onboardingContent = await readFile(path.join(skillDir, 'onboarding.md'), 'utf8')
+
+      expect(onboardingContent).to.include('brv settings set language.code')
+      expect(onboardingContent).to.include('brv settings set language.mode fixed')
+      expect(onboardingContent).to.include('--format json')
+      expect(onboardingContent).to.include('invalid_value')
+      expect(onboardingContent).to.include('data.error')
+      expect(onboardingContent).to.include('single exception')
+      // restartRequired:false → the tour must never tell the user to restart
+      expect(onboardingContent).to.not.include('brv restart')
+      // code must be set before mode, so a rejected code leaves mode at its safe `auto` default
+      expect(onboardingContent.indexOf('language.code')).to.be.lessThan(
+        onboardingContent.indexOf('language.mode fixed'),
+      )
+      // trust opener still precedes the language ask
+      expect(onboardingContent.indexOf('stays on your machine')).to.be.lessThan(
+        onboardingContent.indexOf('what language should I save your memory in'),
+      )
+      // never dump the supported-language table as a user-facing menu
+      expect(onboardingContent).to.not.match(/ar Arabic, de German/)
+    })
+
     it('should inject the OpenClaw block into the default agent workspace (agents.defaults.workspace), not the agentDir', async () => {
       const openClawStateDir = path.join(testDir, 'openclaw-state')
       const openClawConfigPath = path.join(openClawStateDir, 'openclaw.json')

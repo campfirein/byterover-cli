@@ -1,10 +1,7 @@
 import {expect} from 'chai'
 
-import {
-  findSettingDescriptor,
-  SETTINGS_KEYS,
-  SETTINGS_REGISTRY,
-} from '../../../../../src/server/core/domain/entities/settings.js'
+import {findSettingDescriptor, SETTINGS_REGISTRY} from '../../../../../src/server/core/domain/entities/settings.js'
+import {SETTINGS_KEYS} from '../../../../../src/shared/types/settings-keys.js'
 
 function integerMaxOf(key: string): number {
   const descriptor = findSettingDescriptor(key)
@@ -22,6 +19,7 @@ describe('settings registry — M7 T2 shape', () => {
     for (const descriptor of SETTINGS_REGISTRY) {
       expect(descriptor.category, `key ${descriptor.key} missing category`).to.be.oneOf([
         'concurrency',
+        'language',
         'llm',
         'task-history',
         'updates',
@@ -124,6 +122,60 @@ describe('settings registry — M7 T2 shape', () => {
         expect(min).to.be.lessThan(max)
       } else {
         expect.fail('expected integer descriptor for agentPool.maxSize')
+      }
+    })
+  })
+
+  describe('language.* enum descriptors', () => {
+    it('exposes LANGUAGE_MODE + LANGUAGE_CODE on SETTINGS_KEYS', () => {
+      expect(SETTINGS_KEYS.LANGUAGE_MODE).to.equal('language.mode')
+      expect(SETTINGS_KEYS.LANGUAGE_CODE).to.equal('language.code')
+    })
+
+    it('registers language.mode as enum with default=auto and options=[auto, fixed]', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.LANGUAGE_MODE)
+      expect(descriptor?.type).to.equal('enum')
+      if (descriptor?.type === 'enum') {
+        expect(descriptor.default).to.equal('auto')
+        expect([...descriptor.options]).to.deep.equal(['auto', 'fixed'])
+      } else {
+        expect.fail('expected enum descriptor for language.mode')
+      }
+    })
+
+    it('registers language.code as enum with default=en and options including ko + ja + zh', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.LANGUAGE_CODE)
+      expect(descriptor?.type).to.equal('enum')
+      if (descriptor?.type === 'enum') {
+        expect(descriptor.default).to.equal('en')
+        expect(descriptor.options).to.include('ko')
+        expect(descriptor.options).to.include('ja')
+        expect(descriptor.options).to.include('zh')
+        expect(descriptor.options).to.include('en')
+      } else {
+        expect.fail('expected enum descriptor for language.code')
+      }
+    })
+
+    it('groups both language entries under category=language', () => {
+      expect(findSettingDescriptor(SETTINGS_KEYS.LANGUAGE_MODE)?.category).to.equal('language')
+      expect(findSettingDescriptor(SETTINGS_KEYS.LANGUAGE_CODE)?.category).to.equal('language')
+    })
+
+    it('marks language settings as restart-not-required (live config)', () => {
+      expect(findSettingDescriptor(SETTINGS_KEYS.LANGUAGE_MODE)?.restartRequired).to.equal(false)
+      expect(findSettingDescriptor(SETTINGS_KEYS.LANGUAGE_CODE)?.restartRequired).to.equal(false)
+    })
+
+    it('narrows enum descriptors to EnumSettingDescriptor when descriptor.type === enum', () => {
+      const descriptor = findSettingDescriptor(SETTINGS_KEYS.LANGUAGE_MODE)
+      if (descriptor?.type === 'enum') {
+        const defaultValue: string = descriptor.default
+        const {options} = descriptor
+        expect(defaultValue).to.equal('auto')
+        expect(options.length).to.be.greaterThan(0)
+      } else {
+        expect.fail('expected enum descriptor for language.mode')
       }
     })
   })

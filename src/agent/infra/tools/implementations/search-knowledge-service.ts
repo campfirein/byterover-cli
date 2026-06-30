@@ -36,6 +36,7 @@ import {
 import {getFormatForRead} from '../../../../server/infra/render/format/format-detector.js'
 import {ElementAxisIndex} from '../../../../server/infra/render/reader/element-axis-index.js'
 import {readHtmlTopicSync} from '../../../../server/infra/render/reader/html-reader.js'
+import {tokenizeWithCjk} from './cjk-tokenizer.js'
 import {isPathLikeQuery, matchMemoryPath, parseSymbolicQuery} from './memory-path-matcher.js'
 import {
   buildReferenceIndex,
@@ -52,10 +53,7 @@ import {
 const MAX_CONTEXT_TREE_FILES = 10_000
 const DEFAULT_CACHE_TTL_MS = 5000
 
-/**
- * Bump when MINISEARCH_OPTIONS fields/boost change to invalidate cached indexes.
- *  v7 (ENG-3021): include `<img>` alt + src in HTML topic indexed content.
- */
+/** Bump when MINISEARCH_OPTIONS fields/boost change to invalidate cached indexes */
 const INDEX_SCHEMA_VERSION = 7
 
 /** Only include results whose normalized score is at least this fraction of the top result's score */
@@ -174,6 +172,12 @@ const MINISEARCH_OPTIONS = {
     prefix: true,
   },
   storeFields: ['title', 'path'] as string[],
+  // Custom tokenizer adds CJK bigram segmentation alongside the default
+  // whitespace split. Without it, queries against Chinese / Japanese /
+  // Korean content return zero matches even when the content is curated
+  // correctly — see `cjk-tokenizer.ts`. Top-level `tokenize` applies to
+  // both indexing and querying per MiniSearch's API.
+  tokenize: tokenizeWithCjk,
 }
 
 interface IndexedDocument {

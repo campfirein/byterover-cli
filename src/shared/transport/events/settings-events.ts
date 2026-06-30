@@ -11,31 +11,30 @@ export const SettingsEvents = {
  * surfaces (CLI / TUI / WebUI) can consume it without crossing the
  * server import boundary.
  *
- * M7 T2 added three optional fields (`category`, `unit`, `scope`); T1 of
- * the Update-check toggle project widened `type`, `current`, `default`,
- * and `restartRequired` to also cover boolean descriptors, and made
- * `min` / `max` optional (only integer descriptors carry them). All
- * widenings are additive at the JSON layer, so consumers that read
- * existing integer fields continue to parse the wire format.
+ * Backward-compat: every widening here is additive at the JSON layer, so
+ * consumers that read pre-existing integer / boolean fields continue to
+ * parse the wire format unchanged.
  */
 export interface SettingsItemDTO {
-  category?: 'concurrency' | 'llm' | 'task-history' | 'updates'
-  current: boolean | number
-  default: boolean | number
+  category?: 'concurrency' | 'language' | 'llm' | 'task-history' | 'updates'
+  current: boolean | number | string
+  default: boolean | number | string
   description: string
   key: string
   max?: number
   min?: number
+  /** Allowed values for `type === 'enum'`. Omitted otherwise. */
+  options?: readonly string[]
   restartRequired: boolean
   scope?: 'global' | 'project'
-  type: 'boolean' | 'integer'
+  type: 'boolean' | 'enum' | 'integer'
   unit?: 'count' | 'ms'
 }
 
 export interface SettingsErrorDTO {
   code: 'invalid_value' | 'invalid_value_type' | 'unknown_key'
   /** Expected runtime kind, only set when `code === 'invalid_value_type'`. */
-  expected?: 'boolean' | 'integer'
+  expected?: 'boolean' | 'enum' | 'integer'
   /** `typeof` of the offending value, only set when `code === 'invalid_value_type'`. */
   got?: string
   key: string
@@ -59,7 +58,7 @@ export type SettingsGetResponse =
 
 export interface SettingsSetRequest {
   key: string
-  value: boolean | number
+  value: boolean | number | string
 }
 
 export type SettingsSetResponse =

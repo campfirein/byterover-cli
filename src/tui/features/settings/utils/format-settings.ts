@@ -1,13 +1,10 @@
-import {CATEGORY_ORDER, type SettingsRow, type SettingsRowCategory} from '../../../../shared/types/settings-row.js'
+import {
+  CATEGORY_HEADERS,
+  CATEGORY_ORDER,
+  type SettingsRow,
+  type SettingsRowCategory,
+} from '../../../../shared/types/settings-row.js'
 import {formatDuration} from '../../../../shared/utils/format-duration.js'
-
-const CATEGORY_HEADERS: Readonly<Record<SettingsRowCategory, string>> = {
-  concurrency: 'CONCURRENCY',
-  llm: 'LLM',
-  other: 'OTHER',
-  'task-history': 'TASK HISTORY',
-  updates: 'UPDATES',
-}
 
 export function groupRowsByCategory(rows: readonly SettingsRow[]): ReadonlyArray<{
   readonly category: SettingsRowCategory
@@ -32,7 +29,10 @@ export function groupRowsByCategory(rows: readonly SettingsRow[]): ReadonlyArray
   return result
 }
 
-export function bottomHintFor(mode: 'browse' | 'edit' | 'edit-error' | 'saving', focusedKey?: string): string {
+export function bottomHintFor(
+  mode: 'browse' | 'edit' | 'edit-enum' | 'edit-error' | 'saving',
+  focusedKey?: string,
+): string {
   switch (mode) {
     case 'browse': {
       return 'Up/Down move | Enter edit | R reset | Esc exit'
@@ -40,6 +40,10 @@ export function bottomHintFor(mode: 'browse' | 'edit' | 'edit-error' | 'saving',
 
     case 'edit': {
       return `Editing ${focusedKey ?? ''} | Enter save | Esc cancel`
+    }
+
+    case 'edit-enum': {
+      return `Editing ${focusedKey ?? ''} | Left/Right cycle options | Enter save | Esc cancel`
     }
 
     case 'edit-error': {
@@ -53,10 +57,10 @@ export function bottomHintFor(mode: 'browse' | 'edit' | 'edit-error' | 'saving',
 }
 
 export function preFillBufferFor(row: SettingsRow): string {
-  // preFillBufferFor only runs when entering integer text-input mode.
-  // Boolean rows take the toggle path in the page and never reach here;
-  // guard the narrowing so the function still compiles under the wider
-  // SettingsRow union.
+  // preFillBufferFor only runs when entering integer text-input mode for
+  // numeric rows or enum cycling for enum rows. Boolean rows take the
+  // toggle path and never reach here.
+  if (row.type === 'enum') return String(row.current)
   if (typeof row.current !== 'number') return String(row.current)
   if (row.unit === 'ms') return formatDuration(row.current)
   return String(row.current)

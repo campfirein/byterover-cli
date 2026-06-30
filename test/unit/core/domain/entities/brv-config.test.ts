@@ -304,4 +304,103 @@ describe('BrvConfig', () => {
       expect(config.createdAt).to.be.a('string')
     })
   })
+
+  describe('language', () => {
+    const fixedRu: BrvConfigParams['language'] = {code: 'ru', mode: 'fixed'}
+
+    it('defaults to undefined when not set', () => {
+      const config = new BrvConfig(validConstructorArgs)
+      expect(config.language).to.be.undefined
+    })
+
+    it('preserves auto-mode through the constructor', () => {
+      const config = new BrvConfig({...validConstructorArgs, language: {mode: 'auto'}})
+      expect(config.language).to.deep.equal({mode: 'auto'})
+    })
+
+    it('preserves fixed-mode with code through the constructor', () => {
+      const config = new BrvConfig({...validConstructorArgs, language: fixedRu})
+      expect(config.language).to.deep.equal(fixedRu)
+    })
+
+    it('round-trips auto-mode through toJson/fromJson', () => {
+      const config = new BrvConfig({...validConstructorArgs, language: {mode: 'auto'}})
+      const restored = BrvConfig.fromJson(config.toJson())
+      expect(restored.language).to.deep.equal({mode: 'auto'})
+    })
+
+    it('round-trips fixed-mode with code through toJson/fromJson', () => {
+      const config = new BrvConfig({...validConstructorArgs, language: fixedRu})
+      const restored = BrvConfig.fromJson(config.toJson())
+      expect(restored.language).to.deep.equal(fixedRu)
+    })
+
+    it('round-trips undefined language through toJson/fromJson', () => {
+      // Existing configs (no `language` field) must load cleanly post-rollout.
+      const config = new BrvConfig(validConstructorArgs)
+      const restored = BrvConfig.fromJson(config.toJson())
+      expect(restored.language).to.be.undefined
+    })
+
+    it('rejects mode: fixed without code in fromJson', () => {
+      // `mode: 'fixed'` without `code` would silently fall back to English
+      // at prompt time. The loader rejects it so the failure mode is
+      // structurally impossible.
+      expect(() =>
+        BrvConfig.fromJson({...validConstructorArgs, language: {mode: 'fixed'}}),
+      ).to.throw('Invalid BrvConfig JSON structure')
+    })
+
+    it('rejects unknown mode value in fromJson', () => {
+      expect(() =>
+        BrvConfig.fromJson({...validConstructorArgs, language: {mode: 'always-english'}}),
+      ).to.throw('Invalid BrvConfig JSON structure')
+    })
+
+    it('rejects non-string code in fromJson', () => {
+      expect(() =>
+        BrvConfig.fromJson({...validConstructorArgs, language: {code: 123, mode: 'fixed'}}),
+      ).to.throw('Invalid BrvConfig JSON structure')
+    })
+
+    it('rejects non-object language in fromJson', () => {
+      expect(() =>
+        BrvConfig.fromJson({...validConstructorArgs, language: 'ru'}),
+      ).to.throw('Invalid BrvConfig JSON structure')
+    })
+
+    it('rejects null language in fromJson', () => {
+      expect(() =>
+        BrvConfig.fromJson({...validConstructorArgs, language: null}),
+      ).to.throw('Invalid BrvConfig JSON structure')
+    })
+
+    it('preserves language through withSpace', () => {
+      const original = new BrvConfig({...validConstructorArgs, language: fixedRu})
+      const space = new Space({
+        id: 'space-789',
+        isDefault: false,
+        name: 'my-space',
+        teamId: 'team-abc',
+        teamName: 'my-team',
+      })
+      expect(original.withSpace(space).language).to.deep.equal(fixedRu)
+    })
+
+    it('preserves language through withoutSpace', () => {
+      const original = new BrvConfig({...validConstructorArgs, language: fixedRu})
+      expect(original.withoutSpace().language).to.deep.equal(fixedRu)
+    })
+
+    it('preserves language through withReviewDisabled', () => {
+      const original = new BrvConfig({...validConstructorArgs, language: fixedRu})
+      expect(original.withReviewDisabled(true).language).to.deep.equal(fixedRu)
+    })
+
+    it('preserves language through withVersion', () => {
+      const original = new BrvConfig({...validConstructorArgs, language: fixedRu})
+      expect(original.withVersion('9.9.9').language).to.deep.equal(fixedRu)
+    })
+  })
+
 })

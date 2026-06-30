@@ -7,6 +7,15 @@ import sinon, {restore, stub} from 'sinon'
 
 import Settings from '../../../src/oclif/commands/settings/index.js'
 import {SettingsEvents} from '../../../src/shared/transport/events/settings-events.js'
+import {CATEGORY_HEADERS, CATEGORY_ORDER} from '../../../src/shared/types/settings-row.js'
+
+function findHeaderIndex(messages: readonly string[], header: string): number {
+  for (const [i, m] of messages.entries()) {
+    if (m.includes(header)) return i
+  }
+
+  return -1
+}
 
 class TestableSettings extends Settings {
   private readonly mockConnector: () => Promise<ConnectionResult>
@@ -373,6 +382,179 @@ describe('brv settings (index)', () => {
       const output = loggedMessages.join('\n')
 
       expect(output).to.not.include('UPDATES')
+    })
+  })
+
+  describe('enum rows (LANGUAGE group)', () => {
+    it('renders a LANGUAGE section with both enum rows when the daemon returns language items', async () => {
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      requestStub.resolves({
+        items: [
+          {
+            category: 'concurrency',
+            current: 10,
+            default: 10,
+            description: 'h',
+            key: 'agentPool.maxSize',
+            max: 100,
+            min: 1,
+            restartRequired: true,
+            type: 'integer',
+          },
+          {
+            category: 'language',
+            current: 'fixed',
+            default: 'auto',
+            description: 'Match input language (auto) or force a fixed language for written output',
+            key: 'language.mode',
+            options: ['auto', 'fixed'],
+            restartRequired: false,
+            type: 'enum',
+          },
+          {
+            category: 'language',
+            current: 'ja',
+            default: 'en',
+            description: 'ISO-639-1 code applied when mode is fixed; ignored in auto mode',
+            key: 'language.code',
+            options: ['ar', 'de', 'el', 'en', 'es', 'ja', 'ko', 'ru', 'vi', 'zh'],
+            restartRequired: false,
+            type: 'enum',
+          },
+        ],
+      })
+
+      await createCommand().run()
+      const output = loggedMessages.join('\n')
+
+      expect(output, 'LANGUAGE header must appear').to.include('LANGUAGE')
+
+      const modeRow = loggedMessages.find((m) => m.includes('language.mode'))
+      expect(modeRow, 'row for language.mode').to.exist
+      expect(modeRow).to.include('fixed')
+      expect(modeRow).to.match(/default\s*auto/)
+
+      const codeRow = loggedMessages.find((m) => m.includes('language.code'))
+      expect(codeRow, 'row for language.code').to.exist
+      expect(codeRow).to.include('ja')
+      expect(codeRow).to.match(/default\s*en/)
+
+      // Numeric range column is meaningless for enums and must not be rendered.
+      expect(modeRow).to.not.match(/\d+\s*-\s*\d+/)
+      expect(codeRow).to.not.match(/\d+\s*-\s*\d+/)
+    })
+
+    it('omits the LANGUAGE section entirely when the daemon returns no language items', async () => {
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      requestStub.resolves({
+        items: [
+          {
+            category: 'concurrency',
+            current: 10,
+            default: 10,
+            description: 'h',
+            key: 'agentPool.maxSize',
+            max: 100,
+            min: 1,
+            restartRequired: true,
+            type: 'integer',
+          },
+        ],
+      })
+
+      await createCommand().run()
+      const output = loggedMessages.join('\n')
+
+      expect(output).to.not.include('LANGUAGE')
+    })
+
+    it('renders LANGUAGE after UPDATES, matching the shared CATEGORY_ORDER', async () => {
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      requestStub.resolves({
+        items: [
+          {
+            category: 'language',
+            current: 'auto',
+            default: 'auto',
+            description: '',
+            key: 'language.mode',
+            options: ['auto', 'fixed'],
+            restartRequired: false,
+            type: 'enum',
+          },
+          {
+            category: 'updates',
+            current: true,
+            default: true,
+            description: '',
+            key: 'update.checkForUpdates',
+            restartRequired: false,
+            type: 'boolean',
+          },
+        ],
+      })
+
+      await createCommand().run()
+
+      const updatesIdx = loggedMessages.findIndex((m) => m.includes('UPDATES'))
+      const languageIdx = loggedMessages.findIndex((m) => m.includes('LANGUAGE'))
+      expect(updatesIdx).to.be.greaterThan(-1)
+      expect(languageIdx).to.be.greaterThan(-1)
+      expect(updatesIdx).to.be.lessThan(languageIdx)
+    })
+  })
+
+  describe('canonical category coverage (regression guard for future categories)', () => {
+    it('renders every category in the shared CATEGORY_ORDER when the daemon returns one item per category', async () => {
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      // Synthesize one item per canonical category. Adding a new category to
+      // SettingsRowCategory + CATEGORY_ORDER + CATEGORY_HEADERS without updating
+      // the print loop should fail this test.
+      const items = CATEGORY_ORDER.map((category, idx) => ({
+        category,
+        current: 'placeholder',
+        default: 'placeholder',
+        description: '',
+        key: `canonical.${category}.item.${idx}`,
+        options: ['placeholder'],
+        restartRequired: false,
+        type: 'enum' as const,
+      }))
+      requestStub.resolves({items})
+
+      await createCommand().run()
+      const output = loggedMessages.join('\n')
+
+      for (const category of CATEGORY_ORDER) {
+        const header = CATEGORY_HEADERS[category]
+        expect(output, `header for ${category}`).to.include(header)
+      }
+    })
+
+    it('renders headers in CATEGORY_ORDER sequence', async () => {
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      const items = CATEGORY_ORDER.map((category, idx) => ({
+        category,
+        current: 'placeholder',
+        default: 'placeholder',
+        description: '',
+        key: `canonical.${category}.item.${idx}`,
+        options: ['placeholder'],
+        restartRequired: false,
+        type: 'enum' as const,
+      }))
+      requestStub.resolves({items})
+
+      await createCommand().run()
+
+      const indices: number[] = []
+      for (const category of CATEGORY_ORDER) {
+        indices.push(findHeaderIndex(loggedMessages, CATEGORY_HEADERS[category]))
+      }
+
+      for (let i = 1; i < indices.length; i++) {
+        expect(indices[i], `${CATEGORY_ORDER[i]} after ${CATEGORY_ORDER[i - 1]}`).to.be.greaterThan(indices[i - 1])
+      }
     })
   })
 })

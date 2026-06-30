@@ -3,6 +3,20 @@ import {Agent, AGENT_VALUES} from './agent.js'
 import {Space} from './space.js'
 
 /**
+ * Per-project language preference. Drives the language-preservation clause
+ * surfaced through the curate kickoff / correction prompts.
+ *
+ * - `auto`: instruct the LLM to match the user's input language.
+ * - `fixed`: instruct the LLM to write in a specific language (ISO 639-1).
+ *   `code` is required when `mode === 'fixed'`; the loader rejects fixed
+ *   without code so silent fallback to English is structurally impossible.
+ */
+export type BrvConfigLanguage = {
+  code?: string
+  mode: 'auto' | 'fixed'
+}
+
+/**
  * Parameters for creating a BrvConfig instance.
  * chatLogPath, cwd, ide, and cloud fields (spaceId, spaceName, teamId, teamName)
  * are optional to support local-only configs and partial configs.
@@ -15,6 +29,7 @@ export type BrvConfigParams = {
   createdAt: string
   cwd?: string
   ide?: Agent
+  language?: BrvConfigLanguage
   reviewDisabled?: boolean
   spaceId?: string
   spaceName?: string
@@ -61,6 +76,23 @@ const isCodingAgent = (value: unknown): value is Agent => {
 }
 
 /**
+ * Validate the shape of a `language` field on a config JSON object.
+ * Accepts `undefined` (the field is optional). For present values:
+ * - must be a non-null object with `mode: 'auto' | 'fixed'`
+ * - `code` is required when `mode === 'fixed'` (silent fallback to
+ *   English would otherwise be possible at prompt time)
+ */
+const isOptionalLanguageJson = (value: unknown): boolean => {
+  if (value === undefined) return true
+  if (typeof value !== 'object' || value === null) return false
+  const lang = value as Record<string, unknown>
+  if (lang.mode !== 'auto' && lang.mode !== 'fixed') return false
+  if (lang.code !== undefined && typeof lang.code !== 'string') return false
+  if (lang.mode === 'fixed' && typeof lang.code !== 'string') return false
+  return true
+}
+
+/**
  * Type guard for BrvConfigFromJson - validates JSON structure at runtime.
  * Note: version is optional in this check (old configs may not have it).
  * chatLogPath, cwd, and ide are optional to support partial configs.
@@ -90,6 +122,7 @@ const isBrvConfigJson = (json: unknown): json is BrvConfigFromJson => {
   if (obj.cipherAgentModes !== undefined && !Array.isArray(obj.cipherAgentModes)) return false
   if (obj.version !== undefined && typeof obj.version !== 'string') return false
   if (obj.reviewDisabled !== undefined && typeof obj.reviewDisabled !== 'boolean') return false
+  if (!isOptionalLanguageJson(obj.language)) return false
 
   return true
 }
@@ -106,6 +139,7 @@ export class BrvConfig {
   public readonly createdAt: string
   public readonly cwd?: string
   public readonly ide?: Agent
+  public readonly language?: BrvConfigLanguage
   public readonly reviewDisabled?: boolean
   public readonly spaceId?: string
   public readonly spaceName?: string
@@ -125,6 +159,7 @@ export class BrvConfig {
     this.createdAt = params.createdAt
     this.cwd = params.cwd
     this.ide = params.ide
+    this.language = params.language
     this.reviewDisabled = params.reviewDisabled
     this.spaceId = params.spaceId
     this.spaceName = params.spaceName
@@ -218,6 +253,7 @@ export class BrvConfig {
       createdAt: this.createdAt,
       cwd: this.cwd,
       ide: this.ide,
+      language: this.language,
       reviewDisabled: this.reviewDisabled,
       spaceId: this.spaceId,
       spaceName: this.spaceName,
@@ -252,6 +288,7 @@ export class BrvConfig {
       createdAt: this.createdAt,
       cwd: this.cwd,
       ide: this.ide,
+      language: this.language,
       reviewDisabled,
       spaceId: this.spaceId,
       spaceName: this.spaceName,
@@ -273,6 +310,7 @@ export class BrvConfig {
       createdAt: new Date().toISOString(),
       cwd: this.cwd,
       ide: this.ide,
+      language: this.language,
       reviewDisabled: this.reviewDisabled,
       spaceId: space.id,
       spaceName: space.name,
@@ -294,6 +332,7 @@ export class BrvConfig {
       createdAt: this.createdAt,
       cwd: this.cwd,
       ide: this.ide,
+      language: this.language,
       reviewDisabled: this.reviewDisabled,
       spaceId: this.spaceId,
       spaceName: this.spaceName,
