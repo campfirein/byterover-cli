@@ -1,3 +1,4 @@
+/* eslint-disable camelcase */
 import {Command, Flags} from '@oclif/core'
 
 import {
@@ -6,6 +7,7 @@ import {
   type AuthLoginWithApiKeyResponse,
   type AuthStartLoginResponse,
 } from '../../shared/transport/events/auth-events.js'
+import {buildCliMetadata} from '../lib/build-cli-metadata.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../lib/daemon-client.js'
 import {writeJsonResponse} from '../lib/json-response.js'
 
@@ -54,14 +56,25 @@ export default class Login extends Command {
     return true
   }
 
-  protected async loginWithApiKey(apiKey: string, options?: DaemonClientOptions): Promise<AuthLoginWithApiKeyResponse> {
+  protected async loginWithApiKey(
+    apiKey: string,
+    cliMetadata: ReturnType<typeof buildCliMetadata>,
+    options?: DaemonClientOptions,
+  ): Promise<AuthLoginWithApiKeyResponse> {
     return withDaemonRetry<AuthLoginWithApiKeyResponse>(
-      async (client) => client.requestWithAck<AuthLoginWithApiKeyResponse>(AuthEvents.LOGIN_WITH_API_KEY, {apiKey}),
+      async (client) =>
+        client.requestWithAck<AuthLoginWithApiKeyResponse>(AuthEvents.LOGIN_WITH_API_KEY, {
+          apiKey,
+          cli_metadata: cliMetadata,
+        }),
       options,
     )
   }
 
-  protected async loginWithOAuth(options?: LoginOAuthOptions): Promise<AuthLoginCompletedEvent> {
+  protected async loginWithOAuth(
+    cliMetadata: ReturnType<typeof buildCliMetadata>,
+    options?: LoginOAuthOptions,
+  ): Promise<AuthLoginCompletedEvent> {
     const timeoutMs = options?.oauthTimeoutMs ?? DEFAULT_OAUTH_TIMEOUT_MS
 
     return withDaemonRetry<AuthLoginCompletedEvent>(async (client) => {
@@ -87,7 +100,9 @@ export default class Login extends Command {
       })
 
       try {
-        const startResponse = await client.requestWithAck<AuthStartLoginResponse>(AuthEvents.START_LOGIN)
+        const startResponse = await client.requestWithAck<AuthStartLoginResponse>(AuthEvents.START_LOGIN, {
+          cli_metadata: cliMetadata,
+        })
         options?.onAuthUrl?.(startResponse.authUrl)
 
         return await completion
@@ -104,9 +119,10 @@ export default class Login extends Command {
   }
 
   public async run(): Promise<void> {
-    const {flags} = await this.parse(Login)
+    const {flags, metadata} = await this.parse(Login)
     const apiKey = flags['api-key']
     const format: OutputFormat = flags.format === 'json' ? 'json' : 'text'
+    const cliMetadata = buildCliMetadata(this.id ?? 'login', {flags, metadata})
 
     if (!apiKey && !this.canOpenBrowser()) {
       this.emitError(
@@ -117,7 +133,7 @@ export default class Login extends Command {
     }
 
     try {
-      await (apiKey ? this.runApiKey(apiKey, format) : this.runOAuth(format))
+      await (apiKey ? this.runApiKey(apiKey, format, cliMetadata) : this.runOAuth(format, cliMetadata))
     } catch (error) {
       const message = formatConnectionError(error)
       if (format === 'json') {
@@ -144,12 +160,16 @@ export default class Login extends Command {
     }
   }
 
-  private async runApiKey(apiKey: string, format: OutputFormat): Promise<void> {
+  private async runApiKey(
+    apiKey: string,
+    format: OutputFormat,
+    cliMetadata: ReturnType<typeof buildCliMetadata>,
+  ): Promise<void> {
     if (format === 'text') {
       this.log('Logging in...')
     }
 
-    const response = await this.loginWithApiKey(apiKey)
+    const response = await this.loginWithApiKey(apiKey, cliMetadata)
 
     if (response.success) {
       this.emitSuccess(format, response.userEmail)
@@ -158,7 +178,7 @@ export default class Login extends Command {
     }
   }
 
-  private async runOAuth(format: OutputFormat): Promise<void> {
+  private async runOAuth(format: OutputFormat, cliMetadata: ReturnType<typeof buildCliMetadata>): Promise<void> {
     const onAuthUrl = (authUrl: string): void => {
       if (format === 'text') {
         this.log('Opening browser for authentication...')
@@ -166,7 +186,7 @@ export default class Login extends Command {
       }
     }
 
-    const result = await this.loginWithOAuth({onAuthUrl})
+    const result = await this.loginWithOAuth(cliMetadata, {onAuthUrl})
 
     if (result.success) {
       this.emitSuccess(format, result.user?.email)

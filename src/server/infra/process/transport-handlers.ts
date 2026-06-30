@@ -93,6 +93,14 @@ export class TransportHandlers {
       projectRegistry: options.projectRegistry,
       projectRouter: options.projectRouter,
       resolveActiveProvider: options.resolveActiveProvider,
+      resolveClientIdentity(clientId) {
+        const client = options.clientManager?.getClient(clientId)
+        if (!client) return
+        return {
+          ...(client.agentName ? {clientName: client.agentName} : {}),
+          clientType: client.type,
+        }
+      },
       resolveClientProjectPath: (clientId) => options.clientManager?.getClient(clientId)?.projectPath,
       transport: options.transport,
     })

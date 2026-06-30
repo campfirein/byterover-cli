@@ -7,6 +7,7 @@ import {expect} from 'chai'
 import sinon, {restore, stub} from 'sinon'
 
 import Login, {type LoginOAuthOptions} from '../../src/oclif/commands/login.js'
+import {buildCliMetadata} from '../../src/oclif/lib/build-cli-metadata.js'
 import {
   AuthEvents,
   type AuthLoginCompletedEvent,
@@ -29,16 +30,22 @@ class TestableLoginCommand extends Login {
     return this.browserAvailable
   }
 
-  protected override async loginWithApiKey(apiKey: string): Promise<AuthLoginWithApiKeyResponse> {
-    return super.loginWithApiKey(apiKey, {
+  protected override async loginWithApiKey(
+    apiKey: string,
+    cliMetadata: ReturnType<typeof buildCliMetadata>,
+  ): Promise<AuthLoginWithApiKeyResponse> {
+    return super.loginWithApiKey(apiKey, cliMetadata, {
       maxRetries: 1,
       retryDelayMs: 0,
       transportConnector: this.mockConnector,
     })
   }
 
-  protected override async loginWithOAuth(options?: LoginOAuthOptions): Promise<AuthLoginCompletedEvent> {
-    return super.loginWithOAuth({
+  protected override async loginWithOAuth(
+    cliMetadata: ReturnType<typeof buildCliMetadata>,
+    options?: LoginOAuthOptions,
+  ): Promise<AuthLoginCompletedEvent> {
+    return super.loginWithOAuth(cliMetadata, {
       ...options,
       maxRetries: 1,
       oauthTimeoutMs: 100,
@@ -159,7 +166,7 @@ describe('Login Command', () => {
       expect(loggedMessages.some((m) => m.includes('Logged in as user@example.com'))).to.be.true
     })
 
-    it('should send api key to transport handler', async () => {
+    it('should send api key + cli_metadata to transport handler', async () => {
       mockLoginResponse({success: true, userEmail: 'user@example.com'})
 
       await createCommand('--api-key', 'my-secret-key').run()
@@ -167,7 +174,9 @@ describe('Login Command', () => {
       expect((mockClient.requestWithAck as sinon.SinonStub).calledOnce).to.be.true
       const [event, data] = (mockClient.requestWithAck as sinon.SinonStub).firstCall.args
       expect(event).to.equal(AuthEvents.LOGIN_WITH_API_KEY)
-      expect(data).to.deep.equal({apiKey: 'my-secret-key'})
+      // M13.3: payload now carries optional cli_metadata block alongside apiKey.
+      expect((data as {apiKey: string}).apiKey).to.equal('my-secret-key')
+      expect((data as {cli_metadata: {command_id: string}}).cli_metadata.command_id).to.equal('login')
     })
   })
 

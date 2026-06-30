@@ -1,3 +1,5 @@
+ 
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
 import type {AuthScheme} from '../types/auth-scheme.js'
 import type {HubEntryDTO} from '../types/dto.js'
 
@@ -17,6 +19,14 @@ export interface HubProgressEvent {
   step: string
 }
 
+/**
+ * M13.2 Group C — `hub:list` is a no-payload oclif call. Define the Request
+ * interface so M13.3 can attach `cli_metadata`.
+ */
+export interface HubListRequest {
+  cli_metadata?: CliMetadata
+}
+
 export interface HubListResponse {
   entries: HubEntryDTO[]
   version: string
@@ -24,6 +34,7 @@ export interface HubListResponse {
 
 export interface HubInstallRequest {
   agent?: string
+  cli_metadata?: CliMetadata
   entryId: string
   registry?: string
   scope?: 'global' | 'project'
@@ -40,6 +51,7 @@ export interface HubInstallResponse {
 
 export interface HubRegistryAddRequest {
   authScheme?: AuthScheme
+  cli_metadata?: CliMetadata
   headerName?: string
   name: string
   token?: string
@@ -52,6 +64,7 @@ export interface HubRegistryAddResponse {
 }
 
 export interface HubRegistryRemoveRequest {
+  cli_metadata?: CliMetadata
   name: string
 }
 
@@ -68,6 +81,13 @@ export interface HubRegistryDTO {
   name: string
   status: 'error' | 'ok'
   url: string
+}
+
+/**
+ * M13.2 Group C — `hub:registry:list` is a no-payload oclif call.
+ */
+export interface HubRegistryListRequest {
+  cli_metadata?: CliMetadata
 }
 
 export interface HubRegistryListResponse {

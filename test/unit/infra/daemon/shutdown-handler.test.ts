@@ -275,4 +275,71 @@ describe('shutdown-handler', () => {
     expect(messages.some((m: string) => m.includes('Shutdown initiated'))).to.be.true
     expect(messages.some((m: string) => m.includes('Shutdown complete'))).to.be.true
   })
+
+  describe('M4.3 analyticsFinalFlush hook', () => {
+    it('invokes analyticsFinalFlush after agent pool stops and before transport stops', async () => {
+      const analyticsFlushStub = sandbox.stub().callsFake(async () => {
+        callOrder.push('analyticsFinalFlush')
+      })
+
+      const handler = new ShutdownHandler({
+        analyticsFinalFlush: analyticsFlushStub,
+        daemonResilience: mockDaemonResilience,
+        heartbeatWriter: mockHeartbeatWriter,
+        idleTimeoutPolicy: mockIdleTimeoutPolicy,
+        instanceManager: mockInstanceManager,
+        log: logStub,
+        transportServer: mockTransportServer,
+      })
+
+      await handler.shutdown()
+
+      expect(analyticsFlushStub.calledOnce).to.equal(true)
+      // Final flush sits between heartbeat.stop and transport.stop in this
+      // config (no agent pool wired, so step 5 is a no-op).
+      const heartbeatIdx = callOrder.indexOf('heartbeatWriter.stop')
+      const flushIdx = callOrder.indexOf('analyticsFinalFlush')
+      const transportIdx = callOrder.indexOf('transportServer.stop')
+      expect(flushIdx).to.be.greaterThan(heartbeatIdx)
+      expect(flushIdx).to.be.lessThan(transportIdx)
+    })
+
+    it('continues shutdown when analyticsFinalFlush rejects', async () => {
+      const analyticsFlushStub = sandbox.stub().rejects(new Error('telemetry down'))
+
+      const handler = new ShutdownHandler({
+        analyticsFinalFlush: analyticsFlushStub,
+        daemonResilience: mockDaemonResilience,
+        heartbeatWriter: mockHeartbeatWriter,
+        idleTimeoutPolicy: mockIdleTimeoutPolicy,
+        instanceManager: mockInstanceManager,
+        log: logStub,
+        transportServer: mockTransportServer,
+      })
+
+      await handler.shutdown()
+
+      // Subsequent steps still run despite the analytics rejection.
+      expect(transportStopStub.calledOnce).to.equal(true)
+      expect(instanceReleaseStub.calledOnce).to.equal(true)
+      const messages = logStub.getCalls().map((c) => c.args[0])
+      expect(messages.some((m: string) => m.includes('Error during final analytics flush'))).to.equal(true)
+    })
+
+    it('skips the hook when analyticsFinalFlush is not wired', async () => {
+      const handler = new ShutdownHandler({
+        daemonResilience: mockDaemonResilience,
+        heartbeatWriter: mockHeartbeatWriter,
+        idleTimeoutPolicy: mockIdleTimeoutPolicy,
+        instanceManager: mockInstanceManager,
+        log: logStub,
+        transportServer: mockTransportServer,
+      })
+
+      await handler.shutdown()
+
+      // No flush traces in the call order, just the pre-existing steps.
+      expect(callOrder).to.not.include('analyticsFinalFlush')
+    })
+  })
 })

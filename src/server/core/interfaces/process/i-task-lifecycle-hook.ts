@@ -34,6 +34,11 @@ export interface ITaskLifecycleHook {
    * implement it. Implementations must never throw.
    */
   onTaskUpdate?(task: TaskInfo): Promise<void>
-  /** Called when an LLM tool result event is received for an ACTIVE task (not grace-period). */
-  onToolResult?(taskId: string, payload: LlmToolResultEvent): void
+  /**
+   * Called when an LLM tool result event is received for an ACTIVE task (not grace-period).
+   * Now async so implementations (e.g. AnalyticsHook) can do non-blocking I/O without
+   * wedging the daemon event loop. TaskRouter awaits the returned promise inside its
+   * per-hook try/catch so rejections cannot escape as unhandled rejections.
+   */
+  onToolResult?(taskId: string, payload: LlmToolResultEvent): Promise<void>
 }

@@ -1,3 +1,4 @@
+/* eslint-disable camelcase */
 import {Command, Flags} from '@oclif/core'
 import chalk from 'chalk'
 
@@ -8,6 +9,7 @@ import {
   type StatusGetRequest,
   type StatusGetResponse,
 } from '../../shared/transport/events/status-events.js'
+import {buildCliMetadata} from '../lib/build-cli-metadata.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../lib/daemon-client.js'
 import {writeJsonResponse} from '../lib/json-response.js'
 
@@ -33,8 +35,15 @@ export default class Status extends Command {
     }),
   }
 
-  protected async fetchStatus(options?: DaemonClientOptions & {projectRootFlag?: string}): Promise<StatusDTO> {
-    const request: StatusGetRequest = {cwd: process.cwd(), projectRootFlag: options?.projectRootFlag}
+  protected async fetchStatus(
+    cliMetadata: ReturnType<typeof buildCliMetadata>,
+    options?: DaemonClientOptions & {projectRootFlag?: string},
+  ): Promise<StatusDTO> {
+    const request: StatusGetRequest = {
+      cli_metadata: cliMetadata,
+      cwd: process.cwd(),
+      projectRootFlag: options?.projectRootFlag,
+    }
     return withDaemonRetry<StatusDTO>(async (client) => {
       const response = await client.requestWithAck<StatusGetResponse>(StatusEvents.GET, request)
       return response.status
@@ -42,12 +51,13 @@ export default class Status extends Command {
   }
 
   public async run(): Promise<void> {
-    const {flags} = await this.parse(Status)
+    const {flags, metadata} = await this.parse(Status)
     const projectRootFlag = flags['project-root']
     const isJson = flags.format === 'json'
+    const cliMetadata = buildCliMetadata(this.id ?? 'status', {flags, metadata})
 
     try {
-      const status = await this.fetchStatus({projectPath: process.cwd(), projectRootFlag})
+      const status = await this.fetchStatus(cliMetadata, {projectPath: process.cwd(), projectRootFlag})
 
       if (isJson) {
         writeJsonResponse({

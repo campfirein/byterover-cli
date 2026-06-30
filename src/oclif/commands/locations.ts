@@ -1,9 +1,15 @@
+/* eslint-disable camelcase */
 import {Command, Flags} from '@oclif/core'
 import chalk from 'chalk'
 
 import type {ProjectLocationDTO} from '../../shared/transport/types/dto.js'
 
-import {LocationsEvents, type LocationsGetResponse} from '../../shared/transport/events/locations-events.js'
+import {
+  LocationsEvents,
+  type LocationsGetRequest,
+  type LocationsGetResponse,
+} from '../../shared/transport/events/locations-events.js'
+import {buildCliMetadata} from '../lib/build-cli-metadata.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../lib/daemon-client.js'
 import {writeJsonResponse} from '../lib/json-response.js'
 
@@ -19,19 +25,27 @@ export default class Locations extends Command {
     }),
   }
 
-  protected async fetchLocations(options?: DaemonClientOptions): Promise<ProjectLocationDTO[]> {
+  protected async fetchLocations(
+    cliMetadata: ReturnType<typeof buildCliMetadata>,
+    options?: DaemonClientOptions,
+  ): Promise<ProjectLocationDTO[]> {
     return withDaemonRetry<ProjectLocationDTO[]>(async (client) => {
-      const response = await client.requestWithAck<LocationsGetResponse>(LocationsEvents.GET)
+      const request: LocationsGetRequest = {cli_metadata: cliMetadata}
+      const response = await client.requestWithAck<LocationsGetResponse, LocationsGetRequest>(
+        LocationsEvents.GET,
+        request,
+      )
       return response.locations
     }, options)
   }
 
   public async run(): Promise<void> {
-    const {flags} = await this.parse(Locations)
+    const {flags, metadata} = await this.parse(Locations)
     const isJson = flags.format === 'json'
+    const cliMetadata = buildCliMetadata(this.id ?? 'locations', {flags, metadata})
 
     try {
-      const locations = await this.fetchLocations({projectPath: process.cwd()})
+      const locations = await this.fetchLocations(cliMetadata, {projectPath: process.cwd()})
 
       if (isJson) {
         writeJsonResponse({command: 'locations', data: {locations}, success: true})

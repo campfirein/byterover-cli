@@ -33,6 +33,7 @@ function makeAuth(options?: {noAuth: true}): IAuthStateStore {
     loadToken: stub<[], Promise<AuthToken | undefined>>().resolves(),
     onAuthChanged: stub(),
     onAuthExpired: stub(),
+    onBeforeAuthChange: stub(),
     startPolling: stub(),
     stopPolling: stub(),
   }

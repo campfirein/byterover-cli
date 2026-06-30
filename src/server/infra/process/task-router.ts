@@ -16,6 +16,7 @@
  */
 
 import type {ReasoningContentItem, ToolCallEvent} from '../../../shared/transport/events/task-events.js'
+import type {ClientType} from '../../core/domain/client/client-info.js'
 import type {
   LlmChunkEvent,
   LlmErrorEvent,
@@ -146,6 +147,13 @@ type TaskRouterOptions = {
    * Failures are swallowed (fail-open) so dispatch is never blocked.
    */
   resolveActiveProvider?: () => Promise<{model?: string; provider?: string}>
+  /**
+   * M15.8: snapshot the submitting client's identity (transport type +
+   * IDE name) at task-create. Resolved here because the client may
+   * disconnect mid-task, leaving ClientManager.get() unable to recover
+   * the values by the time AnalyticsHook fires the terminal emit.
+   */
+  resolveClientIdentity?: (clientId: string) => undefined | {clientName?: string; clientType?: ClientType}
   /** Resolves the projectPath a client registered with (from client:register). */
   resolveClientProjectPath?: (clientId: string) => string | undefined
   transport: ITransportServer
@@ -158,6 +166,18 @@ function hasTaskId(data: unknown): data is {[key: string]: unknown; taskId: stri
 /** Type guard for a plain JSON object — replaces ad-hoc `as Record<string, unknown>` casts. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+/**
+ * M17: tool-mode curate / query emit synthetic `llmservice:toolResult` /
+ * `llmservice:toolCall` events so the lifecycle-hook chain (AnalyticsHook,
+ * CurateLogHandler, QueryLogHandler) has inputs. Those events MUST NOT
+ * broadcast to clients (CLI, TUI, MCP, webui) — they're internal plumbing,
+ * not user-visible progress. The marker lives under `metadata._synthetic`
+ * (declared in synthetic-tool-result-emit.ts:SYNTHETIC_EVENT_METADATA).
+ */
+function isSyntheticLlmEvent(data: {[key: string]: unknown}): boolean {
+  return isRecord(data.metadata) && data.metadata._synthetic === true
 }
 
 /**
@@ -319,6 +339,7 @@ export class TaskRouter {
   private readonly projectRegistry: IProjectRegistry | undefined
   private readonly projectRouter: IProjectRouter | undefined
   private readonly resolveActiveProvider: TaskRouterOptions['resolveActiveProvider']
+  private readonly resolveClientIdentity: TaskRouterOptions['resolveClientIdentity']
   private readonly resolveClientProjectPath: ((clientId: string) => string | undefined) | undefined
   /** Track active tasks */
   private tasks: Map<string, TaskInfo> = new Map()
@@ -336,6 +357,7 @@ export class TaskRouter {
     this.projectRegistry = options.projectRegistry
     this.projectRouter = options.projectRouter
     this.resolveActiveProvider = options.resolveActiveProvider
+    this.resolveClientIdentity = options.resolveClientIdentity
     this.resolveClientProjectPath = options.resolveClientProjectPath
   }
 
@@ -548,6 +570,11 @@ export class TaskRouter {
         const callId = typeof data.callId === 'string' ? data.callId : undefined
         const sessionId = typeof data.sessionId === 'string' ? data.sessionId : ''
         const toolName = typeof data.toolName === 'string' ? data.toolName : ''
+        // PR #728 review fix: forward the M17 `_synthetic` marker from the
+        // wire envelope's `metadata` onto the persisted ToolCallEvent so
+        // downstream consumers (TaskHistoryHook, WebUI task-detail panel)
+        // can hide synthetic accumulator entries as internal plumbing.
+        const isSynthetic = isSyntheticLlmEvent(data)
         const newCall: ToolCallEvent = {
           args,
           ...(callId === undefined ? {} : {callId}),
@@ -555,6 +582,7 @@ export class TaskRouter {
           status: 'running',
           timestamp: Date.now(),
           toolName,
+          ...(isSynthetic ? {_synthetic: true as const} : {}),
         }
         this.tasks.set(taskId, {
           ...task,
@@ -977,12 +1005,19 @@ export class TaskRouter {
     // awaiting the handler.
     const {model, provider} = this.resolveActiveProvider ? await this.safeResolveActiveProvider() : {}
 
+    // M15.8: snapshot the submitter's identity so AnalyticsHook can emit
+    // mcp_tool_called for tool-mode tasks even if the MCP client disconnects
+    // between handleTaskCreate and the terminal task event.
+    const identity = this.resolveClientIdentity?.(clientId)
+
     this.tasks.set(taskId, {
       clientId,
       content: data.content,
       createdAt: Date.now(),
       status: 'created',
       ...(data.clientCwd ? {clientCwd: data.clientCwd} : {}),
+      ...(identity?.clientName ? {clientName: identity.clientName} : {}),
+      ...(identity?.clientType ? {clientType: identity.clientType} : {}),
       ...(data.files?.length ? {files: data.files} : {}),
       ...(data.folderPath ? {folderPath: data.folderPath} : {}),
       ...(model ? {model} : {}),
@@ -1745,9 +1780,12 @@ export class TaskRouter {
   }
 
   private registerLlmEvent<E extends LlmEventName>(eventName: E): void {
-    this.transport.onRequest<LlmEventPayloadMap[E], void>(eventName, (data) => {
+    this.transport.onRequest<LlmEventPayloadMap[E], void>(eventName, async (data) => {
       if (!hasTaskId(data)) return
-      this.routeLlmEvent(eventName, data)
+      // `routeLlmEvent` is async because TOOL_RESULT hooks (AnalyticsHook)
+      // do disk I/O. socket-io-transport-server awaits this handler, so
+      // OTHER sockets remain serviceable while this one's hook chain runs.
+      await this.routeLlmEvent(eventName, data)
     })
   }
 
@@ -1800,8 +1838,15 @@ export class TaskRouter {
    * Generic handler for routing LLM events from Agent to clients.
    * Checks both active and recently completed tasks (within grace period).
    * onToolResult hooks are called only for ACTIVE tasks (not grace-period).
+   *
+   * Async because TOOL_RESULT hooks may do disk I/O (AnalyticsHook reads
+   * post-op frontmatter). The hook chain is awaited sequentially so a
+   * caught sync throw OR an awaited rejection both land in the same
+   * try/catch — no unhandled rejection can escape. Intra-task ordering
+   * across concurrent TOOL_RESULT events is enforced INSIDE the hook
+   * (e.g. `AnalyticsHook.pendingByTask` queue), not here.
    */
-  private routeLlmEvent(eventName: string, data: {[key: string]: unknown; taskId: string}): void {
+  private async routeLlmEvent(eventName: string, data: {[key: string]: unknown; taskId: string}): Promise<void> {
     const {taskId, ...rest} = data
     const activeTask = this.tasks.get(taskId)
     const task = activeTask ?? this.completedTasks.get(taskId)?.task
@@ -1818,11 +1863,35 @@ export class TaskRouter {
       this.accumulateLlmEvent(taskId, eventName, data)
     }
 
-    // Notify onToolResult hooks only for active tasks
+    // Notify onToolResult hooks only for active tasks.
+    //
+    // Two-pass dispatch: (1) call every hook's onToolResult SYNCHRONOUSLY so
+    // each hook's sync registration code runs before any await yields
+    // (critical for `AnalyticsHook.pendingByTask` — the per-task queue must
+    // observe THIS op before a racing TASK_COMPLETED handler reads it);
+    // (2) await each returned Promise in array order so per-hook async work
+    // settles before the broadcast and rejections still land in the try/catch.
+    // The single-pass `for-await` shape would defer hook[N]'s sync body until
+    // hook[N-1]'s Promise resolves, leaving racing terminal handlers a
+    // window in which `pendingByTask` is still empty.
     if (activeTask && eventName === LlmEventNames.TOOL_RESULT) {
+      const promises: Array<Promise<void> | undefined> = []
       for (const hook of this.lifecycleHooks) {
         try {
-          hook.onToolResult?.(taskId, data as unknown as LlmToolResultEvent)
+          promises.push(hook.onToolResult?.(taskId, data as unknown as LlmToolResultEvent))
+        } catch (error) {
+          transportLog(
+            `LifecycleHook.onToolResult sync error for ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
+          )
+          promises.push(undefined)
+        }
+      }
+
+      for (const p of promises) {
+        if (p === undefined) continue
+        try {
+          // eslint-disable-next-line no-await-in-loop -- sequential await by design
+          await p
         } catch (error) {
           transportLog(
             `LifecycleHook.onToolResult error for ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -1831,15 +1900,23 @@ export class TaskRouter {
       }
     }
 
-    this.transport.sendTo(task.clientId, eventName, {taskId, ...rest})
-    broadcastToProjectRoom(
-      this.projectRegistry,
-      this.projectRouter,
-      task.projectPath,
-      eventName,
-      {taskId, ...rest},
-      task.clientId,
-    )
+    // M17: synthetic LLM events (emitted by tool-mode curate / query so the
+    // lifecycle-hook chain has inputs) MUST NOT surface in the CLI's
+    // streamed output, TUI live view, MCP client, or webui — they're
+    // internal analytics plumbing. Skip the per-client send + broadcast
+    // when the marker is present; the accumulator and onToolResult hook
+    // chain above already ran.
+    if (!isSyntheticLlmEvent(data)) {
+      this.transport.sendTo(task.clientId, eventName, {taskId, ...rest})
+      broadcastToProjectRoom(
+        this.projectRegistry,
+        this.projectRouter,
+        task.projectPath,
+        eventName,
+        {taskId, ...rest},
+        task.clientId,
+      )
+    }
 
     // Reset the heartbeat timer — every forwarded LLM event counts as
     // activity so a noisy task never triggers a redundant `task:heartbeat`.

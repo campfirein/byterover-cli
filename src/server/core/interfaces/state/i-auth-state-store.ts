@@ -8,6 +8,22 @@ import type {AuthToken} from '../../domain/entities/auth-token.js'
 export type AuthChangedCallback = (token: AuthToken | undefined) => void
 
 /**
+ * Callback fired BEFORE the cached auth token is mutated. Listeners
+ * can read `getToken()` and observe the OLD token, which is the
+ * critical guarantee for M4.4's auth-transition force-flush: the
+ * analytics client needs to flush events under the OLD session header
+ * before the new token replaces the cache.
+ *
+ * Listeners are awaited in registration order. A listener that hangs
+ * is bounded by `beforeAuthChangeTimeoutMs` (default 6s) so a wedged
+ * subsystem cannot deadlock the auth transition.
+ */
+export type BeforeAuthChangedCallback = (
+  oldToken: AuthToken | undefined,
+  newToken: AuthToken | undefined,
+) => Promise<void> | void
+
+/**
  * Callback fired when auth token has expired.
  * Separate from AuthChanged because an expired token is still "present" —
  * it signals the need for refresh, not that the user logged out.
@@ -45,7 +61,9 @@ export interface IAuthStateStore {
    * Register a callback for auth state changes.
    * Fired when: login (new token), token refresh (changed token), logout (undefined).
    *
-   * Only one callback supported — subsequent calls overwrite previous.
+   * Multiple callbacks supported. Listeners fire in registration order on
+   * each transition; one listener throwing does NOT prevent the others
+   * from running (impl catches and logs per-callback).
    *
    * @param callback - Function called with the new token (or undefined on logout)
    */
@@ -56,11 +74,28 @@ export interface IAuthStateStore {
    * Fired when a token that was valid transitions to expired.
    * Only fires once per expiry (not on every poll cycle).
    *
-   * Only one callback supported — subsequent calls overwrite previous.
+   * Multiple callbacks supported. Listeners fire in registration order;
+   * one throwing does NOT prevent the others from running.
    *
    * @param callback - Function called with the expired token
    */
   onAuthExpired(callback: AuthExpiredCallback): void
+
+  /**
+   * Register a pre-transition callback that fires BEFORE `cachedToken`
+   * mutates. The store awaits the callback (bounded by
+   * `beforeAuthChangeTimeoutMs`) before committing the new token and
+   * firing `onAuthChanged`. This is the M4.4 hook used by the analytics
+   * client to flush events under the OLD session header.
+   *
+   * Multiple callbacks are awaited in registration order, in series. A
+   * rejecting callback is logged best-effort and does NOT block
+   * subsequent callbacks or the transition itself.
+   *
+   * @param callback - Function called with `(oldToken, newToken)`; may
+   *                   return a Promise (will be awaited) or void.
+   */
+  onBeforeAuthChange(callback: BeforeAuthChangedCallback): void
 
   /**
    * Start polling the token store for changes.

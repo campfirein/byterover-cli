@@ -12,6 +12,7 @@ import sinon, {restore, stub} from 'sinon'
 import type {StatusDTO} from '../../src/shared/transport/types/dto.js'
 
 import Status from '../../src/oclif/commands/status.js'
+import {buildCliMetadata} from '../../src/oclif/lib/build-cli-metadata.js'
 
 // ==================== TestableStatusCommand ====================
 
@@ -23,8 +24,8 @@ class TestableStatusCommand extends Status {
     this.mockConnector = mockConnector
   }
 
-  protected override async fetchStatus(): Promise<StatusDTO> {
-    return super.fetchStatus({
+  protected override async fetchStatus(cliMetadata: ReturnType<typeof buildCliMetadata>): Promise<StatusDTO> {
+    return super.fetchStatus(cliMetadata, {
       maxRetries: 1,
       retryDelayMs: 0,
       transportConnector: this.mockConnector,

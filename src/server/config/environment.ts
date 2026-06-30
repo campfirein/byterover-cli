@@ -1,4 +1,5 @@
 import {API_V1_PATH} from '../constants.js'
+import {processLog} from '../utils/process-logger.js'
 
 /**
  * Environment types supported by the CLI.
@@ -26,6 +27,16 @@ export const ENVIRONMENT: Environment = isEnvironment(envValue) ? envValue : 'de
  * that does not follow the general "API version at point of use" pattern.
  */
 type EnvironmentConfig = {
+  /**
+   * Resolved `BRV_ANALYTICS_BASE_URL`. `undefined` means "no outbound
+   * shipping" — the env var is absent, empty, whitespace-only, or
+   * malformed. There is NO code-side fallback to a shared default; see
+   * `resolveAnalyticsBaseUrl` below for the rationale. Consumers
+   * downstream MUST handle the `undefined` case
+   * (`wireAnalyticsHttpSender` swaps in `DrainingAnalyticsSender`; the
+   * status snapshot coalesces to `''` and surfaces `(not configured)`).
+   */
+  analyticsBaseUrl: string | undefined
   authorizationUrl: string
   billingBaseUrl: string
   clientId: string
@@ -42,6 +53,9 @@ type EnvironmentConfig = {
 
 /**
  * Non-infrastructure config that stays in source (same across envs or not sensitive).
+ *
+ * `BRV_ANALYTICS_BASE_URL` is intentionally NOT in this table; see
+ * `resolveAnalyticsBaseUrl` for the env-only resolution rule.
  */
 const DEFAULTS = {
   clientId: 'byterover-cli-client',
@@ -53,6 +67,46 @@ const DEFAULTS = {
 } as const
 
 const normalizeUrl = (url: string): string => url.replace(/\/+$/, '')
+
+/**
+ * Resolve `BRV_ANALYTICS_BASE_URL` with no code-side fallback.
+ *
+ *   - unset (env var missing)             -> `undefined` (silent)
+ *   - empty string or whitespace only     -> `undefined` (silent)
+ *   - `URL.canParse(value)` rejects       -> `undefined` + one warning
+ *   - valid URL                           -> normalize trailing slash and return
+ *
+ * Production builds inject `BRV_ANALYTICS_BASE_URL` at build time. A
+ * missing env means the build is misconfigured (a fork stripped the
+ * vars, a CI image dropped them). A code-side fallback to a shared
+ * upstream endpoint would silently route that build's events to the
+ * wrong backend — privacy leak and telemetry pollution. Unset and empty
+ * are silent because they are legitimate states for forks, CI, and
+ * air-gapped installs; only malformed input (a user-error signal) emits
+ * a warning.
+ *
+ * The second parameter is a test-only seam so unit tests can assert the
+ * warning surface without touching the `processLog` session-file cache;
+ * production callers MUST NOT override it.
+ *
+ * @internal
+ */
+export const resolveAnalyticsBaseUrl = (
+  raw: string | undefined,
+  log: (message: string) => void = processLog,
+): string | undefined => {
+  const trimmed = raw?.trim()
+  if (trimmed === undefined || trimmed === '') return undefined
+
+  if (!URL.canParse(trimmed)) {
+    log(
+      `[Environment] BRV_ANALYTICS_BASE_URL is malformed (${JSON.stringify(trimmed)}); remote analytics shipping disabled. Local JSONL tracking continues.`,
+    )
+    return undefined
+  }
+
+  return normalizeUrl(trimmed)
+}
 
 const assertRootDomain = (name: string, url: string): void => {
   if (new URL(url).pathname !== '/') {
@@ -88,7 +142,10 @@ export const getCurrentConfig = (): EnvironmentConfig => {
 
   const oidcBase = `${iamBaseUrl}${API_V1_PATH}/oidc`
 
+  const analyticsBaseUrl = resolveAnalyticsBaseUrl(process.env.BRV_ANALYTICS_BASE_URL)
+
   return {
+    analyticsBaseUrl,
     authorizationUrl: `${oidcBase}/authorize`,
     billingBaseUrl,
     clientId: DEFAULTS.clientId,

@@ -82,6 +82,7 @@ describe('brv settings set', () => {
   let config: Config
   let loggedMessages: string[]
   let stdoutOutput: string[]
+  let warnMessages: string[]
   let mockClient: sinon.SinonStubbedInstance<ITransportClient>
   let mockConnector: sinon.SinonStub<[], Promise<ConnectionResult>>
   let originalExitCode: number | string | undefined
@@ -93,6 +94,7 @@ describe('brv settings set', () => {
   beforeEach(() => {
     loggedMessages = []
     stdoutOutput = []
+    warnMessages = []
     originalExitCode = process.exitCode
 
     mockClient = {
@@ -127,6 +129,10 @@ describe('brv settings set', () => {
     stub(command, 'log').callsFake((msg?: string) => {
       if (msg !== undefined) loggedMessages.push(msg)
     })
+    stub(command, 'warn').callsFake((msg: Error | string) => {
+      warnMessages.push(typeof msg === 'string' ? msg : msg.message)
+      return msg as Error & string
+    })
     return command
   }
 
@@ -134,6 +140,10 @@ describe('brv settings set', () => {
     const command = new TestableSettingsSet(['--format', 'json', ...argv], mockConnector, config)
     stub(command, 'log').callsFake((msg?: string) => {
       if (msg !== undefined) loggedMessages.push(msg)
+    })
+    stub(command, 'warn').callsFake((msg: Error | string) => {
+      warnMessages.push(typeof msg === 'string' ? msg : msg.message)
+      return msg as Error & string
     })
     stub(process.stdout, 'write').callsFake((chunk: string | Uint8Array) => {
       stdoutOutput.push(String(chunk))
@@ -400,6 +410,82 @@ describe('brv settings set', () => {
 
       const output = loggedMessages.join('\n')
       expect(output).to.match(/Run `brv restart` to apply/)
+    })
+  })
+
+  describe('--yes flag scope (bot review #2)', () => {
+    it('warns when --yes is passed for a key other than analytics.share', async () => {
+      dispatchByEvent((event) => {
+        if (event === SettingsEvents.GET) return makeGetResponse('agentPool.maxSize', 10)
+        if (event === SettingsEvents.SET) return {ok: true, restartRequired: true}
+        throw new Error('unexpected event')
+      })
+
+      await createCommand('agentPool.maxSize', '25', '-y').run()
+
+      // SET still proceeds — the warning is informational, not a refusal.
+      const requestStub = mockClient.requestWithAck as sinon.SinonStub
+      const setCall = requestStub.getCalls().find((c) => c.args[0] === SettingsEvents.SET)
+      expect(setCall, 'SET dispatched even with stray --yes').to.exist
+
+      const warn = warnMessages.join('\n')
+      expect(warn).to.match(/--yes/)
+      expect(warn).to.match(/analytics\.share/)
+    })
+
+    it('does NOT warn when --yes is passed for analytics.share', async () => {
+      dispatchByEvent((event) => {
+        if (event === SettingsEvents.GET) return makeBooleanGetResponse('analytics.share', false)
+        if (event === SettingsEvents.SET) return {ok: true, restartRequired: false}
+        throw new Error('unexpected event')
+      })
+
+      await createCommand('analytics.share', 'true', '-y').run()
+
+      expect(warnMessages, 'no leaky-flag warning on the analytics key').to.deep.equal([])
+    })
+  })
+
+  describe('--format json + interactive consent (bot review #3)', () => {
+    it('refuses to prompt in JSON mode without --yes and emits a requires_consent error envelope', async () => {
+      dispatchByEvent((event) => {
+        if (event === SettingsEvents.GET) return makeBooleanGetResponse('analytics.share', false)
+        if (event === SettingsEvents.SET) {
+          throw new Error('SET must not be dispatched when consent is required and refused')
+        }
+
+        throw new Error('unexpected event')
+      })
+
+      await createJsonCommand('analytics.share', 'true').run()
+
+      const json = parseJsonOutput()
+      expect(json.command).to.equal('settings set')
+      expect(json.success).to.be.false
+      const {error} = json.data as {error: {code: string; key: string; message: string}}
+      expect(error.code).to.equal('requires_consent')
+      expect(error.key).to.equal('analytics.share')
+      expect(error.message.toLowerCase()).to.match(/--yes|disclosure/)
+      expect(process.exitCode).to.equal(1)
+
+      // The disclosure markdown MUST NOT have been printed (would pollute stdout
+      // and break the JSON envelope).
+      const logged = loggedMessages.join('\n')
+      expect(logged, 'disclosure markdown leaked to stdout in JSON mode').to.not.match(/analytics disclosure/i)
+    })
+
+    it('passes through in JSON mode WITH --yes (consent gate satisfied silently)', async () => {
+      dispatchByEvent((event) => {
+        if (event === SettingsEvents.GET) return makeBooleanGetResponse('analytics.share', false)
+        if (event === SettingsEvents.SET) return {ok: true, restartRequired: false}
+        throw new Error('unexpected event')
+      })
+
+      await createJsonCommand('analytics.share', 'true', '-y').run()
+
+      const json = parseJsonOutput()
+      expect(json.success).to.be.true
+      expect(process.exitCode ?? 0).to.equal(0)
     })
   })
 })

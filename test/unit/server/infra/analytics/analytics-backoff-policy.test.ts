@@ -1,0 +1,213 @@
+import {expect} from 'chai'
+
+import {AnalyticsBackoffPolicy} from '../../../../../src/server/infra/analytics/analytics-backoff-policy.js'
+
+/**
+ * M4.5 backoff policy: 30s → 60s → 2m → 5m, cap at 5m. First success
+ * resets to 30s. Reachability state (healthy / degraded / unreachable)
+ * is derived from `consecutiveFailures()` by M4.6, not exposed here.
+ */
+describe('AnalyticsBackoffPolicy (M4.5)', () => {
+  describe('initial state', () => {
+    it('starts at 30s with zero consecutive failures', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      expect(policy.nextDelayMs(), 'base interval is 30s').to.equal(30_000)
+      expect(policy.consecutiveFailures()).to.equal(0)
+    })
+
+    it('repeated nextDelayMs() calls do NOT advance the policy (read-only)', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      expect(policy.nextDelayMs()).to.equal(30_000)
+      expect(policy.nextDelayMs()).to.equal(30_000)
+      expect(policy.consecutiveFailures(), 'reading state must not mutate').to.equal(0)
+    })
+  })
+
+  describe('exponential backoff schedule', () => {
+    it('after 1 failure: 60s', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.onFailure()
+      expect(policy.nextDelayMs()).to.equal(60_000)
+      expect(policy.consecutiveFailures()).to.equal(1)
+    })
+
+    it('after 2 failures: 2 minutes (120s)', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.onFailure()
+      policy.onFailure()
+      expect(policy.nextDelayMs()).to.equal(120_000)
+      expect(policy.consecutiveFailures()).to.equal(2)
+    })
+
+    it('after 3 failures: 5 minutes (300s)', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.onFailure()
+      policy.onFailure()
+      policy.onFailure()
+      expect(policy.nextDelayMs()).to.equal(300_000)
+      expect(policy.consecutiveFailures()).to.equal(3)
+    })
+
+    it('after 4 failures: still 5 minutes (capped)', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      for (let i = 0; i < 4; i++) policy.onFailure()
+      expect(policy.nextDelayMs(), 'cap holds at 5m').to.equal(300_000)
+      expect(policy.consecutiveFailures()).to.equal(4)
+    })
+
+    it('after many failures: still capped at 5 minutes, counter keeps growing', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      for (let i = 0; i < 50; i++) policy.onFailure()
+      expect(policy.nextDelayMs()).to.equal(300_000)
+      expect(policy.consecutiveFailures(), 'counter is unbounded for reachability classification').to.equal(50)
+    })
+  })
+
+  describe('reset on success', () => {
+    it('onSuccess() from clean state stays at 30s with zero failures', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.onSuccess()
+      expect(policy.nextDelayMs()).to.equal(30_000)
+      expect(policy.consecutiveFailures()).to.equal(0)
+    })
+
+    it('onSuccess() after 1 failure resets to 30s with zero failures', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.onFailure()
+      policy.onSuccess()
+      expect(policy.nextDelayMs()).to.equal(30_000)
+      expect(policy.consecutiveFailures()).to.equal(0)
+    })
+
+    it('onSuccess() after the cap resets to 30s with zero failures', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      for (let i = 0; i < 10; i++) policy.onFailure()
+      expect(policy.nextDelayMs()).to.equal(300_000)
+      policy.onSuccess()
+      expect(policy.nextDelayMs(), 'cap-then-success must drop straight to 30s').to.equal(30_000)
+      expect(policy.consecutiveFailures()).to.equal(0)
+    })
+
+    it('failure-success-failure pattern advances from the base, not the prior peak', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.onFailure()
+      policy.onFailure()
+      expect(policy.nextDelayMs()).to.equal(120_000)
+      policy.onSuccess()
+      policy.onFailure()
+      expect(policy.nextDelayMs(), 'after success we start the schedule fresh').to.equal(60_000)
+    })
+  })
+
+  describe('reachability counter (M4.6 will derive labels from this)', () => {
+    it('counter starts at 0 → healthy zone', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      expect(policy.consecutiveFailures()).to.equal(0)
+    })
+
+    it('counter at 1-2 → degraded zone (M4.6 mapping)', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.onFailure()
+      expect(policy.consecutiveFailures(), '1 failure').to.equal(1)
+      policy.onFailure()
+      expect(policy.consecutiveFailures(), '2 failures').to.equal(2)
+    })
+
+    it('counter at 3+ → unreachable zone (M4.6 mapping)', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      for (let i = 0; i < 3; i++) policy.onFailure()
+      expect(policy.consecutiveFailures()).to.equal(3)
+    })
+
+    it('onSuccess() returns counter to 0 (unreachable → healthy)', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      for (let i = 0; i < 5; i++) policy.onFailure()
+      expect(policy.consecutiveFailures()).to.equal(5)
+      policy.onSuccess()
+      expect(policy.consecutiveFailures(), 'first success collapses any unreachable count').to.equal(0)
+    })
+  })
+
+  describe('server-hint override (M5.4 honor Retry-After — ENG-2658)', () => {
+    it('applyServerHint overrides the base 30s delay with the larger server value', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.applyServerHint(120_000)
+      expect(policy.nextDelayMs(), 'server asked for 120s, base is 30s -> 120s').to.equal(120_000)
+    })
+
+    it('clamps an absurdly large server hint to the 1h safe maximum (no setTimeout overflow / multi-day stall)', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.applyServerHint(315_360_000_000) // 10 years — would overflow Node's setTimeout (> 2^31-1 ms)
+      expect(
+        policy.nextDelayMs(),
+        'a hostile/buggy server cannot stall shipping for days nor overflow setTimeout',
+      ).to.equal(3_600_000) // capped at 1 hour
+    })
+
+    it('honors a server hint at the cap boundary verbatim', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.applyServerHint(3_600_000) // exactly 1h — within the cap
+      expect(policy.nextDelayMs()).to.equal(3_600_000)
+    })
+
+    it('applyServerHint with a non-positive / NaN / Infinity hint still flips isRateLimited (no delay floor)', () => {
+      // Load-bearing for the rate_limited reachability classification AND for the
+      // contract-violation path in AnalyticsClient (which marks the policy
+      // rate-limited via applyServerHint(NaN) so the burst gate stays closed).
+      for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        const policy = new AnalyticsBackoffPolicy()
+        policy.applyServerHint(bad)
+        expect(policy.isRateLimited(), `hint=${bad} must still surface rate-limited`).to.equal(true)
+        expect(policy.nextDelayMs(), `hint=${bad} must not change the schedule floor`).to.equal(30_000)
+      }
+    })
+
+    it('applyServerHint never accelerates below the current schedule delay', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.onFailure() // current schedule delay is now 60s
+      policy.applyServerHint(5000)
+      expect(
+        policy.nextDelayMs(),
+        'a misbehaving server cannot pull retries under the safe minimum',
+      ).to.equal(60_000)
+    })
+
+    it('does NOT count a server hint as a consecutive failure (429/503 is not unreachable)', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.applyServerHint(120_000)
+      expect(policy.consecutiveFailures(), 'rate-limit is not a reachability failure').to.equal(0)
+    })
+
+    it('isRateLimited() flips true on applyServerHint and is false from a clean state', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      expect(policy.isRateLimited(), 'clean state is not rate-limited').to.equal(false)
+      policy.applyServerHint(30_000)
+      expect(policy.isRateLimited()).to.equal(true)
+    })
+
+    it('three consecutive server hints stay rate-limited with zero failures (never unreachable)', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.applyServerHint(60_000)
+      policy.applyServerHint(60_000)
+      policy.applyServerHint(60_000)
+      expect(policy.consecutiveFailures(), 'repeated 429s do not bump the unreachable counter').to.equal(0)
+      expect(policy.isRateLimited()).to.equal(true)
+    })
+
+    it('onSuccess clears the server hint and the rate-limited flag', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.applyServerHint(300_000)
+      policy.onSuccess()
+      expect(policy.nextDelayMs(), 'success drops back to the base interval').to.equal(30_000)
+      expect(policy.isRateLimited()).to.equal(false)
+    })
+
+    it('a real transient failure supersedes the server hint and resumes the exponential schedule', () => {
+      const policy = new AnalyticsBackoffPolicy()
+      policy.applyServerHint(300_000)
+      policy.onFailure()
+      expect(policy.isRateLimited(), 'a 5xx after a 429 is no longer a rate-limit').to.equal(false)
+      expect(policy.nextDelayMs(), 'pure exponential after the failure (1 failure -> 60s)').to.equal(60_000)
+    })
+  })
+})

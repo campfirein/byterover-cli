@@ -1,5 +1,8 @@
+import type {AnalyticsEventName} from '../../../../shared/analytics/event-names.js'
+import type {PropsArg} from '../../../../shared/analytics/events/index.js'
 import type {AuthScheme} from '../../../../shared/transport/types/auth-scheme.js'
 import type {HubEntryDTO} from '../../../../shared/transport/types/dto.js'
+import type {IAnalyticsClient} from '../../../core/interfaces/analytics/i-analytics-client.js'
 import type {HubInstallAuthParams, IHubInstallService} from '../../../core/interfaces/hub/i-hub-install-service.js'
 import type {IHubKeychainStore} from '../../../core/interfaces/hub/i-hub-keychain-store.js'
 import type {IHubRegistryConfigStore} from '../../../core/interfaces/hub/i-hub-registry-config-store.js'
@@ -7,6 +10,7 @@ import type {IHubRegistryService} from '../../../core/interfaces/hub/i-hub-regis
 import type {ITransportServer} from '../../../core/interfaces/transport/i-transport-server.js'
 import type {ProjectPathResolver} from './handler-types.js'
 
+import {AnalyticsEventNames} from '../../../../shared/analytics/event-names.js'
 import {
   HubEvents,
   type HubInstallRequest,
@@ -20,6 +24,7 @@ import {
   type HubRegistryRemoveResponse,
 } from '../../../../shared/transport/events/hub-events.js'
 import {type Agent, isAgent} from '../../../core/domain/entities/agent.js'
+import {processLog} from '../../../utils/process-logger.js'
 import {SKILL_CONNECTOR_CONFIGS} from '../../connectors/skill/skill-connector-config.js'
 import {CompositeHubRegistryService} from '../../hub/composite-hub-registry-service.js'
 import {HubRegistryService} from '../../hub/hub-registry-service.js'
@@ -29,6 +34,11 @@ const OFFICIAL_REGISTRY_NAME = 'official'
 const RESERVED_REGISTRY_NAMES = new Set(['brv', 'byterover', 'campfire', 'campfirein', 'official'])
 
 export interface HubHandlerDeps {
+  /**
+   * Optional. When provided, the handler emits `hub_package_installed` /
+   * `hub_registry_added` / `hub_registry_removed` analytics events.
+   */
+  analyticsClient?: IAnalyticsClient
   hubInstallService: IHubInstallService
   hubKeychainStore: IHubKeychainStore
   hubRegistryConfigStore: IHubRegistryConfigStore
@@ -39,6 +49,7 @@ export interface HubHandlerDeps {
 }
 
 export class HubHandler {
+  private readonly analyticsClient: IAnalyticsClient | undefined
   private readonly hubInstallService: IHubInstallService
   private readonly hubKeychainStore: IHubKeychainStore
   private readonly hubRegistryConfigStore: IHubRegistryConfigStore
@@ -49,6 +60,7 @@ export class HubHandler {
   private readonly transport: ITransportServer
 
   constructor(deps: HubHandlerDeps) {
+    this.analyticsClient = deps.analyticsClient
     this.hubInstallService = deps.hubInstallService
     this.hubKeychainStore = deps.hubKeychainStore
     this.hubRegistryConfigStore = deps.hubRegistryConfigStore
@@ -97,9 +109,35 @@ export class HubHandler {
     return config && !config.projectPath ? 'global' : 'project'
   }
 
+  /**
+   * Analytics emit helper. Mirrors the try/processLog pattern from other
+   * handlers so analytics failures never affect command outcomes.
+   */
+  private emitAnalytics<E extends AnalyticsEventName>(event: E, ...rest: PropsArg<E>): void {
+    const client = this.analyticsClient
+    if (!client) return
+    try {
+      client.track(event, ...rest)
+    } catch (error) {
+      processLog(`[Hub] analytics track ${event} failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  private emitInstallFailure(packageIdentifier: string, failureKind: string): void {
+    this.emitAnalytics(AnalyticsEventNames.HUB_PACKAGE_INSTALLED, {
+      // eslint-disable-next-line camelcase
+      failure_kind: failureKind,
+      outcome: 'failure',
+      // eslint-disable-next-line camelcase
+      package_identifier: packageIdentifier,
+    })
+  }
+
   private async handleInstall(data: HubInstallRequest, clientId: string): Promise<HubInstallResponse> {
+    const packageIdentifier = data.entryId
     const agent = data.agent && isAgent(data.agent) ? data.agent : undefined
     if (data.agent && !agent) {
+      this.emitInstallFailure(packageIdentifier, 'invalid_agent')
       return {installedFiles: [], installedPath: '', message: `Invalid agent: ${data.agent}`, success: false}
     }
 
@@ -117,17 +155,19 @@ export class HubHandler {
 
     switch (matches.length) {
       case 0: {
+        this.emitInstallFailure(packageIdentifier, 'resolve')
         return {installedFiles: [], installedPath: '', message: `Entry not found: ${data.entryId}`, success: false}
       }
 
       case 1: {
-        // Single match: proceed with install
+        // Single match: proceed with install. performInstall emits success/failure.
         return this.performInstall({agent, entry: matches[0], projectPath, scope})
       }
 
       default: {
         // Multiple matches: detect duplicates
         const registryNames = matches.map((m) => m.registry ?? 'unknown').join(', ')
+        this.emitInstallFailure(packageIdentifier, 'resolve')
         return {
           installedFiles: [],
           installedPath: '',
@@ -145,8 +185,16 @@ export class HubHandler {
   }
 
   private async handleRegistryAdd(data: HubRegistryAddRequest): Promise<HubRegistryAddResponse> {
+    const registryKind = data.name
     try {
       if (RESERVED_REGISTRY_NAMES.has(data.name.toLowerCase())) {
+        this.emitAnalytics(AnalyticsEventNames.HUB_REGISTRY_ADDED, {
+          // eslint-disable-next-line camelcase
+          failure_kind: 'validation',
+          outcome: 'failure',
+          // eslint-disable-next-line camelcase
+          registry_kind: registryKind,
+        })
         return {message: `Registry name '${data.name}' is reserved`, success: false}
       }
 
@@ -176,8 +224,23 @@ export class HubHandler {
 
       await this.rebuildRegistryService()
 
+      // `is_default` omitted — request shape doesn't carry it; schema marks
+      // the field optional precisely for this reason.
+      this.emitAnalytics(AnalyticsEventNames.HUB_REGISTRY_ADDED, {
+        outcome: 'success',
+        // eslint-disable-next-line camelcase
+        registry_kind: registryKind,
+      })
+
       return {message: `Registry '${data.name}' added successfully`, success: true}
     } catch (error) {
+      this.emitAnalytics(AnalyticsEventNames.HUB_REGISTRY_ADDED, {
+        // eslint-disable-next-line camelcase
+        failure_kind: 'config_write',
+        outcome: 'failure',
+        // eslint-disable-next-line camelcase
+        registry_kind: registryKind,
+      })
       return {
         message: `Failed to add registry: ${error instanceof Error ? error.message : 'Unknown error'}`,
         success: false,
@@ -229,14 +292,28 @@ export class HubHandler {
   }
 
   private async handleRegistryRemove(data: HubRegistryRemoveRequest): Promise<HubRegistryRemoveResponse> {
+    const registryKind = data.name
     try {
       await this.hubRegistryConfigStore.removeRegistry(data.name)
       await this.hubKeychainStore.deleteToken(data.name)
 
       await this.rebuildRegistryService()
 
+      this.emitAnalytics(AnalyticsEventNames.HUB_REGISTRY_REMOVED, {
+        outcome: 'success',
+        // eslint-disable-next-line camelcase
+        registry_kind: registryKind,
+      })
+
       return {message: `Registry '${data.name}' removed successfully`, success: true}
     } catch (error) {
+      this.emitAnalytics(AnalyticsEventNames.HUB_REGISTRY_REMOVED, {
+        // eslint-disable-next-line camelcase
+        failure_kind: 'config_write',
+        outcome: 'failure',
+        // eslint-disable-next-line camelcase
+        registry_kind: registryKind,
+      })
       return {
         message: `Failed to remove registry: ${error instanceof Error ? error.message : 'Unknown error'}`,
         success: false,
@@ -266,6 +343,13 @@ export class HubHandler {
 
       const result = await this.hubInstallService.install({agent, auth, entry, projectPath, scope})
       const registryLabel = entry.registry ? ` [${entry.registry}]` : ''
+
+      this.emitAnalytics(AnalyticsEventNames.HUB_PACKAGE_INSTALLED, {
+        outcome: 'success',
+        // eslint-disable-next-line camelcase
+        package_identifier: entry.id,
+      })
+
       return {
         installedFiles: result.installedFiles,
         installedPath: result.installedPath,
@@ -273,6 +357,7 @@ export class HubHandler {
         success: true,
       }
     } catch (error) {
+      this.emitInstallFailure(entry.id, 'install_failed')
       return {
         installedFiles: [],
         installedPath: '',

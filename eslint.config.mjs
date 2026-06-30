@@ -23,6 +23,24 @@ export default [
       },
     },
   },
+  {
+    files: ['src/**/*.ts', 'src/**/*.tsx'],
+    ignores: ['src/server/infra/**'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/analytics/i-analytics-client', '**/analytics/i-analytics-client.js'],
+              message:
+                'IAnalyticsClient is daemon-internal. Only code under src/server/infra/ may import it; other consumers should use the transport event analytics:track (M2.6).',
+            },
+          ],
+        },
+      ],
+    },
+  },
   // Web UI (browser environment) — allow browser globals and React naming conventions
   {
     files: ['src/webui/**/*.ts', 'src/webui/**/*.tsx'],

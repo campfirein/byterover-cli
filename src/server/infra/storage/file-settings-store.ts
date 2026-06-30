@@ -3,13 +3,17 @@ import {existsSync} from 'node:fs'
 import {mkdir, readFile, rename, unlink, writeFile} from 'node:fs/promises'
 import {join} from 'node:path'
 
-import type {SettingItem} from '../../core/domain/entities/settings.js'
+import type {SettingDescriptor, SettingItem} from '../../core/domain/entities/settings.js'
 import type {ISettingsStore, SettingsStartupSnapshot} from '../../core/interfaces/storage/i-settings-store.js'
 
 import {SETTINGS_FILE, SETTINGS_SCHEMA_VERSION} from '../../constants.js'
 import {SETTINGS_REGISTRY} from '../../core/domain/entities/settings.js'
 import {getGlobalDataDir} from '../../utils/global-data-path.js'
-import {InvalidSettingValueError, SettingsValidator} from './settings-validator.js'
+import {
+  InvalidSettingValueError,
+  ReadonlySettingKeyError,
+  SettingsValidator,
+} from './settings-validator.js'
 
 type SettingsFile = {
   /**
@@ -25,6 +29,13 @@ type SettingsFile = {
 
 export type FileSettingsStoreOptions = {
   readonly baseDir?: string
+  /**
+   * Override the descriptor registry. Defaults to the production
+   * `SETTINGS_REGISTRY`. Tests inject a small registry containing the
+   * variant under test (e.g. a `readonly-info` descriptor) so per-key
+   * behaviour can be exercised in isolation.
+   */
+  readonly registry?: readonly SettingDescriptor[]
   readonly validator?: SettingsValidator
 }
 
@@ -46,18 +57,38 @@ type RawReadResult =
  * atomic temp-file + rename write. Reads return defaults for any key that is
  * missing or invalid in the file; surfacing invalid entries (for warning
  * logs) is the daemon-startup loader's job, not this store's.
+ *
+ * Readonly-info descriptors are surfaced in `get` / `list` with
+ * `current = undefined` and no `default`; the handler is responsible for
+ * resolving the live snapshot via its injected info-provider map. `set`
+ * and `reset` on a readonly-info key throw `ReadonlySettingKeyError`
+ * without touching the on-disk file.
  */
 export class FileSettingsStore implements ISettingsStore {
   private readonly baseDir: string
+  private readonly registry: readonly SettingDescriptor[]
   private readonly validator: SettingsValidator
 
   public constructor(options: FileSettingsStoreOptions = {}) {
     this.baseDir = options.baseDir ?? getGlobalDataDir()
-    this.validator = options.validator ?? new SettingsValidator()
+    this.registry = options.registry ?? SETTINGS_REGISTRY
+    this.validator = options.validator ?? new SettingsValidator({registry: this.registry})
   }
 
   public async get(key: string): Promise<SettingItem> {
     const descriptor = this.validator.validateKey(key)
+    // readonly-info: value comes from the handler's info-provider map.
+    // global-config: value comes from GlobalConfigHandler via the settings handler facade.
+    // Either way, the file store has no value to surface — return the
+    // inert row shape so the handler can resolve through the right path.
+    if (descriptor.type === 'readonly-info') {
+      return {current: undefined, key: descriptor.key, restartRequired: descriptor.restartRequired}
+    }
+
+    if (descriptor.storage === 'global-config') {
+      return {current: undefined, key: descriptor.key, restartRequired: descriptor.restartRequired}
+    }
+
     const overrides = await this.readOverrides()
     return {
       current: overrides[key] ?? descriptor.default,
@@ -69,12 +100,22 @@ export class FileSettingsStore implements ISettingsStore {
 
   public async list(): Promise<readonly SettingItem[]> {
     const overrides = await this.readOverrides()
-    return SETTINGS_REGISTRY.map((descriptor) => ({
-      current: overrides[descriptor.key] ?? descriptor.default,
-      default: descriptor.default,
-      key: descriptor.key,
-      restartRequired: true,
-    }))
+    return this.registry.map((descriptor) => {
+      if (descriptor.type === 'readonly-info') {
+        return {current: undefined, key: descriptor.key, restartRequired: descriptor.restartRequired}
+      }
+
+      if (descriptor.storage === 'global-config') {
+        return {current: undefined, key: descriptor.key, restartRequired: descriptor.restartRequired}
+      }
+
+      return {
+        current: overrides[descriptor.key] ?? descriptor.default,
+        default: descriptor.default,
+        key: descriptor.key,
+        restartRequired: true,
+      }
+    })
   }
 
   public async readStartupSnapshot(): Promise<SettingsStartupSnapshot> {
@@ -87,7 +128,19 @@ export class FileSettingsStore implements ISettingsStore {
   }
 
   public async reset(key: string): Promise<void> {
-    this.validator.validateKey(key)
+    const descriptor = this.validator.validateKey(key)
+    if (descriptor.type === 'readonly-info') {
+      throw new ReadonlySettingKeyError(key)
+    }
+
+    if (descriptor.storage === 'global-config') {
+      throw new InvalidSettingValueError(
+        key,
+        undefined,
+        `'${key}' is stored in config.json, not settings.json; use the SettingsHandler facade`,
+      )
+    }
+
     const raw = await this.readRawValues()
     if (!(key in raw)) return
 

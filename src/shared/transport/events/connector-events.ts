@@ -1,3 +1,5 @@
+ 
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
 import type {Agent} from '../../types/agent.js'
 import type {ConnectorType} from '../../types/connector-type.js'
 import type {AgentDTO, ConnectorDTO} from '../types/dto.js'
@@ -9,8 +11,23 @@ export const ConnectorEvents = {
   LIST: 'connectors:list',
 } as const
 
+/**
+ * M13.2 Group C — `connectors:getAgents` is a no-payload oclif call. Define the
+ * Request interface for M13.3's payload attachment.
+ */
+export interface ConnectorGetAgentsRequest {
+  cli_metadata?: CliMetadata
+}
+
 export interface ConnectorGetAgentsResponse {
   agents: AgentDTO[]
+}
+
+/**
+ * M13.2 Group C — `connectors:list` is a no-payload oclif call.
+ */
+export interface ConnectorListRequest {
+  cli_metadata?: CliMetadata
 }
 
 export interface ConnectorListResponse {
@@ -19,6 +36,7 @@ export interface ConnectorListResponse {
 
 export interface ConnectorGetAgentConfigPathsRequest {
   agentId: Agent
+  cli_metadata?: CliMetadata
 }
 
 export interface ConnectorGetAgentConfigPathsResponse {
@@ -27,6 +45,7 @@ export interface ConnectorGetAgentConfigPathsResponse {
 
 export interface ConnectorInstallRequest {
   agentId: Agent
+  cli_metadata?: CliMetadata
   connectorType: ConnectorType
 }
 

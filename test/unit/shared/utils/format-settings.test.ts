@@ -3,6 +3,11 @@ import {expect} from 'chai'
 import type {SettingsItemDTO} from '../../../../src/shared/transport/events/settings-events.js'
 import type {SettingsRow} from '../../../../src/shared/types/settings-row.js'
 
+import {
+  formatReadonlyInfoValue,
+  registerReadonlyInfoFormatter,
+  unregisterReadonlyInfoFormatter,
+} from '../../../../src/shared/utils/format-readonly-info.js'
 import {buildSettingsRows, parseRowInput} from '../../../../src/shared/utils/format-settings.js'
 
 function makeItem(overrides: Partial<SettingsItemDTO> = {}): SettingsItemDTO {
@@ -31,6 +36,21 @@ function makeBooleanItem(current: boolean): SettingsItemDTO {
     type: 'boolean',
   }
 }
+
+function makeReadonlyInfoItem(current: SettingsItemDTO['current']): SettingsItemDTO {
+  return {
+    category: 'updates',
+    current,
+    description: 'live analytics snapshot for tests',
+    key: '_test.snapshot',
+    restartRequired: false,
+    type: 'readonly-info',
+  }
+}
+
+const FIRST_FORMATTER = (): string => 'first'
+const SECOND_FORMATTER = (): string => 'second'
+const SAME_FORMATTER = (): string => 'same'
 
 function makeRow(overrides: Partial<SettingsRow> = {}): SettingsRow {
   return {
@@ -125,6 +145,11 @@ describe('format-settings (shared)', () => {
       const rows = buildSettingsRows([nakedItem])
       expect(rows[0].category).to.equal('other')
       expect(rows[0].unit).to.equal('count')
+    })
+
+    it('maps the analytics category onto the row instead of falling back to other', () => {
+      const rows = buildSettingsRows([makeItem({category: 'analytics', key: 'analytics.share'})])
+      expect(rows[0].category).to.equal('analytics')
     })
   })
 
@@ -251,6 +276,136 @@ describe('format-settings (shared)', () => {
         makeItem({category: 'concurrency', key: 'agentPool.maxSize'}),
       ])
       expect(rows.map((r) => r.category)).to.deep.equal(['concurrency', 'task-history', 'updates'])
+    })
+  })
+
+  describe('readonly-info rows (M16.1)', () => {
+    it('builds a row for readonly-info items', () => {
+      const rows = buildSettingsRows([makeReadonlyInfoItem({endpoint: 'host', queueDepth: 3})])
+      expect(rows).to.have.lengthOf(1)
+      expect(rows[0].key).to.equal('_test.snapshot')
+      expect(rows[0].type).to.equal('readonly-info')
+    })
+
+    it('renders displayCurrent via the per-key formatter when registered', () => {
+      registerReadonlyInfoFormatter('_test.snapshot', (value) => {
+        const v = value as {queueDepth: number}
+        return `queue=${v.queueDepth}`
+      })
+      try {
+        const row = buildSettingsRows([makeReadonlyInfoItem({queueDepth: 7})])[0]
+        expect(row.displayCurrent).to.equal('queue=7')
+      } finally {
+        unregisterReadonlyInfoFormatter('_test.snapshot')
+      }
+    })
+
+    it('keeps the full multi-line value in displayDetail; displayCurrent is only the headline', () => {
+      registerReadonlyInfoFormatter('_test.snapshot', () => 'Headline\nline 2\nline 3')
+      try {
+        const row = buildSettingsRows([makeReadonlyInfoItem({queueDepth: 7})])[0]
+        expect(row.displayCurrent).to.equal('Headline')
+        expect(row.displayDetail).to.equal('Headline\nline 2\nline 3')
+      } finally {
+        unregisterReadonlyInfoFormatter('_test.snapshot')
+      }
+    })
+
+    it('falls back to JSON.stringify when no per-key formatter is registered', () => {
+      const row = buildSettingsRows([makeReadonlyInfoItem({queueDepth: 3})])[0]
+      expect(row.displayCurrent).to.equal('{"queueDepth":3}')
+    })
+
+    it('renders "(unavailable)" when current is undefined and no formatter is registered', () => {
+      const noCurrent: {value?: SettingsItemDTO['current']} = {}
+      const row = buildSettingsRows([makeReadonlyInfoItem(noCurrent.value)])[0]
+      expect(row.displayCurrent).to.equal('(unavailable)')
+    })
+
+    it('omits displayDefault and displayRange on readonly-info rows', () => {
+      const row = buildSettingsRows([makeReadonlyInfoItem({q: 1})])[0]
+      expect(row.displayDefault).to.equal(undefined)
+      expect(row.displayRange).to.equal('')
+      expect(row.default).to.equal(undefined)
+    })
+
+    it('marks readonly-info rows as not modified (no default to diverge from)', () => {
+      const row = buildSettingsRows([makeReadonlyInfoItem({q: 1})])[0]
+      expect(row.modified).to.equal(false)
+    })
+
+    it('propagates restartRequired=false onto the row', () => {
+      const row = buildSettingsRows([makeReadonlyInfoItem({q: 1})])[0]
+      expect(row.restartRequired).to.equal(false)
+    })
+
+    it('mixes correctly with boolean and integer rows; category order preserved', () => {
+      const rows = buildSettingsRows([
+        makeReadonlyInfoItem({q: 1}),
+        makeItem({category: 'concurrency', key: 'agentPool.maxSize'}),
+        makeBooleanItem(true),
+      ])
+      // Concurrency comes before updates per CATEGORY_ORDER. Within the
+      // 'updates' category, the stable sort preserves the input order
+      // (_test.snapshot at index 0, update.checkForUpdates at index 2).
+      expect(rows.map((r) => r.key)).to.deep.equal([
+        'agentPool.maxSize',
+        '_test.snapshot',
+        'update.checkForUpdates',
+      ])
+    })
+  })
+
+  describe('formatReadonlyInfoValue (M16.1)', () => {
+    afterEach(() => {
+      unregisterReadonlyInfoFormatter('_test.fmt')
+    })
+
+    it('returns (unavailable) when value is undefined', () => {
+      const noValue: {value?: unknown} = {}
+      expect(formatReadonlyInfoValue('_test.fmt', noValue.value)).to.equal('(unavailable)')
+    })
+
+    it('returns the raw string when value is a string and no formatter is registered', () => {
+      // Strings are not part of the wire type but the formatter survives
+      // them via JSON.stringify; this guarantees no crash on hand-injected
+      // values from a future provider that returns a primitive.
+      expect(formatReadonlyInfoValue('_test.fmt', 'hello')).to.equal('hello')
+    })
+
+    it('JSON-stringifies an object payload by default', () => {
+      expect(formatReadonlyInfoValue('_test.fmt', {a: 1, b: 2})).to.equal('{"a":1,"b":2}')
+    })
+
+    it('uses the registered formatter when present', () => {
+      registerReadonlyInfoFormatter('_test.fmt', (value) => `<${JSON.stringify(value)}>`)
+      expect(formatReadonlyInfoValue('_test.fmt', {x: 1})).to.equal('<{"x":1}>')
+    })
+
+    it('does NOT call the registered formatter for a different key', () => {
+      registerReadonlyInfoFormatter('_test.fmt', () => 'should-not-fire')
+      expect(formatReadonlyInfoValue('_test.other', {x: 1})).to.equal('{"x":1}')
+    })
+
+    it('unregisterReadonlyInfoFormatter clears the registration', () => {
+      registerReadonlyInfoFormatter('_test.fmt', () => 'registered')
+      unregisterReadonlyInfoFormatter('_test.fmt')
+      expect(formatReadonlyInfoValue('_test.fmt', {x: 1})).to.equal('{"x":1}')
+    })
+
+    it('throws when a key is registered twice with a different function (prevents silent override)', () => {
+      registerReadonlyInfoFormatter('_test.fmt', FIRST_FORMATTER)
+      expect(() => registerReadonlyInfoFormatter('_test.fmt', SECOND_FORMATTER)).to.throw(
+        /already registered/i,
+      )
+      // First registration is preserved.
+      expect(formatReadonlyInfoValue('_test.fmt', {x: 1})).to.equal('first')
+    })
+
+    it('is idempotent when the same function is registered twice', () => {
+      registerReadonlyInfoFormatter('_test.fmt', SAME_FORMATTER)
+      expect(() => registerReadonlyInfoFormatter('_test.fmt', SAME_FORMATTER)).to.not.throw()
+      expect(formatReadonlyInfoValue('_test.fmt', {x: 1})).to.equal('same')
     })
   })
 })

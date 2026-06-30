@@ -1,3 +1,6 @@
+ 
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
+
 export const AgentEvents = {
   CONNECTED: 'agent:connected',
   DISCONNECTED: 'agent:disconnected',
@@ -10,6 +13,7 @@ export const AgentEvents = {
 } as const
 
 export interface AgentRestartRequest {
+  cli_metadata?: CliMetadata
   reason: string
 }
 
@@ -18,6 +22,7 @@ export interface AgentRestartResponse {
 }
 
 export interface AgentNewSessionRequest {
+  cli_metadata?: CliMetadata
   reason?: string
 }
 

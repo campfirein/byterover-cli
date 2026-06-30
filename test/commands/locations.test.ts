@@ -9,6 +9,7 @@ import sinon, {restore, stub} from 'sinon'
 import type {ProjectLocationDTO} from '../../src/shared/transport/types/dto.js'
 
 import Locations from '../../src/oclif/commands/locations.js'
+import {buildCliMetadata} from '../../src/oclif/lib/build-cli-metadata.js'
 
 // ==================== TestableLocationsCommand ====================
 
@@ -20,8 +21,10 @@ class TestableLocationsCommand extends Locations {
     this.mockConnector = mockConnector
   }
 
-  protected override async fetchLocations(): Promise<ProjectLocationDTO[]> {
-    return super.fetchLocations({
+  protected override async fetchLocations(
+    cliMetadata: ReturnType<typeof buildCliMetadata>,
+  ): Promise<ProjectLocationDTO[]> {
+    return super.fetchLocations(cliMetadata, {
       maxRetries: 1,
       retryDelayMs: 0,
       transportConnector: this.mockConnector,

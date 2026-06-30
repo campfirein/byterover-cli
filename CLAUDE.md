@@ -168,6 +168,61 @@ npm run dev:ui:package               # Vite dev server resolving shared UI from 
 - **HTTP (nock)**: Must verify `.matchHeader('authorization', ...)` + `.matchHeader('x-byterover-session-id', ...)`
 - **ES Modules**: Cannot stub ES exports with sinon; test utils with real filesystem (`tmpdir()`)
 
+### M4.7 — analytics e2e against dev-beta (`test/e2e/analytics/dev-beta.e2e.ts`)
+
+End-to-end smoke for the analytics pipeline (M4.1 -> M4.6). One mocha file that spins up an isolated daemon per scenario under a temp `BRV_DATA_DIR` plus a temp `HOME`, exercises one slice via the real `bin/run.js`, and asserts on JSONL `status` transitions plus scenario-specific runtime state. NOT picked up by `npm test` (glob is `test/**/*.test.ts`; this file is `.e2e.ts`).
+
+**Run modes**:
+
+```bash
+npm run test:e2e:analytics                                # all auto scenarios (transition skipped by default)
+npm run test:e2e:analytics -- --grep "1 happy"            # single scenario
+BRV_E2E_TRANSITION=1 npm run test:e2e:analytics -- --grep transition  # interactive login scenario
+BRV_ANALYTICS_BASE_URL=http://127.0.0.1:3001 npm run test:e2e:analytics  # override backend (e.g. local telemetry)
+```
+
+The npm script chains `npm run build && mocha ...` so `dist/` is always fresh when the test starts.
+
+Scenarios covered (`describe` names):
+
+1. `happy` — opt in, emit 1 event, ship within 35s
+2. `burst` — 25 events via `analytics:track`, 20-event threshold flush
+3. `idle` — 1 event, wait 45s for the interval flush
+4. `transition` — anon -> `brv login` -> authed; interactive, gated on `BRV_E2E_TRANSITION=1`
+5. `down` — backend down via inline drop-proxy on a random port; failed flush + backoff counters move
+6. `disable` — ship 1 baseline, disable, queue more, no further ships
+
+**Prereqs**:
+
+- `npm install` (so `bin/run.js` and `node_modules/.bin` are present). `npm link` is NOT required: the test spawns `node <repo>/bin/run.js` directly so it always exercises THIS checkout.
+- `npm run build` is chained in front of mocha inside the npm script; you only need to run it manually if you invoke `mocha` directly without going through `npm run test:e2e:analytics`.
+- Network access to `dev-beta-iam.byterover.dev` and `telemetry-dev.byterover.dev` (the test defaults `BRV_ANALYTICS_BASE_URL` + `BRV_IAM_BASE_URL` to those; override via env to point at a different backend).
+- **Backend on the M4.x wire format**: this CLI sends each event's `created_at` as an ISO 8601 string with a timezone designator (e.g. `2026-05-28T21:32:11+07:00` or `...Z`), per the byterover-telemetry backend contract. The top-level `before()` runs one known-good POST and `this.skip()`s the entire suite with a clear reason if the backend rejects it. Last verified green against `https://telemetry-dev.byterover.dev` on 2026-05-29. If a future deployment regresses to the older numeric `timestamp` (epoch milliseconds) schema, every scenario would FAIL with retry-cap exhaustion - coordinate with the telemetry team before running.
+- For scenario 4: a browser to complete the OAuth login flow.
+
+**Test isolation**: each scenario builds a per-scenario `env` object with a temp `BRV_DATA_DIR` and a temp `HOME` and passes it to every `spawnSync(node, [bin/run.js, ...])`. That isolates the analytics JSONL queue, daemon log, auth token store, and the platform-derived global config path (`~/Library/Application Support/brv/config.json` on macOS) away from the developer's real profile. Teardown uses `brv restart` (with the scenario env) instead of `bin/kill-daemon.js` — `restart` properly cleans the SCENARIO's daemon + state files; calling `kill-daemon.js` without scoped env would read the user's real global `daemon.json` and leak the scenario daemon to the process table. The emit helper temporarily mutates `process.env.BRV_DATA_DIR` / `HOME` because `connectToDaemon` reads them for instance discovery, and restores in `finally` - safe because mocha runs scenarios sequentially. Do NOT pass `--parallel`.
+
+**What "PASS" actually proves**:
+
+The positive signal is `status: pending -> sent` in the JSONL for explicit post-enable test events. That flip happens only when the M4.2 `HttpAnalyticsSender` sees a 2xx response from the backend. So "PASS" means "the backend accepted the batch with 2xx" - sufficient for the M4.7 "events land within 30s" goal.
+
+Scenario 5 covers both halves of the M4.7 "backend down -> recovery" test: Phase A boots a TCP drop-proxy on a random localhost port, points the CLI at it, and asserts `backoff.consecutive_failures > 0` after the first flush tick; Phase B closes the drop-proxy and brings up a HTTP accept-proxy on the SAME port, then polls (up to ~90s, since M4.5 exponential backoff delays the next retry) for `consecutive_failures` to drop back to 0 + at least one row to flip to `status=sent`.
+
+**Postgres-side verification (DoD #7-8) is intentionally NOT in the auto path.** It needs ops-only read credentials that aren't available to the harness. The CLI-side proof (JSONL `status=sent` + backend 2xx) is sufficient for "the pipeline ships and the backend accepts" - asserting the row exists in dev-beta's `raw_events` is a separate ops/manual step. If you have those credentials, the manual SQL is:
+
+```sql
+-- replace device_id with the value from your test's $BRV_DATA_DIR/config.json
+SELECT id, event_name, identity_user_id, identity_device_id, received_at
+FROM raw_events
+WHERE identity_device_id = '<your-device-id>'
+ORDER BY received_at DESC
+LIMIT 25;
+```
+
+**Scenario 4 operator step**: the test prints the exact `HOME=... BRV_DATA_DIR=... BRV_IAM_BASE_URL=... node <repo>/bin/run.js login` command to run in another terminal. Use that exact command so the login writes into the scenario's isolated token/config paths instead of your normal profile.
+
+**Estimated runtime**: ~3 minutes for the auto suite (driven by the 30-45s interval windows in scenarios 3 + 5 + 6).
+
 ## Conventions
 
 - ES modules with `.js` import extensions required

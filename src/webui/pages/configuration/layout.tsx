@@ -13,6 +13,7 @@ const SECTIONS: readonly SectionDef[] = [
   {end: true, label: 'General', path: '.'},
   {label: 'Connectors', path: 'connectors'},
   {label: 'Version control', path: 'version-control'},
+  {label: 'Privacy', path: 'privacy'},
 ]
 
 export function ConfigurationLayout() {

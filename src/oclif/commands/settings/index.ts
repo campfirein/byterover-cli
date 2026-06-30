@@ -5,15 +5,22 @@ import {
   type SettingsItemDTO,
   type SettingsListResponse,
 } from '../../../shared/transport/events/settings-events.js'
+// Side-effect import: registers the `analytics.status` readonly-info text
+// formatter into the shared registry. Without this, a cold-start `brv settings`
+// invocation that does not transitively load any other module containing the
+// side-effect would render `analytics.status` rows as a raw JSON dump.
+import '../../../shared/utils/format-analytics-status.js'
 import {formatCount, formatDuration} from '../../../shared/utils/format-duration.js'
+import {formatReadonlyInfoValue} from '../../../shared/utils/format-readonly-info.js'
 import {type DaemonClientOptions, formatConnectionError, withDaemonRetry} from '../../lib/daemon-client.js'
 import {writeJsonResponse} from '../../lib/json-response.js'
 
-type CategoryName = 'concurrency' | 'llm' | 'task-history' | 'updates'
+type CategoryName = 'analytics' | 'concurrency' | 'llm' | 'task-history' | 'updates'
 
-const CATEGORY_ORDER: readonly CategoryName[] = ['concurrency', 'llm', 'task-history', 'updates']
+const CATEGORY_ORDER: readonly CategoryName[] = ['concurrency', 'llm', 'task-history', 'updates', 'analytics']
 
 const CATEGORY_HEADERS: Readonly<Record<CategoryName, string>> = {
+  analytics: 'ANALYTICS',
   concurrency: 'CONCURRENCY',
   llm: 'LLM',
   'task-history': 'TASK HISTORY',
@@ -108,15 +115,29 @@ function groupByCategory(items: readonly SettingsItemDTO[]): Map<string, Setting
 }
 
 function formatRow(item: SettingsItemDTO): string {
-  const current = renderValue(item, item.current)
-  const defaultStr = renderValue(item, item.default)
+  if (item.type === 'readonly-info') {
+    // List view is single-line per row. If the per-key formatter returns
+    // a multi-line snapshot (e.g. `analytics.status`), surface only the
+    // headline so the table stays aligned; users see the full block via
+    // `brv settings get <key>`.
+    const fullText = formatReadonlyInfoValue(item.key, item.current)
+    const headline = fullText.split('\n')[0]
+    return `  ${pad(item.key, 40)}  ${headline}`
+  }
+
+  const current = renderWritableValue(item, item.current)
+  const defaultStr = item.default === undefined ? '' : renderWritableValue(item, item.default)
   const range = renderRange(item)
   return `  ${pad(item.key, 40)}  ${pad(current, 7)}  (default ${defaultStr})${''.padEnd(Math.max(0, 8 - defaultStr.length))}  ${range}`
 }
 
-function renderValue(item: SettingsItemDTO, value: boolean | number): string {
+function renderWritableValue(item: SettingsItemDTO, value: boolean | number | Readonly<Record<string, unknown>> | undefined): string {
+  if (value === undefined) return ''
   if (typeof value === 'boolean') return value ? 'true' : 'false'
-  return renderInteger(item, value)
+  if (typeof value === 'number') return renderInteger(item, value)
+  // Defensive — writable descriptors never carry object payloads. If a
+  // future regression smuggles one in, format-via-JSON instead of NaN.
+  return JSON.stringify(value)
 }
 
 function renderInteger(item: SettingsItemDTO, value: number): string {

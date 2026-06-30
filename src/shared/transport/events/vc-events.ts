@@ -1,3 +1,6 @@
+ 
+import type {CliMetadata} from '../../analytics/cli-metadata-schema.js'
+
 export const VcErrorCode = {
   ALREADY_INITIALIZED: 'ERR_VC_ALREADY_INITIALIZED',
   AUTH_FAILED: 'ERR_VC_AUTH_FAILED',
@@ -60,9 +63,27 @@ export const VcEvents = {
   STATUS: 'vc:status',
 } as const
 
+/**
+ * M13.2 Group C — `vc:init` is a no-payload oclif call today (`onRequest<void, ...>`
+ * registered at `vc-handler.ts:198`). Create the Request interface here so oclif can
+ * attach `cli_metadata`. Daemon's handler-side type-parameter update is out of M13
+ * scope (deferred emit ticket).
+ */
+export interface IVcInitRequest {
+  cli_metadata?: CliMetadata
+}
+
 export interface IVcInitResponse {
   gitDir: string
   reinitialized: boolean
+}
+
+/**
+ * M13.2 Group C — `vc:status` is a no-payload oclif call. Create matching Request
+ * interface so M13.3's oclif sweep can attach `cli_metadata`.
+ */
+export interface IVcStatusRequest {
+  cli_metadata?: CliMetadata
 }
 
 export interface IVcStatusResponse {
@@ -81,6 +102,7 @@ export interface IVcStatusResponse {
 }
 
 export interface IVcAddRequest {
+  cli_metadata?: CliMetadata
   filePaths?: string[]
 }
 
@@ -89,6 +111,7 @@ export interface IVcAddResponse {
 }
 
 export interface IVcCommitRequest {
+  cli_metadata?: CliMetadata
   message: string
 }
 
@@ -106,6 +129,7 @@ export function isVcConfigKey(key: string): key is VcConfigKey {
 }
 
 export interface IVcConfigRequest {
+  cli_metadata?: CliMetadata
   key: VcConfigKey
   value?: string
 }
@@ -117,6 +141,7 @@ export interface IVcConfigResponse {
 
 export interface IVcPushRequest {
   branch?: string
+  cli_metadata?: CliMetadata
   setUpstream?: boolean
 }
 
@@ -127,6 +152,7 @@ export interface IVcPushResponse {
 }
 
 export interface IVcFetchRequest {
+  cli_metadata?: CliMetadata
   ref?: string
   remote?: string
 }
@@ -138,6 +164,7 @@ export interface IVcFetchResponse {
 export interface IVcPullRequest {
   allowUnrelatedHistories?: boolean
   branch?: string
+  cli_metadata?: CliMetadata
   remote?: string
 }
 
@@ -149,6 +176,7 @@ export interface IVcPullResponse {
 
 export interface IVcLogRequest {
   all?: boolean
+  cli_metadata?: CliMetadata
   limit?: number
   ref?: string
 }
@@ -187,6 +215,7 @@ export function isVcRemoteSubcommand(value: string): value is VcRemoteSubcommand
 }
 
 export interface IVcRemoteRequest {
+  cli_metadata?: CliMetadata
   subcommand: VcRemoteSubcommand
   url?: string
 }
@@ -197,8 +226,8 @@ export interface IVcRemoteResponse {
 }
 
 export type IVcCloneRequest =
-  | {spaceId: string; spaceName: string; teamId: string; teamName: string; url?: never}
-  | {spaceId?: string; spaceName?: string; teamId?: string; teamName?: string; url: string}
+  | {cli_metadata?: CliMetadata; spaceId: string; spaceName: string; teamId: string; teamName: string; url?: never}
+  | {cli_metadata?: CliMetadata; spaceId?: string; spaceName?: string; teamId?: string; teamName?: string; url: string}
 
 export interface IVcCloneResponse {
   gitDir: string
@@ -214,10 +243,10 @@ export interface IVcCloneProgressEvent {
 export type VcBranchAction = 'create' | 'delete' | 'list' | 'set-upstream'
 
 export type IVcBranchRequest =
-  | {action: 'create'; name: string; startPoint?: string}
-  | {action: 'delete'; name: string}
-  | {action: 'list'; all?: boolean}
-  | {action: 'set-upstream'; upstream: string}
+  | {action: 'create'; cli_metadata?: CliMetadata; name: string; startPoint?: string}
+  | {action: 'delete'; cli_metadata?: CliMetadata; name: string}
+  | {action: 'list'; all?: boolean; cli_metadata?: CliMetadata}
+  | {action: 'set-upstream'; cli_metadata?: CliMetadata; upstream: string}
 
 export interface VcBranch {
   isCurrent: boolean
@@ -233,6 +262,7 @@ export type IVcBranchResponse =
 
 export interface IVcCheckoutRequest {
   branch: string
+  cli_metadata?: CliMetadata
   create?: boolean
   force?: boolean
   /** Ref to create the new branch from when `create` is true. Ignored otherwise. */
@@ -251,6 +281,7 @@ export interface IVcMergeRequest {
   action: VcMergeAction
   allowUnrelatedHistories?: boolean
   branch?: string
+  cli_metadata?: CliMetadata
   message?: string
 }
 
@@ -265,6 +296,7 @@ export interface IVcMergeResponse {
 export type VcResetMode = 'hard' | 'mixed' | 'soft'
 
 export interface IVcResetRequest {
+  cli_metadata?: CliMetadata
   filePaths?: string[]
   mode?: VcResetMode
   ref?: string
@@ -284,6 +316,7 @@ export interface IVcResetResponse {
 export type VcDiffSide = 'staged' | 'unstaged'
 
 export interface IVcDiffRequest {
+  cli_metadata?: CliMetadata
   path: string
   side: VcDiffSide
 }
@@ -306,7 +339,9 @@ export interface IVcDiffResponse {
  *
  * The union form guarantees callers can't accidentally mix the two shapes (type error).
  */
-export type IVcDiffsRequest = {mode: VcDiffMode} | {paths: string[]; side: VcDiffSide}
+export type IVcDiffsRequest =
+  | {cli_metadata?: CliMetadata; mode: VcDiffMode}
+  | {cli_metadata?: CliMetadata; paths: string[]; side: VcDiffSide}
 
 /**
  * Diff modes for `brv vc diff` / `/vc diff`. Mirrors the four diff modes from `git diff`:
@@ -357,6 +392,7 @@ export interface IVcDiffsResponse {
  * Staged changes in the index are preserved.
  */
 export interface IVcDiscardRequest {
+  cli_metadata?: CliMetadata
   filePaths: string[]
 }
 

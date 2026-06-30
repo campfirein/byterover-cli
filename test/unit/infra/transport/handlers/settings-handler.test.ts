@@ -1,6 +1,10 @@
 import {expect} from 'chai'
 
-import type {SettingItem} from '../../../../../src/server/core/domain/entities/settings.js'
+import type {
+  SettingDescriptor,
+  SettingItem,
+} from '../../../../../src/server/core/domain/entities/settings.js'
+import type {IAnalyticsClient} from '../../../../../src/server/core/interfaces/analytics/i-analytics-client.js'
 import type {
   ISettingsStore,
   SettingsStartupSnapshot,
@@ -17,9 +21,13 @@ import type {
 
 import {
   InvalidSettingValueError,
+  ReadonlySettingKeyError,
   UnknownSettingKeyError,
 } from '../../../../../src/server/infra/storage/settings-validator.js'
-import {SettingsHandler} from '../../../../../src/server/infra/transport/handlers/settings-handler.js'
+import {
+  type ReadonlyInfoProvider,
+  SettingsHandler,
+} from '../../../../../src/server/infra/transport/handlers/settings-handler.js'
 import {SettingsEvents} from '../../../../../src/shared/transport/events/settings-events.js'
 import {createMockTransportServer} from '../../../../helpers/mock-factories.js'
 
@@ -86,6 +94,8 @@ describe('SettingsHandler', () => {
       expect(result.items.map((i) => i.key).sort()).to.deep.equal([
         'agentPool.maxConcurrentTasksPerProject',
         'agentPool.maxSize',
+        'analytics.share',
+        'analytics.status',
         'llm.iterationBudgetMs',
         'llm.requestTimeoutMs',
         'taskHistory.maxEntries',
@@ -327,4 +337,603 @@ describe('SettingsHandler', () => {
     if (!handler) throw new Error('RESET handler not registered')
     return handler(payload, 'test-client') as Promise<SettingsResetResponse>
   }
+
+  describe('readonly-info variant (M16.1)', () => {
+    const readonlyInfoRegistry: readonly SettingDescriptor[] = [
+    {
+      category: 'updates',
+      description: 'live operational snapshot for tests',
+      key: '_test.snapshot',
+      restartRequired: false,
+      type: 'readonly-info',
+    },
+  ]
+
+  let store: StubSettingsStore
+  let transport: ReturnType<typeof createMockTransportServer>
+
+  function setupHandler(opts: {
+    readonly providers?: ReadonlyMap<string, ReadonlyInfoProvider>
+  } = {}): void {
+    new SettingsHandler({
+      infoProviders: opts.providers,
+      registry: readonlyInfoRegistry,
+      store,
+      transport,
+    }).setup()
+  }
+
+  async function invokeList(): Promise<SettingsListResponse> {
+    const handler = transport._handlers.get(SettingsEvents.LIST)
+    if (!handler) throw new Error('LIST handler not registered')
+    return handler(undefined, 'test-client') as Promise<SettingsListResponse>
+  }
+
+  async function invokeGet(payload: SettingsGetRequest): Promise<SettingsGetResponse> {
+    const handler = transport._handlers.get(SettingsEvents.GET)
+    if (!handler) throw new Error('GET handler not registered')
+    return handler(payload, 'test-client') as Promise<SettingsGetResponse>
+  }
+
+  async function invokeSet(payload: SettingsSetRequest): Promise<SettingsSetResponse> {
+    const handler = transport._handlers.get(SettingsEvents.SET)
+    if (!handler) throw new Error('SET handler not registered')
+    return handler(payload, 'test-client') as Promise<SettingsSetResponse>
+  }
+
+  async function invokeReset(payload: SettingsResetRequest): Promise<SettingsResetResponse> {
+    const handler = transport._handlers.get(SettingsEvents.RESET)
+    if (!handler) throw new Error('RESET handler not registered')
+    return handler(payload, 'test-client') as Promise<SettingsResetResponse>
+  }
+
+  beforeEach(() => {
+    store = new StubSettingsStore()
+    store.listResult = [{current: undefined, key: '_test.snapshot', restartRequired: false}]
+    transport = createMockTransportServer()
+  })
+
+  describe('SET', () => {
+    it('returns code=read_only without calling store.set', async () => {
+      setupHandler()
+      const result = await invokeSet({key: '_test.snapshot', value: 1})
+
+      expect(result.ok).to.be.false
+      if (!result.ok) {
+        expect(result.error.code).to.equal('read_only')
+        expect(result.error.key).to.equal('_test.snapshot')
+        expect(result.error.message.toLowerCase()).to.include('read')
+      }
+
+      const setCalls = store.calls.filter((c) => c.method === 'set')
+      expect(setCalls).to.have.lengthOf(0)
+    })
+
+    it('maps a ReadonlySettingKeyError thrown from the store to a read_only DTO error', async () => {
+      store.setBehavior = async (key) => {
+        throw new ReadonlySettingKeyError(key)
+      }
+
+      setupHandler()
+      // Use a writable key that the registry knows about so we bypass the
+      // top-level guard. We simulate the store layer throwing for a key
+      // that escalated past pre-validation.
+      const writableRegistry: readonly SettingDescriptor[] = [
+        {
+          category: 'concurrency',
+          default: 10,
+          description: 'test',
+          key: '_test.writable',
+          max: 100,
+          min: 1,
+          restartRequired: true,
+          type: 'integer',
+        },
+      ]
+      const localTransport = createMockTransportServer()
+      const localStore = new StubSettingsStore()
+      localStore.setBehavior = async (key) => {
+        throw new ReadonlySettingKeyError(key)
+      }
+
+      new SettingsHandler({registry: writableRegistry, store: localStore, transport: localTransport}).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.SET)
+      if (!handler) throw new Error('SET handler not registered')
+      const result = (await handler({key: '_test.writable', value: 1}, 'test-client')) as SettingsSetResponse
+      expect(result.ok).to.be.false
+      if (!result.ok) {
+        expect(result.error.code).to.equal('read_only')
+        expect(result.error.key).to.equal('_test.writable')
+      }
+    })
+  })
+
+  describe('RESET', () => {
+    it('returns code=read_only without calling store.reset', async () => {
+      setupHandler()
+      const result = await invokeReset({key: '_test.snapshot'})
+
+      expect(result.ok).to.be.false
+      if (!result.ok) {
+        expect(result.error.code).to.equal('read_only')
+        expect(result.error.key).to.equal('_test.snapshot')
+      }
+
+      const resetCalls = store.calls.filter((c) => c.method === 'reset')
+      expect(resetCalls).to.have.lengthOf(0)
+    })
+  })
+
+  describe('LIST', () => {
+    it('resolves current via the registered info provider when present', async () => {
+      const providers = new Map<string, ReadonlyInfoProvider>([
+        ['_test.snapshot', () => ({endpoint: 'test', queueDepth: 3})],
+      ])
+      setupHandler({providers})
+
+      const result = await invokeList()
+      const snapshot = result.items.find((i) => i.key === '_test.snapshot')
+      expect(snapshot, 'readonly-info row must be present').to.exist
+      expect(snapshot?.type).to.equal('readonly-info')
+      expect(snapshot?.current).to.deep.equal({endpoint: 'test', queueDepth: 3})
+      expect(snapshot?.default).to.equal(undefined)
+      expect(snapshot?.min).to.equal(undefined)
+      expect(snapshot?.max).to.equal(undefined)
+      expect(snapshot?.unit).to.equal(undefined)
+    })
+
+    it('returns current=undefined when no info provider is registered', async () => {
+      setupHandler()
+      const result = await invokeList()
+      const snapshot = result.items.find((i) => i.key === '_test.snapshot')
+      expect(snapshot?.current).to.equal(undefined)
+    })
+
+    it('awaits an async info provider before responding', async () => {
+      const providers = new Map<string, ReadonlyInfoProvider>([
+        ['_test.snapshot', async () => ({lastFlush: 'now'})],
+      ])
+      setupHandler({providers})
+      const result = await invokeList()
+      const snapshot = result.items.find((i) => i.key === '_test.snapshot')
+      expect(snapshot?.current).to.deep.equal({lastFlush: 'now'})
+    })
+
+    it('isolates a throwing provider so the row surfaces with current=undefined instead of crashing the whole list', async () => {
+      const providers = new Map<string, ReadonlyInfoProvider>([
+        ['_test.snapshot', () => {
+          throw new Error('provider boom')
+        }],
+      ])
+      setupHandler({providers})
+
+      const result = await invokeList()
+      const snapshot = result.items.find((i) => i.key === '_test.snapshot')
+      expect(snapshot, 'readonly-info row must still be present').to.exist
+      expect(snapshot?.current).to.equal(undefined)
+    })
+
+    it('isolates a single throwing provider while resolving other readonly-info rows in the same response', async () => {
+      const multiRegistry: readonly SettingDescriptor[] = [
+        {
+          category: 'updates',
+          description: 'broken snapshot',
+          key: '_test.broken',
+          restartRequired: false,
+          type: 'readonly-info',
+        },
+        {
+          category: 'updates',
+          description: 'healthy snapshot',
+          key: '_test.healthy',
+          restartRequired: false,
+          type: 'readonly-info',
+        },
+      ]
+
+      const providers = new Map<string, ReadonlyInfoProvider>([
+        ['_test.broken', () => {
+          throw new Error('provider boom')
+        }],
+        ['_test.healthy', () => ({queueDepth: 5})],
+      ])
+
+      const localStore = new StubSettingsStore()
+      localStore.listResult = []
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({
+        infoProviders: providers,
+        registry: multiRegistry,
+        store: localStore,
+        transport: localTransport,
+      }).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.LIST)
+      if (!handler) throw new Error('LIST handler not registered')
+      const result = (await handler(undefined, 'test-client')) as SettingsListResponse
+
+      const broken = result.items.find((i) => i.key === '_test.broken')
+      const healthy = result.items.find((i) => i.key === '_test.healthy')
+      expect(broken?.current).to.equal(undefined)
+      expect(healthy?.current).to.deep.equal({queueDepth: 5})
+    })
+  })
+
+  describe('GET', () => {
+    it('resolves current via the registered info provider when present', async () => {
+      const providers = new Map<string, ReadonlyInfoProvider>([
+        ['_test.snapshot', () => ({queueDepth: 7})],
+      ])
+      setupHandler({providers})
+
+      const result = await invokeGet({key: '_test.snapshot'})
+      expect(result.ok).to.be.true
+      if (result.ok) {
+        expect(result.type).to.equal('readonly-info')
+        expect(result.current).to.deep.equal({queueDepth: 7})
+        expect(result.default).to.equal(undefined)
+      }
+    })
+
+    it('returns current=undefined when no info provider is registered', async () => {
+      setupHandler()
+      const result = await invokeGet({key: '_test.snapshot'})
+      expect(result.ok).to.be.true
+      if (result.ok) {
+        expect(result.current).to.equal(undefined)
+      }
+    })
+
+    it('returns invalid_value when the info provider throws (does not crash)', async () => {
+      const providers = new Map<string, ReadonlyInfoProvider>([
+        ['_test.snapshot', () => {
+          throw new Error('provider boom')
+        }],
+      ])
+      setupHandler({providers})
+
+      const result = await invokeGet({key: '_test.snapshot'})
+      expect(result.ok).to.be.false
+      if (!result.ok) {
+        expect(result.error.code).to.equal('invalid_value')
+        expect(result.error.key).to.equal('_test.snapshot')
+        expect(result.error.message.toLowerCase()).to.include('boom')
+      }
+    })
+  })
+  })
+
+  describe('analytics.share facade routing (M16.2 — production registry)', () => {
+    type AnalyticsFacadeStub = {
+      readonly calls: Array<{args: unknown[]; method: string}>
+      currentValue: boolean
+      getCurrentAnalytics: () => Promise<boolean>
+      setAnalyticsValue: (value: boolean) => Promise<{current: boolean; previous: boolean}>
+    }
+
+    function makeFacade(initial: boolean): AnalyticsFacadeStub {
+      const stub: AnalyticsFacadeStub = {
+        calls: [],
+        currentValue: initial,
+        async getCurrentAnalytics() {
+          return stub.currentValue
+        },
+        async setAnalyticsValue(value: boolean) {
+          stub.calls.push({args: [value], method: 'setAnalyticsValue'})
+          const previous = stub.currentValue
+          stub.currentValue = value
+          return {current: value, previous}
+        },
+      }
+      return stub
+    }
+
+    it('GET on analytics.share reads from the injected globalConfigHandler (true)', async () => {
+      const facade = makeFacade(true)
+      const localStore = new StubSettingsStore()
+      localStore.listResult = [{current: undefined, key: 'analytics.share', restartRequired: false}]
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({
+        globalConfigHandler: facade,
+        store: localStore,
+        transport: localTransport,
+      }).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.GET)
+      if (!handler) throw new Error('GET handler not registered')
+      const result = (await handler({key: 'analytics.share'}, 'test-client')) as SettingsGetResponse
+
+      expect(result.ok).to.be.true
+      if (result.ok) {
+        expect(result.type).to.equal('boolean')
+        expect(result.current).to.equal(true)
+        expect(result.default).to.equal(false)
+        expect(result.category).to.equal('analytics')
+      }
+    })
+
+    it('SET on analytics.share calls globalConfigHandler.setAnalyticsValue, NOT store.set', async () => {
+      const facade = makeFacade(false)
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({
+        globalConfigHandler: facade,
+        store: localStore,
+        transport: localTransport,
+      }).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.SET)
+      if (!handler) throw new Error('SET handler not registered')
+      const result = (await handler({key: 'analytics.share', value: true}, 'test-client')) as SettingsSetResponse
+
+      expect(result.ok).to.be.true
+      if (result.ok) {
+        expect(result.restartRequired).to.equal(false)
+      }
+
+      const setCalls = facade.calls.filter((c) => c.method === 'setAnalyticsValue')
+      expect(setCalls).to.have.lengthOf(1)
+      expect(setCalls[0].args).to.deep.equal([true])
+      const storeSetCalls = localStore.calls.filter((c) => c.method === 'set')
+      expect(storeSetCalls, 'file store must not be touched').to.have.lengthOf(0)
+    })
+
+    it('RESET on analytics.share flips the globalConfig value to false, NOT store.reset', async () => {
+      const facade = makeFacade(true)
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({
+        globalConfigHandler: facade,
+        store: localStore,
+        transport: localTransport,
+      }).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.RESET)
+      if (!handler) throw new Error('RESET handler not registered')
+      const result = (await handler({key: 'analytics.share'}, 'test-client')) as SettingsResetResponse
+
+      expect(result.ok).to.be.true
+      const setCalls = facade.calls.filter((c) => c.method === 'setAnalyticsValue')
+      expect(setCalls).to.have.lengthOf(1)
+      expect(setCalls[0].args).to.deep.equal([false])
+      const storeResetCalls = localStore.calls.filter((c) => c.method === 'reset')
+      expect(storeResetCalls, 'file store must not be touched').to.have.lengthOf(0)
+    })
+
+    it('LIST surfaces analytics.share with the value from globalConfigHandler', async () => {
+      const facade = makeFacade(true)
+      const localStore = new StubSettingsStore()
+      localStore.listResult = []
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({
+        globalConfigHandler: facade,
+        store: localStore,
+        transport: localTransport,
+      }).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.LIST)
+      if (!handler) throw new Error('LIST handler not registered')
+      const result = (await handler(undefined, 'test-client')) as SettingsListResponse
+
+      const row = result.items.find((i) => i.key === 'analytics.share')
+      expect(row, 'analytics.share row present').to.exist
+      expect(row?.type).to.equal('boolean')
+      expect(row?.current).to.equal(true)
+      expect(row?.default).to.equal(false)
+    })
+
+    it('SET on analytics.share emits SETTING_CHANGED with value_kind=boolean and outcome=success', async () => {
+      const facade = makeFacade(false)
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      const trackCalls: Array<{args: unknown[]}> = []
+      const fakeClient = {track: (...args: unknown[]) => trackCalls.push({args})} as unknown as IAnalyticsClient
+
+      new SettingsHandler({
+        analyticsClient: fakeClient,
+        globalConfigHandler: facade,
+        store: localStore,
+        transport: localTransport,
+      }).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.SET)
+      if (!handler) throw new Error('SET handler not registered')
+      await handler({key: 'analytics.share', value: true}, 'test-client')
+
+      const setting = trackCalls.find((c) => (c.args[0] as string).endsWith('setting_changed'))
+      expect(setting, 'SETTING_CHANGED emitted').to.exist
+      const props = setting!.args[1] as {outcome: string; value_kind: string}
+      expect(props.outcome).to.equal('success')
+      expect(props.value_kind).to.equal('boolean')
+    })
+
+    it('GET on analytics.share with NO injected facade returns current=undefined (graceful)', async () => {
+      const localStore = new StubSettingsStore()
+      localStore.listResult = [{current: undefined, key: 'analytics.share', restartRequired: false}]
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({store: localStore, transport: localTransport}).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.GET)
+      if (!handler) throw new Error('GET handler not registered')
+      const result = (await handler({key: 'analytics.share'}, 'test-client')) as SettingsGetResponse
+
+      expect(result.ok).to.be.true
+      if (result.ok) {
+        expect(result.current).to.equal(undefined)
+      }
+    })
+
+    it('SET on analytics.share with NO injected facade returns code=misconfigured (not invalid_value)', async () => {
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({store: localStore, transport: localTransport}).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.SET)
+      if (!handler) throw new Error('SET handler not registered')
+      const result = (await handler({key: 'analytics.share', value: true}, 'test-client')) as SettingsSetResponse
+
+      expect(result.ok).to.be.false
+      if (!result.ok) {
+        // Bot review (#7): a missing facade is a daemon wiring problem, not a
+        // user-supplied bad value. Distinct code so logs / WebUI can route
+        // the alert at the right team.
+        expect(result.error.code).to.equal('misconfigured')
+        expect(result.error.key).to.equal('analytics.share')
+        expect(result.error.message.toLowerCase()).to.match(/global ?config|facade/)
+      }
+    })
+
+    it('RESET on analytics.share with NO injected facade returns code=misconfigured (not invalid_value)', async () => {
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({store: localStore, transport: localTransport}).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.RESET)
+      if (!handler) throw new Error('RESET handler not registered')
+      const result = (await handler({key: 'analytics.share'}, 'test-client')) as SettingsResetResponse
+
+      expect(result.ok).to.be.false
+      if (!result.ok) {
+        expect(result.error.code).to.equal('misconfigured')
+        expect(result.error.key).to.equal('analytics.share')
+      }
+    })
+
+    it('RESET refuses non-boolean global-config descriptors with code=misconfigured (future-proofing for bot review #6)', async () => {
+      // The facade interface (`setAnalyticsValue(value: boolean)`) is
+      // structurally boolean-only. A future PR that adds an integer
+      // descriptor with `storage: 'global-config'` would otherwise hit
+      // the `: false` fallback in RESET and silently coerce to boolean.
+      // Tighten with a custom registry stub so this is enforced today.
+      const intGlobalDescriptor: SettingDescriptor = {
+        category: 'analytics',
+        default: 42,
+        description: 'fake integer global-config descriptor — test only',
+        key: '_test.integerGlobal',
+        max: 100,
+        min: 0,
+        restartRequired: false,
+        storage: 'global-config',
+        type: 'integer',
+      }
+      const facade = {
+        getCurrentAnalytics: async () => false,
+        setAnalyticsValue: async (value: boolean) => ({current: value, previous: false}),
+      }
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({
+        globalConfigHandler: facade,
+        registry: [intGlobalDescriptor],
+        store: localStore,
+        transport: localTransport,
+      }).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.RESET)
+      if (!handler) throw new Error('RESET handler not registered')
+      const result = (await handler({key: '_test.integerGlobal'}, 'test-client')) as SettingsResetResponse
+
+      expect(result.ok).to.be.false
+      if (!result.ok) {
+        expect(result.error.code).to.equal('misconfigured')
+        expect(result.error.key).to.equal('_test.integerGlobal')
+        expect(result.error.message.toLowerCase()).to.match(/boolean|facade/)
+      }
+    })
+  })
+
+  describe('analytics.status routing (M16.3 — production registry)', () => {
+    it('GET resolves analytics.status via the registered provider against the production registry', async () => {
+      const localStore = new StubSettingsStore()
+      // Real FileSettingsStore returns `{current: undefined, key, restartRequired: false}`
+      // for readonly-info keys. Stub mirrors that so the handler's GET path
+      // reaches the provider resolution step.
+      localStore.listResult = [{current: undefined, key: 'analytics.status', restartRequired: false}]
+      const localTransport = createMockTransportServer()
+      const snapshot = {
+        backoff: {consecutiveFailures: 0, nextDelayMs: 30_000, state: 'healthy' as const},
+        droppedCount: 0,
+        enabled: true,
+        endpoint: 'https://telemetry-dev.byterover.dev',
+        lastFlushAt: 1_700_000_000_000,
+        queueDepth: 4,
+      }
+      const providers = new Map<string, ReadonlyInfoProvider>([
+        ['analytics.status', () => snapshot],
+      ])
+      new SettingsHandler({infoProviders: providers, store: localStore, transport: localTransport}).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.GET)
+      if (!handler) throw new Error('GET handler not registered')
+      const result = (await handler({key: 'analytics.status'}, 'test-client')) as SettingsGetResponse
+
+      expect(result.ok).to.be.true
+      if (result.ok) {
+        expect(result.type).to.equal('readonly-info')
+        expect(result.current).to.deep.equal(snapshot)
+        expect(result.category).to.equal('analytics')
+        expect(result.default).to.equal(undefined)
+      }
+    })
+
+    it('SET on analytics.status returns code=read_only against the production registry', async () => {
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({store: localStore, transport: localTransport}).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.SET)
+      if (!handler) throw new Error('SET handler not registered')
+      const result = (await handler({key: 'analytics.status', value: 1}, 'test-client')) as SettingsSetResponse
+
+      expect(result.ok).to.be.false
+      if (!result.ok) {
+        expect(result.error.code).to.equal('read_only')
+        expect(result.error.key).to.equal('analytics.status')
+      }
+    })
+
+    it('RESET on analytics.status returns code=read_only against the production registry', async () => {
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      new SettingsHandler({store: localStore, transport: localTransport}).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.RESET)
+      if (!handler) throw new Error('RESET handler not registered')
+      const result = (await handler({key: 'analytics.status'}, 'test-client')) as SettingsResetResponse
+
+      expect(result.ok).to.be.false
+      if (!result.ok) {
+        expect(result.error.code).to.equal('read_only')
+        expect(result.error.key).to.equal('analytics.status')
+      }
+    })
+
+    it('LIST includes analytics.status as a readonly-info row with current resolved by the provider', async () => {
+      const localStore = new StubSettingsStore()
+      const localTransport = createMockTransportServer()
+      const snapshot = {
+        backoff: {consecutiveFailures: 0, nextDelayMs: 30_000, state: 'healthy' as const},
+        droppedCount: 0,
+        enabled: false,
+        endpoint: 'https://telemetry-dev.byterover.dev',
+        queueDepth: 0,
+      }
+      const providers = new Map<string, ReadonlyInfoProvider>([
+        ['analytics.status', () => snapshot],
+      ])
+      new SettingsHandler({infoProviders: providers, store: localStore, transport: localTransport}).setup()
+
+      const handler = localTransport._handlers.get(SettingsEvents.LIST)
+      if (!handler) throw new Error('LIST handler not registered')
+      const result = (await handler(undefined, 'test-client')) as SettingsListResponse
+
+      const row = result.items.find((i) => i.key === 'analytics.status')
+      expect(row, 'analytics.status row present in LIST').to.exist
+      expect(row?.type).to.equal('readonly-info')
+      expect(row?.category).to.equal('analytics')
+      expect(row?.current).to.deep.equal(snapshot)
+      expect(row?.default).to.equal(undefined)
+    })
+  })
 })

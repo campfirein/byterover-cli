@@ -25,12 +25,14 @@
 import {GlobalInstanceManager} from '@campfirein/brv-transport-client'
 import express from 'express'
 import {fork, type StdioOptions} from 'node:child_process'
-import {mkdirSync, readdirSync, readFileSync, unlinkSync} from 'node:fs'
+import {mkdirSync, readdirSync, unlinkSync} from 'node:fs'
 import {dirname, join} from 'node:path'
 import {fileURLToPath} from 'node:url'
 
 import type {BrvConfig} from '../../core/domain/entities/brv-config.js'
+import type {IAnalyticsClient} from '../../core/interfaces/analytics/i-analytics-client.js'
 
+import {AnalyticsEventNames} from '../../../shared/analytics/event-names.js'
 import {ReviewEvents} from '../../../shared/transport/events/review-events.js'
 import {TaskEvents, type TaskHeartbeatEvent} from '../../../shared/transport/events/task-events.js'
 import {
@@ -51,10 +53,12 @@ import {
 import {buildReviewUrl} from '../../utils/build-review-url.js'
 import {getGlobalDataDir} from '../../utils/global-data-path.js'
 import {crashLog, processLog} from '../../utils/process-logger.js'
+import {readCliVersion} from '../../utils/read-cli-version.js'
 import {createBillingStateHandler} from '../billing/billing-state-endpoint.js'
 import {ClientManager} from '../client/client-manager.js'
 import {ProjectConfigStore} from '../config/file-config-store.js'
 import {readContextTreeRemoteUrl} from '../context-tree/read-context-tree-remote.js'
+import {AnalyticsHook} from '../process/analytics-hook.js'
 import {broadcastToProjectRoom} from '../process/broadcast-utils.js'
 import {CurateLogHandler} from '../process/curate-log-handler.js'
 import {setupFeatureHandlers} from '../process/feature-handlers.js'
@@ -75,6 +79,7 @@ import {FileProviderConfigStore} from '../storage/file-provider-config-store.js'
 import {FileSettingsStore} from '../storage/file-settings-store.js'
 import {createProviderKeychainStore} from '../storage/provider-keychain-store.js'
 import {createTokenStore} from '../storage/token-store.js'
+import {attachCliInvocationMiddleware} from '../transport/cli-invocation-middleware.js'
 import {SocketIOTransportServer} from '../transport/socket-io-transport-server.js'
 import {createWebUiMiddleware} from '../webui/webui-middleware.js'
 import {WebUiServer} from '../webui/webui-server.js'
@@ -97,25 +102,6 @@ function log(msg: string): void {
   processLog(`[Daemon] ${msg}`)
 }
 
-/**
- * Reads the CLI version from package.json.
- * Walks up from the compiled file location to find the project root.
- */
-function readCliVersion(): string {
-  try {
-    const currentDir = dirname(fileURLToPath(import.meta.url))
-    // Both src/ and dist/ are 4 levels deep: server/infra/daemon/brv-server
-    const pkgPath = join(currentDir, '..', '..', '..', '..', 'package.json')
-    const pkg: unknown = JSON.parse(readFileSync(pkgPath, 'utf8'))
-    if (typeof pkg === 'object' && pkg !== null && 'version' in pkg && typeof pkg.version === 'string') {
-      return pkg.version
-    }
-  } catch {
-    // Best-effort — return fallback
-  }
-
-  return 'unknown'
-}
 
 /**
  * Removes old daemon log files, keeping the most recent ones.
@@ -197,9 +183,21 @@ async function main(): Promise<void> {
   let agentPool: AgentPool | undefined
   let webuiServer: undefined | WebUiServer
 
+  // M15.8 §4 — lazy holder for the analyticsClient. The CLI-invocation
+  // middleware is attached to the transport server BEFORE setupFeatureHandlers
+  // constructs the analytics client; this reference is reseated when the
+  // client lands so the middleware can start emitting.
+  let analyticsClientRef: IAnalyticsClient | undefined
+
   try {
     // 4a. Construct transport server. start() is deferred to step 11 so all handlers register before sockets connect.
     transportServer = new SocketIOTransportServer()
+
+    // M15.8 §4 — attach cli_invocation middleware BEFORE any handler is
+    // registered so every incoming request flows through the wrap. The
+    // analytics client is not constructed yet; the lazy getter resolves it
+    // once setupFeatureHandlers below sets analyticsClientRef.
+    attachCliInvocationMiddleware(transportServer, {getAnalyticsClient: () => analyticsClientRef})
 
     // 4b. Start Web UI server on stable port (separate from transport)
     const daemonDir = dirname(fileURLToPath(import.meta.url))
@@ -262,6 +260,15 @@ async function main(): Promise<void> {
     const projectRegistry = new ProjectRegistry({log})
     const projectRouter = new ProjectRouter({transport: transportServer})
     const clientManager = new ClientManager()
+
+    // Stamp `client_kind` on analytics super-properties for every request
+    // originating from a registered Socket.IO client. Agent-fork
+    // connections bypass the wrap (return undefined) so daemon-internal
+    // task lifecycle emits stay envelope-clean.
+    transportServer.setGetClientKind((clientId) => {
+      const type = clientManager.getClient(clientId)?.type
+      return type && type !== 'agent' ? type : undefined
+    })
 
     authStateStore = new AuthStateStore({log, tokenStore: createTokenStore()})
     const projectStateLoader = new ProjectStateLoader({
@@ -358,6 +365,23 @@ async function main(): Promise<void> {
     // same instances this hook writes to.
     const taskHistoryHook = new TaskHistoryHook({getStore: getTaskHistoryStore})
 
+    // M15.6: AnalyticsHook is the 4th lifecycle peer alongside curate-log /
+    // query-log / task-history. It emits task_created / task_completed /
+    // task_failed (and M12 per-flavor events for curate / query) into the
+    // daemon's IAnalyticsClient. The client + isAnalyticsEnabled gate come
+    // from setupFeatureHandlers later in this function; the closure below
+    // defers the lookup so the hook can be constructed in time to land in
+    // lifecycleHooks[] but still observe the live config.
+    let isAnalyticsEnabledRef: () => boolean = () => true
+    const analyticsHook = new AnalyticsHook({
+      async getIdentity(projectPath) {
+        if (!projectPath) return {}
+        const config = await projectStateLoader.getProjectConfig(projectPath)
+        return {spaceId: config?.spaceId, teamId: config?.teamId}
+      },
+      isEnabled: () => isAnalyticsEnabledRef(),
+    })
+
     // Provider config/keychain stores — shared between feature handlers and state endpoint.
     // Hoisted ahead of `new TransportHandlers` so the resolveActiveProvider callback below
     // can close over them and call resolveProviderConfig synchronously at task-create time.
@@ -418,7 +442,7 @@ async function main(): Promise<void> {
         const config = await new ProjectConfigStore().read(projectPath)
         return config?.reviewDisabled === true
       },
-      lifecycleHooks: [curateLogHandler, queryLogHandler, taskHistoryHook],
+      lifecycleHooks: [curateLogHandler, queryLogHandler, taskHistoryHook, analyticsHook],
       projectRegistry,
       projectRouter,
       // Stamp the active provider/model snapshot onto every created task so the
@@ -486,10 +510,21 @@ async function main(): Promise<void> {
       },
     })
 
+    // M4.3: the analytics flush scheduler is constructed inside
+    // setupFeatureHandlers (later), so the final-flush closure resolves
+    // through a mutable holder. The shutdown sequence calls this hook
+    // after the agent pool stops; if setupFeatureHandlers never ran
+    // (e.g. startup crashed early) the holder stays undefined and the
+    // hook is skipped. Restored by M15.6 follow-up — the original M4.3
+    // wiring got dropped when the late-bind for AnalyticsHook landed.
+    // eslint-disable-next-line prefer-const
+    let analyticsFinalFlush: (() => Promise<void>) | undefined
+
     // 9. Create shutdown handler (agent pool shut down before transport)
     shutdownHandler = new ShutdownHandler({
       agentIdleTimeoutPolicy,
       agentPool,
+      analyticsFinalFlush: () => analyticsFinalFlush?.() ?? Promise.resolve(),
       daemonResilience,
       heartbeatWriter,
       idleTimeoutPolicy,
@@ -633,12 +668,13 @@ async function main(): Promise<void> {
     // Feature handlers (auth, init, status, push, pull, etc.) require async OIDC discovery.
     // Placed after daemon:getState so the debug endpoint is available immediately,
     // without waiting for OIDC discovery (~400ms).
-    await setupFeatureHandlers({
+    const featureHandlers = await setupFeatureHandlers({
       authStateStore,
       billingConfigStoreFactory,
       broadcastToProject(projectPath, event, data) {
         broadcastToProjectRoom(projectRegistry, projectRouter, projectPath, event, data)
       },
+      clientManager,
       getActiveProjectPaths: () => clientManager.getActiveProjects(),
       log,
       projectRegistry,
@@ -651,12 +687,51 @@ async function main(): Promise<void> {
       webuiPort: webuiServer?.getPort(),
     })
 
+    // M15.6: now that setupFeatureHandlers has constructed the real
+    // IAnalyticsClient + isAnalyticsEnabled callback, late-bind them into
+    // the AnalyticsHook that was pre-registered in lifecycleHooks[]. Any
+    // task_* emits queued during the boot window between hook construction
+    // and this line silently no-op (matches `setAnalyticsClient`'s docblock
+    // contract — no tasks are active during daemon boot).
+    isAnalyticsEnabledRef = featureHandlers.isAnalyticsEnabled
+    // PR #722 review: explode loudly if a future refactor drops
+    // analyticsClient from the result shape — silently no-op'ing every
+    // emit forever is the worst failure mode for telemetry plumbing.
+    if (!featureHandlers.analyticsClient) {
+      throw new Error('setupFeatureHandlers returned without analyticsClient — AnalyticsHook cannot bind')
+    }
+
+    analyticsHook.setAnalyticsClient(featureHandlers.analyticsClient)
+    // M15.8 §4 — seat the cli_invocation middleware's analytics-client ref
+    // so the wrap (attached at line 211) starts emitting on subsequent requests.
+    analyticsClientRef = featureHandlers.analyticsClient
+
+    // M4.3: start the flush scheduler AFTER the first track lands so the
+    // initial 30s window aligns with real traffic, and wire the shutdown
+    // hook now that the scheduler exists. Hook stops the scheduler first
+    // (no new ticks mid-shutdown) before awaiting the best-effort final
+    // flush against a 3s budget.
+    featureHandlers.analyticsFlushScheduler.start()
+    analyticsFinalFlush = async () => {
+      featureHandlers.analyticsFlushScheduler.stop()
+      await featureHandlers.analyticsFlushScheduler.flushFinal({timeoutMs: 3000})
+    }
+
     // Load auth token AFTER feature handlers are registered.
     // AuthHandler's onAuthChanged/onAuthExpired callbacks must be wired first
     // so that loadToken() triggers proper broadcasts to TUI and agents.
     // Agents also request auth on-demand via state:getAuth, so this ordering is safe.
     await authStateStore.loadToken()
     authStateStore.startPolling()
+
+    // M15.8: emit daemon_start AFTER loadToken() so the event's identity
+    // envelope reflects the just-resolved auth state (anon vs authed).
+    // Wrapped in try so a future track-time failure cannot abort boot.
+    try {
+      featureHandlers.analyticsClient.track(AnalyticsEventNames.DAEMON_START)
+    } catch (error: unknown) {
+      log(`daemon_start emit failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
 
     // 11. Start idle timer + register signal handlers
     idleTimeoutPolicy.start()

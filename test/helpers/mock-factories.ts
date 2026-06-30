@@ -545,6 +545,7 @@ export function createMockAuthStateStore(
     loadToken: sandbox.stub().resolves(token),
     onAuthChanged: sandbox.stub(),
     onAuthExpired: sandbox.stub(),
+    onBeforeAuthChange: sandbox.stub(),
     startPolling: sandbox.stub(),
     stopPolling: sandbox.stub(),
   }

@@ -2,6 +2,7 @@ import {CATEGORY_ORDER, type SettingsRow, type SettingsRowCategory} from '../../
 import {formatDuration} from '../../../../shared/utils/format-duration.js'
 
 const CATEGORY_HEADERS: Readonly<Record<SettingsRowCategory, string>> = {
+  analytics: 'ANALYTICS',
   concurrency: 'CONCURRENCY',
   llm: 'LLM',
   other: 'OTHER',
@@ -32,9 +33,17 @@ export function groupRowsByCategory(rows: readonly SettingsRow[]): ReadonlyArray
   return result
 }
 
-export function bottomHintFor(mode: 'browse' | 'edit' | 'edit-error' | 'saving', focusedKey?: string): string {
+export function bottomHintFor(
+  mode: 'browse' | 'edit' | 'edit-error' | 'saving',
+  focusedKey?: string,
+  focusedRowType?: 'boolean' | 'integer' | 'readonly-info',
+): string {
   switch (mode) {
     case 'browse': {
+      if (focusedRowType === 'readonly-info') {
+        return 'Up/Down move | Enter view | Esc exit'
+      }
+
       return 'Up/Down move | Enter edit | R reset | Esc exit'
     }
 

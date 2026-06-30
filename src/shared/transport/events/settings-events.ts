@@ -14,26 +14,45 @@ export const SettingsEvents = {
  * M7 T2 added three optional fields (`category`, `unit`, `scope`); T1 of
  * the Update-check toggle project widened `type`, `current`, `default`,
  * and `restartRequired` to also cover boolean descriptors, and made
- * `min` / `max` optional (only integer descriptors carry them). All
- * widenings are additive at the JSON layer, so consumers that read
- * existing integer fields continue to parse the wire format.
+ * `min` / `max` optional (only integer descriptors carry them). M16.1
+ * added the `'readonly-info'` variant: a snapshot has no `default` and
+ * `current` may be a structured object or `undefined` (when no info
+ * provider is registered). All widenings are additive at the JSON
+ * layer, so consumers that read existing integer fields continue to
+ * parse the wire format.
  */
 export interface SettingsItemDTO {
-  category?: 'concurrency' | 'llm' | 'task-history' | 'updates'
-  current: boolean | number
-  default: boolean | number
+  category?: 'analytics' | 'concurrency' | 'llm' | 'task-history' | 'updates'
+  current: boolean | number | Readonly<Record<string, unknown>> | undefined
+  default?: boolean | number
   description: string
   key: string
   max?: number
   min?: number
   restartRequired: boolean
   scope?: 'global' | 'project'
-  type: 'boolean' | 'integer'
+  type: 'boolean' | 'integer' | 'readonly-info'
   unit?: 'count' | 'ms'
 }
 
 export interface SettingsErrorDTO {
-  code: 'invalid_value' | 'invalid_value_type' | 'unknown_key'
+  /**
+   * Failure category for a settings:* request.
+   *
+   * - `'invalid_value'`: value violates a descriptor constraint (range,
+   *   coupling, fractional integer, etc).
+   * - `'invalid_value_type'`: value's runtime `typeof` did not match the
+   *   descriptor's declared type.
+   * - `'misconfigured'`: the daemon's wiring of this key is missing or
+   *   incompatible (e.g. a `storage: 'global-config'` descriptor with no
+   *   facade injected, or a non-boolean global-config descriptor — the
+   *   only facade is boolean-only today). Distinct from `invalid_value`
+   *   so logs and the WebUI can distinguish "user gave bad value" from
+   *   "daemon wiring is wrong".
+   * - `'read_only'`: caller tried to write or reset a `readonly-info` key.
+   * - `'unknown_key'`: registry has no descriptor for the requested key.
+   */
+  code: 'invalid_value' | 'invalid_value_type' | 'misconfigured' | 'read_only' | 'unknown_key'
   /** Expected runtime kind, only set when `code === 'invalid_value_type'`. */
   expected?: 'boolean' | 'integer'
   /** `typeof` of the offending value, only set when `code === 'invalid_value_type'`. */

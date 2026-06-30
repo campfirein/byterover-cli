@@ -1,16 +1,18 @@
-import {Box, Text, useInput} from 'ink'
+import {Box, Text, useInput, useStdout} from 'ink'
 import Spinner from 'ink-spinner'
-import React, {useCallback, useMemo, useState} from 'react'
+import React, {useCallback, useEffect, useMemo, useState} from 'react'
 
 import type {SettingsRow} from '../../../../shared/types/settings-row.js'
 import type {CustomDialogCallbacks} from '../../../types/commands.js'
 
+import {ANALYTICS_ENABLED_KEY} from '../../../../shared/constants/settings-keys.js'
 import {buildSettingsRows, parseRowInput} from '../../../../shared/utils/format-settings.js'
+import {loadAnalyticsDisclosureText} from '../../../../shared/utils/load-analytics-disclosure.js'
 import {useTheme} from '../../../hooks/index.js'
 import {useGetSettings, useResetSetting, useSetSetting} from '../api/settings-api.js'
 import {bottomHintFor, groupRowsByCategory, preFillBufferFor} from '../utils/format-settings.js'
 
-type Mode = 'browse' | 'edit' | 'saving'
+type Mode = 'browse' | 'confirm-disclosure' | 'detail' | 'edit' | 'saving'
 
 export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): React.ReactNode {
   const {data, error, isLoading} = useGetSettings()
@@ -25,12 +27,36 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
   const [editBuffer, setEditBuffer] = useState('')
   const [rowError, setRowError] = useState<string | undefined>()
   const [dirtyKeys, setDirtyKeys] = useState<ReadonlySet<string>>(new Set())
+  const [disclosureText, setDisclosureText] = useState<string | undefined>()
+  const [disclosureScroll, setDisclosureScroll] = useState(0)
+  const [pendingDisclosureRow, setPendingDisclosureRow] = useState<SettingsRow | undefined>()
+
+  // Tracks terminal height so the disclosure overlay can slice the
+  // markdown to fit a short window. Falls back to a sensible default
+  // when stdout has no row count (e.g. piped output, tests).
+  const {stdout} = useStdout()
+  const [terminalRows, setTerminalRows] = useState<number>(stdout?.rows ?? 24)
+  useEffect(() => {
+    if (!stdout) return
+    const handler = (): void => setTerminalRows(stdout.rows ?? 24)
+    stdout.on('resize', handler)
+    return () => {
+      stdout.off('resize', handler)
+    }
+  }, [stdout])
 
   const rows = useMemo<SettingsRow[]>(() => (data ? buildSettingsRows(data.items) : []), [data])
   const groups = useMemo(() => groupRowsByCategory(rows), [rows])
   const focusedRow = rows[cursor]
+  // `hintMode` only feeds the bottom hint on the row-list render. The
+  // `confirm-disclosure` mode short-circuits that render entirely (its
+  // own hint is inlined below), so it never reaches `bottomHintFor`.
   const hintMode: 'browse' | 'edit' | 'edit-error' | 'saving' =
-    mode === 'edit' && rowError !== undefined ? 'edit-error' : mode
+    mode === 'confirm-disclosure' || mode === 'detail'
+      ? 'browse'
+      : mode === 'edit' && rowError !== undefined
+        ? 'edit-error'
+        : mode
 
   // Restart warning fires only when at least one dirty key actually
   // requires a daemon restart. Boolean toggles (e.g. update.checkForUpdates,
@@ -99,12 +125,11 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
     [resetMutation],
   )
 
-  const toggleBoolean = useCallback(
-    async (row: SettingsRow) => {
-      if (row.type !== 'boolean' || typeof row.current !== 'boolean') return
+  const performToggle = useCallback(
+    async (row: SettingsRow, nextValue: boolean) => {
       setMode('saving')
       setRowError(undefined)
-      const response = await setMutation.mutateAsync({key: row.key, value: !row.current})
+      const response = await setMutation.mutateAsync({key: row.key, value: nextValue})
       if (response.ok) {
         setDirtyKeys((previous) => {
           const next = new Set(previous)
@@ -119,6 +144,35 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
       setMode('browse')
     },
     [setMutation],
+  )
+
+  const toggleBoolean = useCallback(
+    async (row: SettingsRow) => {
+      if (row.type !== 'boolean' || typeof row.current !== 'boolean') return
+
+      // analytics.share false -> true requires the disclosure consent
+      // prompt. Load the markdown and switch into the confirm-disclosure
+      // mode; the user must press Enter to accept (which fires the actual
+      // SET) or Esc to cancel.
+      if (row.key === ANALYTICS_ENABLED_KEY && row.current === false) {
+        setRowError(undefined)
+        setPendingDisclosureRow(row)
+        setDisclosureScroll(0)
+        try {
+          const text = await loadAnalyticsDisclosureText()
+          setDisclosureText(text)
+          setMode('confirm-disclosure')
+        } catch (error) {
+          setRowError(error instanceof Error ? error.message : String(error))
+          setPendingDisclosureRow(undefined)
+        }
+
+        return
+      }
+
+      await performToggle(row, !row.current)
+    },
+    [performToggle],
   )
 
   useInput(
@@ -144,6 +198,14 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
 
       if (key.return || input === ' ') {
         const row = rows[cursor]
+        if (row.type === 'readonly-info') {
+          // Read-only rows can't be edited/toggled/reset, but Enter opens a
+          // detail panel showing the full multi-line value (the list row only
+          // shows the headline). Esc closes the panel.
+          setMode('detail')
+          return
+        }
+
         if (row.type === 'boolean') {
           toggleBoolean(row).catch(() => {})
         } else {
@@ -154,7 +216,9 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
       }
 
       if (input?.toLowerCase() === 'r') {
-        resetRow(rows[cursor]).catch(() => {})
+        const row = rows[cursor]
+        if (row.type === 'readonly-info') return
+        resetRow(row).catch(() => {})
       }
     },
     {isActive: mode === 'browse'},
@@ -195,6 +259,84 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
     {isActive: mode === 'saving'},
   )
 
+  // Detail panel for read-only rows (e.g. analytics.status): shows the full
+  // multi-line value the list row truncates to a headline. Esc returns to the
+  // list (does NOT exit the page).
+  useInput(
+    (_input, key) => {
+      if (key.escape) setMode('browse')
+    },
+    {isActive: mode === 'detail'},
+  )
+
+  // Disclosure confirm: Enter accepts and flips the flag, Esc cancels
+  // without flipping. Up/Down + PgUp/PgDn scroll the markdown when it
+  // doesn't fit in the terminal height.
+  const disclosureLines = useMemo(
+    () => (disclosureText === undefined ? [] : disclosureText.split('\n')),
+    [disclosureText],
+  )
+  // Reserved chrome (defensive — includes the REPL's own bottom status
+  // bar that wraps this slash-command, and a margin for stray line
+  // wraps): header (1) + header-gap (1) + top-overflow (1) +
+  // bottom-overflow (1) + footer-gap (1) + footer (1) + REPL chrome (1)
+  // + wrap safety (5) = 12 rows.
+  const disclosureViewportRows = Math.max(2, terminalRows - 12)
+  const maxScroll = Math.max(0, disclosureLines.length - disclosureViewportRows)
+  const clampedScroll = Math.min(disclosureScroll, maxScroll)
+  const visibleLines = disclosureLines.slice(clampedScroll, clampedScroll + disclosureViewportRows)
+  const hasMoreAbove = clampedScroll > 0
+  const hasMoreBelow = clampedScroll < maxScroll
+
+  useInput(
+    (input, key) => {
+      if (key.escape) {
+        setMode('browse')
+        setPendingDisclosureRow(undefined)
+        return
+      }
+
+      if (key.return) {
+        const row = pendingDisclosureRow
+        setPendingDisclosureRow(undefined)
+        if (row !== undefined) {
+          // `performToggle` itself calls `setRowError` on a non-`ok` response,
+          // but a thrown rejection (e.g. transport disconnect) would otherwise
+          // be swallowed and leave the UI in `browse` mode with no feedback
+          // about the failed enable. Surface the error message and restore
+          // the browse mode explicitly.
+          performToggle(row, true).catch((error_: unknown) => {
+            setRowError(error_ instanceof Error ? error_.message : String(error_))
+            setMode('browse')
+          })
+        }
+
+        return
+      }
+
+      if (key.upArrow) {
+        setDisclosureScroll((s) => Math.max(0, s - 1))
+        return
+      }
+
+      if (key.downArrow) {
+        setDisclosureScroll((s) => Math.min(maxScroll, s + 1))
+        return
+      }
+
+      // Page-scroll via PgUp/PgDn or space/b (mirroring `less`).
+      if (key.pageUp || input === 'b') {
+        setDisclosureScroll((s) => Math.max(0, s - disclosureViewportRows))
+        return
+      }
+
+      if (key.pageDown || input === ' ') {
+        setDisclosureScroll((s) => Math.min(maxScroll, s + disclosureViewportRows))
+      }
+    },
+    {isActive: mode === 'confirm-disclosure'},
+  )
+
   React.useEffect(() => {
     if (error) {
       onComplete(`Failed to load settings: ${error.message}`)
@@ -209,9 +351,51 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
     )
   }
 
+  // Disclosure overlay. Renders the markdown sliced to fit the terminal
+  // height so a short window still shows the Enter/Esc footer. Up/Down
+  // and PgUp/PgDn scroll through the body. The body Box uses an explicit
+  // height + flexShrink=1 so wrapped markdown lines cannot push the
+  // sticky footer off-screen.
+  if (mode === 'confirm-disclosure') {
+    return (
+      <Box flexDirection="column">
+        <Box flexShrink={0} marginBottom={1}>
+          <Text>ANALYTICS DISCLOSURE</Text>
+        </Box>
+        {disclosureText === undefined ? (
+          <Text>
+            <Spinner type="dots" /> Loading disclosure...
+          </Text>
+        ) : (
+          <Box flexDirection="column" flexShrink={1}>
+            <Text color="yellow">{hasMoreAbove ? '↑ more above' : ' '}</Text>
+            {visibleLines.map((line, idx) => (
+              // Each body line gets its own Text with truncate-end so a long
+              // markdown line in a narrow terminal stays one visual row and
+              // cannot push the sticky footer off-screen.
+              <Text key={`${clampedScroll}:${idx}`} wrap="truncate-end">
+                {line.length === 0 ? ' ' : line}
+              </Text>
+            ))}
+            <Text color="yellow">{hasMoreBelow ? '↓ more below' : ' '}</Text>
+          </Box>
+        )}
+        <Box flexShrink={0} marginTop={1}>
+          <Text bold color={colors.primary}>
+            Enter: enable analytics | Esc: cancel | ↑↓ scroll
+          </Text>
+        </Box>
+      </Box>
+    )
+  }
+
+  // Detail overlay for a read-only row: the full multi-line value
+  // (`displayDetail`) the list could only show the headline of.
+  if (mode === 'detail') return renderDetailOverlay(rows[cursor], colors.primary)
+
   const keyWidth = Math.max(40, ...rows.map((r) => r.label.length))
   const currentWidth = Math.max(7, ...rows.map((r) => r.displayCurrent.length))
-  const defaultWidth = Math.max(8, ...rows.map((r) => r.displayDefault.length))
+  const defaultWidth = Math.max(8, ...rows.map((r) => (r.displayDefault ?? '').length))
   const rangeWidth = Math.max(8, ...rows.map((r) => r.displayRange.length))
 
   return (
@@ -242,11 +426,14 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
               isSavingThis,
               width: currentWidth,
             })
+            const trailingCell = row.type === 'readonly-info'
+              ? pad('(read-only)', defaultWidth + 10)
+              : `${pad(`(default ${row.displayDefault ?? ''})`, defaultWidth + 10)}  ${pad(row.displayRange, rangeWidth)}`
             return (
               <Box flexDirection="column" key={row.key}>
                 <Text color={isSelected ? colors.primary : undefined}>
                   {marker}
-                  {pad(row.label, keyWidth)}  {currentDisplay}  {pad(`(default ${row.displayDefault})`, defaultWidth + 10)}  {pad(row.displayRange, rangeWidth)}
+                  {pad(row.label, keyWidth)}  {currentDisplay}  {trailingCell}
                 </Text>
                 {isSelected && rowError !== undefined && (
                   <Box marginLeft={2}>
@@ -260,7 +447,30 @@ export function SettingsPage({onCancel, onComplete}: CustomDialogCallbacks): Rea
       ))}
 
       <Box marginTop={1}>
-        <Text>{bottomHintFor(hintMode, focusedRow?.key)}</Text>
+        <Text>{bottomHintFor(hintMode, focusedRow?.key, focusedRow?.type)}</Text>
+      </Box>
+    </Box>
+  )
+}
+
+function renderDetailOverlay(detailRow: SettingsRow | undefined, primaryColor: string): React.ReactNode {
+  const detailLines = (detailRow?.displayDetail ?? detailRow?.displayCurrent ?? '').split('\n')
+  return (
+    <Box flexDirection="column">
+      <Box flexShrink={0} marginBottom={1}>
+        <Text>{detailRow?.label ?? 'DETAIL'}</Text>
+      </Box>
+      <Box flexDirection="column" flexShrink={1}>
+        {detailLines.map((line, idx) => (
+          <Text key={`detail-${idx}`} wrap="truncate-end">
+            {line.length === 0 ? ' ' : line}
+          </Text>
+        ))}
+      </Box>
+      <Box flexShrink={0} marginTop={1}>
+        <Text bold color={primaryColor}>
+          Esc: close
+        </Text>
       </Box>
     </Box>
   )

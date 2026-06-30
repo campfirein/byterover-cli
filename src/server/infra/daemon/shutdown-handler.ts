@@ -19,6 +19,14 @@ interface IWebUiServer {
 export interface ShutdownHandlerDeps {
   readonly agentIdleTimeoutPolicy?: IAgentIdleTimeoutPolicy
   readonly agentPool?: IAgentPool
+  /**
+   * M4.3: best-effort final analytics flush. Invoked after the agent pool
+   * stops (no more new events) and before the transport server stops so
+   * the daemon ships any queued events before the network goes down.
+   * The hook owns its own timeout — the shutdown sequence does not block
+   * for more than the hook itself permits.
+   */
+  readonly analyticsFinalFlush?: () => Promise<void>
   readonly daemonResilience: IDaemonResilience
   readonly heartbeatWriter: IHeartbeatWriter
   readonly idleTimeoutPolicy: IIdleTimeoutPolicy
@@ -109,6 +117,20 @@ export class ShutdownHandler implements IShutdownHandler {
         await this.deps.agentPool.shutdown()
       } catch (error) {
         log(`Error shutting down agent pool: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+
+    // Step 5.5. Final analytics flush (M4.3). Best-effort: the hook owns
+    //    its own timeout so the shutdown sequence cannot stall on a slow
+    //    telemetry backend. Runs AFTER agent pool stops (no new events
+    //    arrive) and BEFORE transport stops (analytics uses axios, not
+    //    transport, so the ordering is for invariant clarity rather than
+    //    correctness — keeps "no daemon services are stopped" intuition).
+    if (this.deps.analyticsFinalFlush) {
+      try {
+        await this.deps.analyticsFinalFlush()
+      } catch (error) {
+        log(`Error during final analytics flush: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
 
