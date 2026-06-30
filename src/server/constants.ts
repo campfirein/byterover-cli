@@ -61,6 +61,7 @@ export const PORT_BATCH_SIZE = 20
 export const PORT_MAX_ATTEMPTS = 5
 // Web UI (stable port, separate from dynamic transport port)
 export const WEBUI_DEFAULT_PORT = 7700
+export const WEBUI_MAX_FALLBACK_ATTEMPTS = 10
 export const WEBUI_STATE_FILE = 'webui.json'
 // Heartbeat
 export const HEARTBEAT_FILE = 'heartbeat'

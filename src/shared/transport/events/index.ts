@@ -29,6 +29,7 @@ export * from './status-events.js'
 export * from './task-events.js'
 export * from './team-events.js'
 export * from './vc-events.js'
+export * from './webui-events.js'
 export * from './worktree-events.js'
 
 // Utility exports
@@ -59,6 +60,7 @@ import {StatusEvents} from './status-events.js'
 import {TaskEvents} from './task-events.js'
 import {TeamEvents} from './team-events.js'
 import {VcEvents} from './vc-events.js'
+import {WebuiEvents} from './webui-events.js'
 import {WorktreeEvents} from './worktree-events.js'
 
 /**
@@ -93,6 +95,7 @@ export const AllEventGroups = [
   TaskEvents,
   TeamEvents,
   VcEvents,
+  WebuiEvents,
   WorktreeEvents,
 ] as const
 

@@ -2,6 +2,7 @@ import {expect} from 'chai'
 import express from 'express'
 import {createServer} from 'node:http'
 
+import {WebUiPortInUseError, WebUiServerAlreadyRunningError} from '../../../../src/server/core/domain/errors/webui-error.js'
 import {WebUiServer} from '../../../../src/server/infra/webui/webui-server.js'
 
 describe('WebUiServer', () => {
@@ -34,7 +35,7 @@ describe('WebUiServer', () => {
     expect(server.getPort()).to.be.undefined
   })
 
-  it('should reject with error when port is in use', async () => {
+  it('should reject with WebUiPortInUseError when port is in use', async () => {
     // Occupy a port first
     const blockingServer = createServer()
     const occupiedPort = await new Promise<number>((resolve, reject) => {
@@ -53,11 +54,13 @@ describe('WebUiServer', () => {
         await server.start(occupiedPort)
         expect.fail('Expected start to reject')
       } catch (error) {
-        expect(error).to.be.an.instanceOf(Error)
+        expect(error).to.be.an.instanceOf(WebUiPortInUseError)
+        expect((error as WebUiPortInUseError).port).to.equal(occupiedPort)
         expect((error as Error).message).to.include('in use')
       }
 
       expect(server.isRunning()).to.be.false
+      expect(server.getPort()).to.be.undefined
     } finally {
       blockingServer.close()
     }
@@ -70,13 +73,29 @@ describe('WebUiServer', () => {
       await server.start(0)
       expect.fail('Expected start to reject')
     } catch (error) {
-      expect(error).to.be.an.instanceOf(Error)
-      expect((error as Error).message).to.include('already running')
+      expect(error).to.be.an.instanceOf(WebUiServerAlreadyRunningError)
     }
   })
 
   it('should be a no-op to stop when not running', async () => {
     server = new WebUiServer(express())
     await server.stop() // should not throw
+  })
+
+  it('should ignore post-startup error emissions so stop() still cleans up', async () => {
+    server = new WebUiServer(express())
+    await server.start(0)
+    const boundPort = server.getPort()
+    expect(boundPort).to.be.a('number')
+
+    const internal = server as unknown as {httpServer?: {emit(event: string, err: Error): boolean}}
+    internal.httpServer?.emit('error', Object.assign(new Error('ECONNRESET'), {code: 'ECONNRESET'}))
+
+    expect(server.isRunning()).to.be.true
+    expect(server.getPort()).to.equal(boundPort)
+
+    await server.stop()
+    expect(server.isRunning()).to.be.false
+    expect(server.getPort()).to.be.undefined
   })
 })
