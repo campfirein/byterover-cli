@@ -303,13 +303,35 @@ ensure_plugin_active() {
   fi
 }
 
+get_context_engine_slot() {
+  CONFIG_PATH="$CONFIG_PATH" node -e '
+    const fs = require("fs");
+    const configPath = process.env.CONFIG_PATH;
+    try {
+        const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+        const slot = config.plugins?.slots?.contextEngine;
+        if (typeof slot === "string") process.stdout.write(slot);
+    } catch (_) {}
+  ' 2>/dev/null || true
+}
+
+unset_byterover_context_engine_slot() {
+  local current_context_engine
+  current_context_engine=$(get_context_engine_slot)
+  if [ "$current_context_engine" = "byterover" ]; then
+    openclaw config unset plugins.slots.contextEngine 2>/dev/null || true
+  elif [ -n "$current_context_engine" ]; then
+    info "Preserving existing contextEngine slot: $current_context_engine"
+  fi
+}
+
 remove_existing_byterover_plugin() {
   # Remove CLI-installed plugin
   openclaw plugins uninstall byterover --force 2>/dev/null || true
   # Remove old local plugin files (legacy manual install)
   rm -rf "$HOME/.openclaw/extensions/byterover"
-  # Clean up config entries
-  openclaw config unset plugins.slots.contextEngine 2>/dev/null || true
+  # Clean up ByteRover-owned config without disturbing other context engines.
+  unset_byterover_context_engine_slot
   CONFIG_PATH="$CONFIG_PATH" node -e '
     const fs = require("fs");
     const configPath = process.env.CONFIG_PATH;
@@ -317,6 +339,10 @@ remove_existing_byterover_plugin() {
         const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
         const entries = config.plugins?.entries;
         if (entries && entries["byterover"]) delete entries["byterover"];
+        if (config.plugins?.slots?.contextEngine === "byterover") {
+            delete config.plugins.slots.contextEngine;
+        }
+        if (config.plugins?.slots && Object.keys(config.plugins.slots).length === 0) delete config.plugins.slots;
         if (Array.isArray(config.plugins?.load?.paths)) {
             config.plugins.load.paths = config.plugins.load.paths.filter(p => p !== "~/.openclaw/extensions/byterover");
             if (config.plugins.load.paths.length === 0) delete config.plugins.load.paths;
@@ -369,9 +395,15 @@ configure_context_plugin() {
     return
   fi
 
+  local current_context_engine
+  current_context_engine=$(get_context_engine_slot)
+  if [ -n "$current_context_engine" ] && [ "$current_context_engine" != "byterover" ]; then
+    warn "Context engine slot is currently set to '$current_context_engine'. Installing ByteRover will replace it."
+  fi
+
   if ! confirm "Install ByteRover Context Plugin?"; then
-    echo "Uninstalling ByteRover Context Plugin..."
-    remove_existing_byterover_plugin
+    echo "Skipping ByteRover Context Plugin setup; removing ByteRover from contextEngine if currently assigned."
+    unset_byterover_context_engine_slot
     echo ""
     return
   fi
