@@ -735,6 +735,7 @@ export function resolveRegistryProvider(
         'openai-compatible',
         'openrouter',
         'perplexity',
+        'requesty',
         'togetherai',
         'vercel',
         'xai',

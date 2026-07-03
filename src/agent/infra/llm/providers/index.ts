@@ -26,6 +26,7 @@ import {openaiCompatibleProvider} from './openai-compatible.js'
 import {openaiProvider} from './openai.js'
 import {openrouterProvider} from './openrouter.js'
 import {perplexityProvider} from './perplexity.js'
+import {requestyProvider} from './requesty.js'
 import {togetheraiProvider} from './togetherai.js'
 import {vercelProvider} from './vercel.js'
 import {xaiProvider} from './xai.js'
@@ -52,6 +53,7 @@ const PROVIDER_MODULES: Readonly<Record<string, ProviderModule>> = {
   'openai-compatible': openaiCompatibleProvider,
   openrouter: openrouterProvider,
   perplexity: perplexityProvider,
+  requesty: requestyProvider,
   togetherai: togetheraiProvider,
   vercel: vercelProvider,
   xai: xaiProvider,

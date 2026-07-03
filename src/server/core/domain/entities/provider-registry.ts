@@ -321,6 +321,22 @@ export const PROVIDER_REGISTRY: Readonly<Record<string, ProviderDefinition>> = {
     name: 'Perplexity',
     priority: 13,
   },
+  requesty: {
+    apiKeyUrl: 'https://app.requesty.ai/api-keys',
+    baseUrl: 'https://router.requesty.ai/v1',
+    category: 'popular',
+    defaultModel: 'openai/gpt-4o-mini',
+    description: 'Access 300+ models via the Requesty router',
+    envVars: ['REQUESTY_API_KEY'],
+    headers: {
+      'HTTP-Referer': 'https://byterover.dev',
+      'X-Title': 'byterover-cli',
+    },
+    id: 'requesty',
+    modelsEndpoint: '/models',
+    name: 'Requesty',
+    priority: 1.5,
+  },
   togetherai: {
     apiKeyUrl: 'https://api.together.ai/settings/api-keys',
     baseUrl: 'https://api.together.xyz/v1',
