@@ -16,6 +16,7 @@ import {
   OpenAICompatibleModelFetcher,
   OpenAIModelFetcher,
   OpenRouterModelFetcher,
+  RequestyModelFetcher,
 } from './provider-model-fetchers.js'
 
 /**
@@ -130,6 +131,12 @@ export async function getModelFetcher(providerId: string): Promise<IProviderMode
 
     case 'openrouter': {
       fetcher = new OpenRouterModelFetcher()
+
+      break
+    }
+
+    case 'requesty': {
+      fetcher = new RequestyModelFetcher()
 
       break
     }

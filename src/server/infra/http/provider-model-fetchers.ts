@@ -611,6 +611,37 @@ export class OpenRouterModelFetcher implements IProviderModelFetcher {
 }
 
 // ============================================================================
+// Requesty Model Fetcher (wraps existing client)
+// ============================================================================
+
+import {getRequestyApiClient, type NormalizedModel as RequestyNormalizedModel} from './requesty-api-client.js'
+
+/**
+ * Model fetcher that wraps the existing RequestyApiClient.
+ * Adapts NormalizedModel to ProviderModelInfo.
+ */
+export class RequestyModelFetcher implements IProviderModelFetcher {
+  async fetchModels(apiKey: string, options?: FetchModelsOptions): Promise<ProviderModelInfo[]> {
+    const client = getRequestyApiClient()
+    const models = await client.fetchModels(apiKey, options?.forceRefresh ?? false)
+    return models.map((m: RequestyNormalizedModel) => ({
+      contextLength: m.contextLength,
+      description: m.description,
+      id: m.id,
+      isFree: m.isFree,
+      name: m.name,
+      pricing: m.pricing,
+      provider: m.provider,
+    }))
+  }
+
+  async validateApiKey(apiKey: string): Promise<{error?: string; isValid: boolean}> {
+    const client = getRequestyApiClient()
+    return client.validateApiKey(apiKey)
+  }
+}
+
+// ============================================================================
 // Shared helpers
 // ============================================================================
 

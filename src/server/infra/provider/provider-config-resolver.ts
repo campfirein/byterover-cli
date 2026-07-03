@@ -154,6 +154,21 @@ export async function resolveProviderConfig(
       }
     }
 
+    case 'requesty': {
+      const providerDef = getProviderById(activeProvider)
+      const headers = providerDef?.headers
+      return {
+        activeModel,
+        activeProvider,
+        maxInputTokens,
+        provider: activeProvider,
+        providerApiKey: apiKey || undefined,
+        providerBaseUrl: config.getBaseUrl(activeProvider) || providerDef?.baseUrl || undefined,
+        providerHeaders: headers && Object.keys(headers).length > 0 ? {...headers} : undefined,
+        providerKeyMissing: providerRequiresApiKey(activeProvider) && !apiKey,
+      }
+    }
+
     default: {
       const providerDef = getProviderById(activeProvider)
       const providerConfig = config.providers[activeProvider]
