@@ -945,6 +945,45 @@ describe('ProviderHandler', () => {
       expect(openaiCompat?.isConnected).to.be.true
       expect(openaiCompat?.activeModel).to.be.undefined
     })
+
+    it('should surface lastDisconnect for a provider disconnected with a recorded reason', async () => {
+      const config = ProviderConfig.createDefault()
+        .withProviderConnected('openai', {authMethod: 'oauth', oauthAccountId: 'acct_123'})
+        .withProviderDisconnected('openai', {
+          errorCode: 'invalid_grant',
+          reason: 'OAuth token refresh failed',
+          statusCode: 400,
+        })
+      providerConfigStore.read.resolves(config)
+      providerConfigStore.isProviderConnected.withArgs('openai').resolves(false)
+      createHandler()
+
+      const handler = transport._handlers.get(ProviderEvents.LIST)
+      const result = await handler!(undefined, 'client-1')
+
+      const openaiProvider = result.providers.find((p: {id: string}) => p.id === 'openai')
+      // Not connected, but the drop reason is surfaced so the view can explain it
+      expect(openaiProvider?.isConnected).to.be.false
+      expect(openaiProvider?.lastDisconnect?.reason).to.equal('OAuth token refresh failed')
+      expect(openaiProvider?.lastDisconnect?.errorCode).to.equal('invalid_grant')
+      expect(openaiProvider?.lastDisconnect?.statusCode).to.equal(400)
+      // authMethod is retained so the reconnect hint can choose the --oauth form
+      expect(openaiProvider?.authMethod).to.equal('oauth')
+    })
+
+    it('should omit lastDisconnect for a normally connected provider', async () => {
+      const config = ProviderConfig.createDefault().withProviderConnected('openai', {authMethod: 'oauth'})
+      providerConfigStore.read.resolves(config)
+      providerConfigStore.isProviderConnected.withArgs('openai').resolves(true)
+      createHandler()
+
+      const handler = transport._handlers.get(ProviderEvents.LIST)
+      const result = await handler!(undefined, 'client-1')
+
+      const openaiProvider = result.providers.find((p: {id: string}) => p.id === 'openai')
+      expect(openaiProvider?.isConnected).to.be.true
+      expect(openaiProvider?.lastDisconnect).to.be.undefined
+    })
   })
 
   describe('provider:cancelOAuth', () => {

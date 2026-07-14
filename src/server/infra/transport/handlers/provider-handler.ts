@@ -388,6 +388,7 @@ export class ProviderHandler {
               return false
             }),
             isCurrent: def.id === activeProviderId,
+            lastDisconnect: providerConfig?.lastDisconnect,
             name: def.name,
             oauthCallbackMode: def.oauth?.callbackMode,
             oauthLabel: def.oauth?.modes[0]?.label,
