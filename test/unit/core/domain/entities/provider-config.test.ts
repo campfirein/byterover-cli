@@ -184,5 +184,95 @@ describe('ProviderConfig', () => {
 
       expect(disconnected.activeProvider).to.equal('anthropic')
     })
+
+    it('should retain a tombstone with lastDisconnect when details are provided', () => {
+      const config = ProviderConfig.createDefault()
+        .withProviderConnected('openai', {authMethod: 'oauth', oauthAccountId: 'acct_123'})
+        .withActiveProvider('openai')
+
+      const disconnected = config.withProviderDisconnected('openai', {
+        errorCode: 'invalid_grant',
+        reason: 'OAuth token refresh failed',
+        statusCode: 400,
+      })
+
+      // Entry is kept (exists in config) but reports as not connected
+      expect(disconnected.providers.openai).to.not.be.undefined
+      expect(disconnected.isProviderConnected('openai')).to.be.false
+      expect(disconnected.activeProvider).to.equal('')
+
+      const {lastDisconnect} = disconnected.providers.openai
+      expect(lastDisconnect?.reason).to.equal('OAuth token refresh failed')
+      expect(lastDisconnect?.errorCode).to.equal('invalid_grant')
+      expect(lastDisconnect?.statusCode).to.equal(400)
+      expect(lastDisconnect?.at).to.be.a('string')
+
+      if (!lastDisconnect) {
+        throw new Error('Expected lastDisconnect to be set')
+      }
+
+      expect(Number.isNaN(Date.parse(lastDisconnect.at))).to.be.false
+
+      // Last-known authMethod is preserved so the view can build the reconnect hint
+      expect(disconnected.providers.openai.authMethod).to.equal('oauth')
+    })
+
+    it('should record lastDisconnect without optional error/status fields', () => {
+      const config = ProviderConfig.createDefault().withProviderConnected('openrouter', {authMethod: 'api-key'})
+
+      const disconnected = config.withProviderDisconnected('openrouter', {reason: 'Manual disconnect'})
+
+      const {lastDisconnect} = disconnected.providers.openrouter
+      expect(lastDisconnect?.reason).to.equal('Manual disconnect')
+      expect(lastDisconnect?.errorCode).to.be.undefined
+      expect(lastDisconnect?.statusCode).to.be.undefined
+    })
+
+    it('should remove the entry entirely when details are omitted even if it existed', () => {
+      const config = ProviderConfig.createDefault().withProviderConnected('openai', {authMethod: 'oauth'})
+
+      const disconnected = config.withProviderDisconnected('openai')
+
+      expect(disconnected.providers.openai).to.be.undefined
+      expect(disconnected.isProviderConnected('openai')).to.be.false
+    })
+
+    it('should not create a tombstone for a provider that was never connected', () => {
+      const config = ProviderConfig.createDefault()
+
+      const disconnected = config.withProviderDisconnected('openai', {reason: 'OAuth token refresh failed'})
+
+      expect(disconnected.providers.openai).to.be.undefined
+    })
+
+    it('should clear lastDisconnect when the provider is reconnected', () => {
+      const disconnected = ProviderConfig.createDefault()
+        .withProviderConnected('openai', {authMethod: 'oauth'})
+        .withProviderDisconnected('openai', {errorCode: 'invalid_grant', reason: 'OAuth token refresh failed'})
+
+      expect(disconnected.isProviderConnected('openai')).to.be.false
+
+      const reconnected = disconnected.withProviderConnected('openai', {authMethod: 'oauth'})
+
+      expect(reconnected.isProviderConnected('openai')).to.be.true
+      expect(reconnected.providers.openai.lastDisconnect).to.be.undefined
+    })
+
+    it('should round-trip lastDisconnect through toJson/fromJson', () => {
+      const disconnected = ProviderConfig.createDefault()
+        .withProviderConnected('openai', {authMethod: 'oauth'})
+        .withProviderDisconnected('openai', {
+          errorCode: 'invalid_grant',
+          reason: 'OAuth token refresh failed',
+          statusCode: 400,
+        })
+
+      const restored = ProviderConfig.fromJson(disconnected.toJson())
+
+      expect(restored.isProviderConnected('openai')).to.be.false
+      expect(restored.providers.openai.lastDisconnect?.reason).to.equal('OAuth token refresh failed')
+      expect(restored.providers.openai.lastDisconnect?.errorCode).to.equal('invalid_grant')
+      expect(restored.providers.openai.lastDisconnect?.statusCode).to.equal(400)
+    })
   })
 })

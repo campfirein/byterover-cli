@@ -531,5 +531,33 @@ describe('provider-config-resolver', () => {
 
       expect(configStore.write.calledOnce).to.be.true
     })
+
+    it('should preserve an already-tombstoned provider instead of re-disconnecting it', async () => {
+      const {configStore, keychainStore} = createStubStores(sandbox)
+      // A provider that was disconnected with a recorded reason: its keychain key
+      // is intentionally gone, so it would otherwise look "stale" and be removed.
+      const tombstoned = ProviderConfig.createDefault()
+        .withProviderConnected('openai', {authMethod: 'oauth'})
+        .withProviderDisconnected('openai', {
+          errorCode: 'invalid_grant',
+          reason: 'OAuth token refresh failed',
+          statusCode: 400,
+        })
+      configStore.read.resolves(tombstoned)
+      keychainStore.getApiKey.resolves()
+
+      const oauthTokenStore: SinonStubbedInstance<IProviderOAuthTokenStore> = {
+        delete: sandbox.stub().resolves(),
+        get: sandbox.stub().resolves(),
+        has: sandbox.stub().resolves(false),
+        set: sandbox.stub().resolves(),
+      } as unknown as SinonStubbedInstance<IProviderOAuthTokenStore>
+
+      await clearStaleProviderConfig(configStore, keychainStore, oauthTokenStore)
+
+      // Tombstone left untouched: no re-write, no re-delete — the reason survives
+      expect(configStore.write.notCalled).to.be.true
+      expect(oauthTokenStore.delete.notCalled).to.be.true
+    })
   })
 })

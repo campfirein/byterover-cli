@@ -74,11 +74,15 @@ export class FileProviderConfigStore implements IProviderConfigStore {
   }
 
   /**
-   * Removes a provider connection.
+   * Removes a provider connection. When `details` is supplied, the entry is
+   * retained as a `lastDisconnect` tombstone (see IProviderConfigStore).
    */
-  public async disconnectProvider(providerId: string): Promise<void> {
+  public async disconnectProvider(
+    providerId: string,
+    details?: {errorCode?: string; reason: string; statusCode?: number},
+  ): Promise<void> {
     const config = await this.read()
-    const newConfig = config.withProviderDisconnected(providerId)
+    const newConfig = config.withProviderDisconnected(providerId, details)
     await this.write(newConfig)
   }
 

@@ -60,7 +60,12 @@ export async function clearStaleProviderConfig(
       })),
     )
 
-    const staleProviderIds = results.filter(({accessible}) => !accessible).map(({providerId}) => providerId)
+    // Skip entries already tombstoned with a lastDisconnect reason: their
+    // credentials are intentionally gone, and re-disconnecting would drop the
+    // tombstone (deleting the entry) and erase the recorded disconnect reason.
+    const staleProviderIds = results
+      .filter(({accessible, providerId}) => !accessible && config.providers[providerId]?.lastDisconnect === undefined)
+      .map(({providerId}) => providerId)
 
     if (staleProviderIds.length === 0) return
 

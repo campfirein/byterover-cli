@@ -186,6 +186,13 @@ describe('TokenRefreshManager', () => {
       expect(providerOAuthTokenStore.delete.calledWith('openai')).to.be.true
       expect(providerKeychainStore.deleteApiKey.calledWith('openai')).to.be.true
       expect(transport.broadcast.calledWith(TransportDaemonEventNames.PROVIDER_UPDATED, {})).to.be.true
+
+      // Verify the disconnect reason/details were plumbed through so the drop is
+      // recorded durably (lastDisconnect) instead of vanishing silently.
+      const [disconnectedId, disconnectDetails] = providerConfigStore.disconnectProvider.firstCall.args
+      expect(disconnectedId).to.equal('openai')
+      expect(disconnectDetails).to.include({errorCode: 'invalid_grant', statusCode: 400})
+      expect(disconnectDetails?.reason).to.equal('OAuth token refresh failed')
     })
 
     it('should return true and keep credentials intact on transient refresh failure', async () => {
@@ -319,6 +326,11 @@ describe('TokenRefreshManager', () => {
       expect(providerOAuthTokenStore.delete.calledWith('openai')).to.be.true
       expect(providerKeychainStore.deleteApiKey.calledWith('openai')).to.be.true
       expect(transport.broadcast.calledWith(TransportDaemonEventNames.PROVIDER_UPDATED, {})).to.be.true
+
+      // Reason/details still plumbed through even when a later cleanup step fails.
+      const disconnectDetails = providerConfigStore.disconnectProvider.firstCall.args[1]
+      expect(disconnectDetails).to.include({errorCode: 'invalid_grant', statusCode: 401})
+      expect(disconnectDetails?.reason).to.equal('OAuth token refresh failed')
     })
   })
 

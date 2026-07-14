@@ -6,6 +6,25 @@
  */
 
 /**
+ * Durable record of why/when a provider was disconnected.
+ *
+ * Persisted on the provider entry (tombstone) when the provider was disconnected
+ * with a recorded reason — e.g. a permanent OAuth refresh failure — so the user
+ * can later see what happened and how to reconnect, instead of silently finding
+ * "no provider connected" with no explanation.
+ */
+export interface ProviderDisconnectInfo {
+  /** ISO timestamp of when the disconnect happened */
+  readonly at: string
+  /** OAuth error code when available (e.g. invalid_grant, invalid_client) */
+  readonly errorCode?: string
+  /** Human-readable reason (e.g. "OAuth token refresh failed") */
+  readonly reason: string
+  /** HTTP status code when available (e.g. 400, 401) */
+  readonly statusCode?: number
+}
+
+/**
  * Configuration for a single connected provider.
  */
 export interface ConnectedProviderConfig {
@@ -21,6 +40,12 @@ export interface ConnectedProviderConfig {
   readonly connectedAt: string
   /** User's favorite models (for quick access) */
   readonly favoriteModels: readonly string[]
+  /**
+   * Set when the provider was disconnected with a recorded reason. Its presence
+   * marks this entry as a disconnected tombstone — `isProviderConnected` returns
+   * false while it is set, and reconnecting clears it.
+   */
+  readonly lastDisconnect?: ProviderDisconnectInfo
   /** OAuth account ID (e.g. ChatGPT-Account-Id for OpenAI) */
   readonly oauthAccountId?: string
   /** Recently used models (last 10) */
@@ -131,9 +156,13 @@ export class ProviderConfig {
 
   /**
    * Check if a provider is connected.
+   *
+   * A disconnected tombstone (an entry retained only to record `lastDisconnect`)
+   * is NOT connected — it exists purely to surface why the provider dropped.
    */
   public isProviderConnected(providerId: string): boolean {
-    return providerId in this.providers
+    const entry = this.providers[providerId]
+    return entry !== undefined && entry.lastDisconnect === undefined
   }
 
   /**
@@ -249,11 +278,41 @@ export class ProviderConfig {
 
   /**
    * Create a new config with a provider disconnected.
+   *
+   * Without `details`, the provider entry is removed entirely (a clean manual
+   * disconnect). With `details`, the entry is retained as a tombstone carrying a
+   * `lastDisconnect` record so the reason survives to the providers view — used
+   * when the disconnect was involuntary (e.g. a permanent OAuth refresh failure).
+   * The active provider is cleared either way when it was the disconnected one.
    */
-  public withProviderDisconnected(providerId: string): ProviderConfig {
+  public withProviderDisconnected(
+    providerId: string,
+    details?: {errorCode?: string; reason: string; statusCode?: number},
+  ): ProviderConfig {
+    const newActiveProvider = this.activeProvider === providerId ? '' : this.activeProvider
+    const existingConfig = this.providers[providerId]
+
+    // Record a tombstone (keep the entry) when a reason is supplied and the
+    // provider actually existed — so the disconnect is visible after the fact.
+    if (details && existingConfig) {
+      const lastDisconnect: ProviderDisconnectInfo = {
+        at: new Date().toISOString(),
+        errorCode: details.errorCode,
+        reason: details.reason,
+        statusCode: details.statusCode,
+      }
+
+      return new ProviderConfig({
+        activeProvider: newActiveProvider,
+        providers: {
+          ...this.providers,
+          [providerId]: {...existingConfig, lastDisconnect},
+        },
+      })
+    }
+
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const {[providerId]: _removed, ...remainingProviders} = this.providers
-    const newActiveProvider = this.activeProvider === providerId ? '' : this.activeProvider
 
     return new ProviderConfig({
       activeProvider: newActiveProvider,

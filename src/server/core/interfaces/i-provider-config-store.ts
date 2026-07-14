@@ -29,8 +29,15 @@ export interface IProviderConfigStore {
    * Removes a provider connection.
    *
    * @param providerId The provider ID to disconnect
+   * @param details Optional disconnect reason. When provided, the provider entry
+   *   is retained as a tombstone carrying `lastDisconnect` (so the reason is
+   *   visible in the providers view) instead of being removed entirely. Omit for
+   *   a clean manual disconnect that fully removes the entry.
    */
-  disconnectProvider: (providerId: string) => Promise<void>
+  disconnectProvider: (
+    providerId: string,
+    details?: {errorCode?: string; reason: string; statusCode?: number},
+  ) => Promise<void>
 
   /**
    * Gets the active model for a provider.

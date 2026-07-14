@@ -423,6 +423,9 @@ describe('ProviderHandler', () => {
 
   describe('provider:setActive', () => {
     it('should broadcast provider:updated after setting active provider', async () => {
+      providerConfigStore.read.resolves(
+        ProviderConfig.createDefault().withProviderConnected('openrouter', {authMethod: 'api-key'}),
+      )
       createHandler()
 
       const handler = transport._handlers.get(ProviderEvents.SET_ACTIVE)
@@ -434,6 +437,9 @@ describe('ProviderHandler', () => {
     })
 
     it('should set active provider before broadcasting', async () => {
+      providerConfigStore.read.resolves(
+        ProviderConfig.createDefault().withProviderConnected('openrouter', {authMethod: 'api-key'}),
+      )
       createHandler()
 
       const handler = transport._handlers.get(ProviderEvents.SET_ACTIVE)
@@ -441,6 +447,50 @@ describe('ProviderHandler', () => {
 
       expect(providerConfigStore.setActiveProvider.calledWith('openrouter')).to.be.true
       expect(providerConfigStore.setActiveProvider.calledBefore(transport.broadcast)).to.be.true
+    })
+
+    it('should reject a disconnected tombstone (permanent OAuth refresh failure) and not mutate the active provider', async () => {
+      // The entry still exists in config.providers (kept for lastDisconnect),
+      // so presence alone must not be enough to let SET_ACTIVE reactivate it.
+      providerConfigStore.read.resolves(
+        ProviderConfig.createDefault()
+          .withProviderConnected('openai', {authMethod: 'oauth'})
+          .withProviderDisconnected('openai', {
+            errorCode: 'invalid_grant',
+            reason: 'OAuth token refresh failed',
+            statusCode: 400,
+          }),
+      )
+      createHandler()
+
+      const handler = transport._handlers.get(ProviderEvents.SET_ACTIVE)
+      if (!handler) {
+        throw new Error('ProviderEvents.SET_ACTIVE handler not registered')
+      }
+
+      const result = await handler({providerId: 'openai'}, 'client-1')
+
+      expect(result.success).to.be.false
+      expect(result.error).to.equal('Provider "openai" is not connected')
+      expect(providerConfigStore.setActiveProvider.called).to.be.false
+      expect(transport.broadcast.called).to.be.false
+    })
+
+    it('should still succeed for a healthy (non-tombstoned) connected provider', async () => {
+      providerConfigStore.read.resolves(
+        ProviderConfig.createDefault().withProviderConnected('openrouter', {authMethod: 'api-key'}),
+      )
+      createHandler()
+
+      const handler = transport._handlers.get(ProviderEvents.SET_ACTIVE)
+      if (!handler) {
+        throw new Error('ProviderEvents.SET_ACTIVE handler not registered')
+      }
+
+      const result = await handler({providerId: 'openrouter'}, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+      expect(providerConfigStore.setActiveProvider.calledWith('openrouter')).to.be.true
     })
   })
 
@@ -944,6 +994,53 @@ describe('ProviderHandler', () => {
       const openaiCompat = result.providers.find((p: {id: string}) => p.id === 'openai-compatible')
       expect(openaiCompat?.isConnected).to.be.true
       expect(openaiCompat?.activeModel).to.be.undefined
+    })
+
+    it('should surface lastDisconnect for a provider disconnected with a recorded reason', async () => {
+      const config = ProviderConfig.createDefault()
+        .withProviderConnected('openai', {authMethod: 'oauth', oauthAccountId: 'acct_123'})
+        .withProviderDisconnected('openai', {
+          errorCode: 'invalid_grant',
+          reason: 'OAuth token refresh failed',
+          statusCode: 400,
+        })
+      providerConfigStore.read.resolves(config)
+      providerConfigStore.isProviderConnected.withArgs('openai').resolves(false)
+      createHandler()
+
+      const handler = transport._handlers.get(ProviderEvents.LIST)
+      if (!handler) {
+        throw new Error('ProviderEvents.LIST handler not registered')
+      }
+
+      const result = await handler(undefined, 'client-1')
+
+      const openaiProvider = result.providers.find((p: {id: string}) => p.id === 'openai')
+      // Not connected, but the drop reason is surfaced so the view can explain it
+      expect(openaiProvider?.isConnected).to.be.false
+      expect(openaiProvider?.lastDisconnect?.reason).to.equal('OAuth token refresh failed')
+      expect(openaiProvider?.lastDisconnect?.errorCode).to.equal('invalid_grant')
+      expect(openaiProvider?.lastDisconnect?.statusCode).to.equal(400)
+      // authMethod is retained so the reconnect hint can choose the --oauth form
+      expect(openaiProvider?.authMethod).to.equal('oauth')
+    })
+
+    it('should omit lastDisconnect for a normally connected provider', async () => {
+      const config = ProviderConfig.createDefault().withProviderConnected('openai', {authMethod: 'oauth'})
+      providerConfigStore.read.resolves(config)
+      providerConfigStore.isProviderConnected.withArgs('openai').resolves(true)
+      createHandler()
+
+      const handler = transport._handlers.get(ProviderEvents.LIST)
+      if (!handler) {
+        throw new Error('ProviderEvents.LIST handler not registered')
+      }
+
+      const result = await handler(undefined, 'client-1')
+
+      const openaiProvider = result.providers.find((p: {id: string}) => p.id === 'openai')
+      expect(openaiProvider?.isConnected).to.be.true
+      expect(openaiProvider?.lastDisconnect).to.be.undefined
     })
   })
 

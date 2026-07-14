@@ -147,7 +147,10 @@ export class ModelHandler {
         const config = await this.providerConfigStore.read()
         const providerConfig = config.providers[data.providerId]
 
-        if (!providerConfig) {
+        // A tombstoned entry (disconnected with a recorded reason, e.g. a permanent
+        // OAuth refresh failure) still exists in config.providers, so presence alone
+        // isn't enough — isProviderConnected() also rejects tombstones.
+        if (!providerConfig || !config.isProviderConnected(data.providerId)) {
           return {
             error: `Provider "${data.providerId}" is not connected`,
             success: false,

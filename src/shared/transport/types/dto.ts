@@ -159,6 +159,13 @@ export interface ProviderDTO {
   id: string
   isConnected: boolean
   isCurrent: boolean
+  /**
+   * Present when the provider was disconnected with a recorded reason (e.g. a
+   * permanent OAuth refresh failure). Set alongside `isConnected: false` so the
+   * providers view can surface when/why it dropped and how to reconnect
+   * (`brv providers connect <id> --oauth` for oauth authMethod, else without `--oauth`).
+   */
+  lastDisconnect?: {at: string; errorCode?: string; reason: string; statusCode?: number}
   name: string
   oauthCallbackMode?: 'auto' | 'code-paste'
   oauthLabel?: string

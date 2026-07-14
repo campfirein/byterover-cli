@@ -8,7 +8,7 @@ import type {ProviderTokenResponse, RefreshTokenExchangeParams, TokenRequestCont
 import {getProviderById} from '../../core/domain/entities/provider-registry.js'
 import {TransportDaemonEventNames} from '../../core/domain/transport/schemas.js'
 import {processLog} from '../../utils/process-logger.js'
-import {isPermanentOAuthError} from './errors.js'
+import {isPermanentOAuthError, ProviderTokenExchangeError} from './errors.js'
 import {exchangeRefreshToken as defaultExchangeRefreshToken} from './refresh-token-exchange.js'
 import {computeExpiresAt} from './types.js'
 
@@ -111,9 +111,24 @@ export class TokenRefreshManager implements ITokenRefreshManager {
       this.deps.transport.broadcast(TransportDaemonEventNames.PROVIDER_UPDATED, {})
       return true
     } catch (error) {
-      // 7. Permanent failure (token revoked, client invalid): disconnect provider, clean up
+      // 7. Permanent failure (token revoked, client invalid): disconnect provider, clean up.
+      // Record the reason durably (lastDisconnect tombstone) and log symmetrically
+      // with the transient branch so the disconnect leaves a visible trace instead
+      // of silently dropping the provider.
       if (isPermanentOAuthError(error)) {
-        await this.deps.providerConfigStore.disconnectProvider(providerId).catch(() => {})
+        const statusCode = error instanceof ProviderTokenExchangeError ? error.statusCode : undefined
+        const errorCode = error instanceof ProviderTokenExchangeError ? error.errorCode : undefined
+        const detail = [statusCode ? `status ${statusCode}` : undefined, errorCode].filter(Boolean).join(', ')
+
+        processLog(
+          `[TokenRefreshManager] Permanent refresh failure for ${providerId}${
+            detail ? ` (${detail})` : ''
+          }: disconnecting provider`,
+        )
+
+        await this.deps.providerConfigStore
+          .disconnectProvider(providerId, {errorCode, reason: 'OAuth token refresh failed', statusCode})
+          .catch(() => {})
         await this.deps.providerOAuthTokenStore.delete(providerId).catch(() => {})
         await this.deps.providerKeychainStore.deleteApiKey(providerId).catch(() => {})
         this.deps.transport.broadcast(TransportDaemonEventNames.PROVIDER_UPDATED, {})
