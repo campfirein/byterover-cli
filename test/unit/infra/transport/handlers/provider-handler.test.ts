@@ -423,6 +423,9 @@ describe('ProviderHandler', () => {
 
   describe('provider:setActive', () => {
     it('should broadcast provider:updated after setting active provider', async () => {
+      providerConfigStore.read.resolves(
+        ProviderConfig.createDefault().withProviderConnected('openrouter', {authMethod: 'api-key'}),
+      )
       createHandler()
 
       const handler = transport._handlers.get(ProviderEvents.SET_ACTIVE)
@@ -434,6 +437,9 @@ describe('ProviderHandler', () => {
     })
 
     it('should set active provider before broadcasting', async () => {
+      providerConfigStore.read.resolves(
+        ProviderConfig.createDefault().withProviderConnected('openrouter', {authMethod: 'api-key'}),
+      )
       createHandler()
 
       const handler = transport._handlers.get(ProviderEvents.SET_ACTIVE)
@@ -441,6 +447,42 @@ describe('ProviderHandler', () => {
 
       expect(providerConfigStore.setActiveProvider.calledWith('openrouter')).to.be.true
       expect(providerConfigStore.setActiveProvider.calledBefore(transport.broadcast)).to.be.true
+    })
+
+    it('should reject a disconnected tombstone (permanent OAuth refresh failure) and not mutate the active provider', async () => {
+      // The entry still exists in config.providers (kept for lastDisconnect),
+      // so presence alone must not be enough to let SET_ACTIVE reactivate it.
+      providerConfigStore.read.resolves(
+        ProviderConfig.createDefault()
+          .withProviderConnected('openai', {authMethod: 'oauth'})
+          .withProviderDisconnected('openai', {
+            errorCode: 'invalid_grant',
+            reason: 'OAuth token refresh failed',
+            statusCode: 400,
+          }),
+      )
+      createHandler()
+
+      const handler = transport._handlers.get(ProviderEvents.SET_ACTIVE)
+      const result = await handler!({providerId: 'openai'}, 'client-1')
+
+      expect(result.success).to.be.false
+      expect(result.error).to.equal('Provider "openai" is not connected')
+      expect(providerConfigStore.setActiveProvider.called).to.be.false
+      expect(transport.broadcast.called).to.be.false
+    })
+
+    it('should still succeed for a healthy (non-tombstoned) connected provider', async () => {
+      providerConfigStore.read.resolves(
+        ProviderConfig.createDefault().withProviderConnected('openrouter', {authMethod: 'api-key'}),
+      )
+      createHandler()
+
+      const handler = transport._handlers.get(ProviderEvents.SET_ACTIVE)
+      const result = await handler!({providerId: 'openrouter'}, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+      expect(providerConfigStore.setActiveProvider.calledWith('openrouter')).to.be.true
     })
   })
 

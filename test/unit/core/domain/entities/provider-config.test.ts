@@ -206,7 +206,12 @@ describe('ProviderConfig', () => {
       expect(lastDisconnect?.errorCode).to.equal('invalid_grant')
       expect(lastDisconnect?.statusCode).to.equal(400)
       expect(lastDisconnect?.at).to.be.a('string')
-      expect(Number.isNaN(Date.parse(lastDisconnect!.at))).to.be.false
+
+      if (!lastDisconnect) {
+        throw new Error('Expected lastDisconnect to be set')
+      }
+
+      expect(Number.isNaN(Date.parse(lastDisconnect.at))).to.be.false
 
       // Last-known authMethod is preserved so the view can build the reconnect hint
       expect(disconnected.providers.openai.authMethod).to.equal('oauth')

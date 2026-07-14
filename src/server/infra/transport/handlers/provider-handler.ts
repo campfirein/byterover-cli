@@ -410,6 +410,20 @@ export class ProviderHandler {
           return {error: BYTEROVER_AUTH_REQUIRED_MESSAGE, success: false}
         }
 
+        // byterover's gate is isByteRoverAuthSatisfied() above — it is authorized
+        // independently of config.providers (see resolveProviderConfig's early
+        // return for it), so it is exempt from the isProviderConnected check below.
+        if (data.providerId !== 'byterover') {
+          const config = await this.providerConfigStore.read()
+          // A tombstoned entry (disconnected with a recorded reason, e.g. a
+          // permanent OAuth refresh failure) still exists in config.providers —
+          // isProviderConnected() rejects it so SET_ACTIVE can't silently
+          // reactivate a provider whose credentials were deliberately dropped.
+          if (!config.isProviderConnected(data.providerId)) {
+            return {error: `Provider "${data.providerId}" is not connected`, success: false}
+          }
+        }
+
         await this.providerConfigStore.setActiveProvider(data.providerId)
         this.transport.broadcast(TransportDaemonEventNames.PROVIDER_UPDATED, {})
         return {success: true}

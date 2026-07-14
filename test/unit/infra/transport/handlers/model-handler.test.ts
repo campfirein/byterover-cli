@@ -138,6 +138,44 @@ describe('ModelHandler', () => {
       expect(transport.broadcast.called).to.be.false
     })
 
+    it('should reject a disconnected tombstone (permanent OAuth refresh failure) and not mutate the active provider', async () => {
+      // The entry still exists in config.providers (kept for lastDisconnect),
+      // so presence alone must not be enough to let SET_ACTIVE reactivate it.
+      providerConfigStore.read.resolves(
+        ProviderConfig.createDefault()
+          .withProviderConnected('openai', {authMethod: 'oauth'})
+          .withProviderDisconnected('openai', {
+            errorCode: 'invalid_grant',
+            reason: 'OAuth token refresh failed',
+            statusCode: 400,
+          }),
+      )
+      createHandler()
+
+      const handler = transport._handlers.get(ModelEvents.SET_ACTIVE)
+      const result = await handler!({modelId: 'some-model', providerId: 'openai'}, 'client-1')
+
+      expect(result.success).to.be.false
+      expect(result.error).to.include('not connected')
+      expect(providerConfigStore.setActiveProvider.called).to.be.false
+      expect(providerConfigStore.setActiveModel.called).to.be.false
+      expect(transport.broadcast.called).to.be.false
+    })
+
+    it('should still succeed for a healthy (non-tombstoned) api-key-connected provider', async () => {
+      providerConfigStore.read.resolves(
+        ProviderConfig.createDefault().withProviderConnected('openrouter', {authMethod: 'api-key'}),
+      )
+      createHandler()
+
+      const handler = transport._handlers.get(ModelEvents.SET_ACTIVE)
+      const result = await handler!({modelId: 'some-model', providerId: 'openrouter'}, 'client-1')
+
+      expect(result).to.deep.equal({success: true})
+      expect(providerConfigStore.setActiveProvider.calledWith('openrouter')).to.be.true
+      expect(providerConfigStore.setActiveModel.calledWith('openrouter', 'some-model')).to.be.true
+    })
+
     it('should return structured error when config store throws', async () => {
       providerConfigStore.read.rejects(new Error('Config file corrupted'))
 
