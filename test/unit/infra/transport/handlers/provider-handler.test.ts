@@ -464,7 +464,11 @@ describe('ProviderHandler', () => {
       createHandler()
 
       const handler = transport._handlers.get(ProviderEvents.SET_ACTIVE)
-      const result = await handler!({providerId: 'openai'}, 'client-1')
+      if (!handler) {
+        throw new Error('ProviderEvents.SET_ACTIVE handler not registered')
+      }
+
+      const result = await handler({providerId: 'openai'}, 'client-1')
 
       expect(result.success).to.be.false
       expect(result.error).to.equal('Provider "openai" is not connected')
@@ -479,7 +483,11 @@ describe('ProviderHandler', () => {
       createHandler()
 
       const handler = transport._handlers.get(ProviderEvents.SET_ACTIVE)
-      const result = await handler!({providerId: 'openrouter'}, 'client-1')
+      if (!handler) {
+        throw new Error('ProviderEvents.SET_ACTIVE handler not registered')
+      }
+
+      const result = await handler({providerId: 'openrouter'}, 'client-1')
 
       expect(result).to.deep.equal({success: true})
       expect(providerConfigStore.setActiveProvider.calledWith('openrouter')).to.be.true
@@ -1001,7 +1009,11 @@ describe('ProviderHandler', () => {
       createHandler()
 
       const handler = transport._handlers.get(ProviderEvents.LIST)
-      const result = await handler!(undefined, 'client-1')
+      if (!handler) {
+        throw new Error('ProviderEvents.LIST handler not registered')
+      }
+
+      const result = await handler(undefined, 'client-1')
 
       const openaiProvider = result.providers.find((p: {id: string}) => p.id === 'openai')
       // Not connected, but the drop reason is surfaced so the view can explain it
@@ -1020,7 +1032,11 @@ describe('ProviderHandler', () => {
       createHandler()
 
       const handler = transport._handlers.get(ProviderEvents.LIST)
-      const result = await handler!(undefined, 'client-1')
+      if (!handler) {
+        throw new Error('ProviderEvents.LIST handler not registered')
+      }
+
+      const result = await handler(undefined, 'client-1')
 
       const openaiProvider = result.providers.find((p: {id: string}) => p.id === 'openai')
       expect(openaiProvider?.isConnected).to.be.true

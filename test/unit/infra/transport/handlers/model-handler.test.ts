@@ -153,7 +153,11 @@ describe('ModelHandler', () => {
       createHandler()
 
       const handler = transport._handlers.get(ModelEvents.SET_ACTIVE)
-      const result = await handler!({modelId: 'some-model', providerId: 'openai'}, 'client-1')
+      if (!handler) {
+        throw new Error('ModelEvents.SET_ACTIVE handler not registered')
+      }
+
+      const result = await handler({modelId: 'some-model', providerId: 'openai'}, 'client-1')
 
       expect(result.success).to.be.false
       expect(result.error).to.include('not connected')
@@ -169,7 +173,11 @@ describe('ModelHandler', () => {
       createHandler()
 
       const handler = transport._handlers.get(ModelEvents.SET_ACTIVE)
-      const result = await handler!({modelId: 'some-model', providerId: 'openrouter'}, 'client-1')
+      if (!handler) {
+        throw new Error('ModelEvents.SET_ACTIVE handler not registered')
+      }
+
+      const result = await handler({modelId: 'some-model', providerId: 'openrouter'}, 'client-1')
 
       expect(result).to.deep.equal({success: true})
       expect(providerConfigStore.setActiveProvider.calledWith('openrouter')).to.be.true
