@@ -1,5 +1,7 @@
 # ByteRover CLI
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2Fcampfirein%2Fbyterover-cli.svg)](https://mcptoplist.com/server/glama%2Fcampfirein%2Fbyterover-cli)
+
 <div align="center">
 
 <img src="./assets/images/logo/byterover-logo.svg" alt="ByteRover Logo" width="280" />
