@@ -357,8 +357,8 @@ ByteRover CLI is built and maintained by the [ByteRover team](https://byterover.
 
 ## Star History
 
-<a href="https://star-history.com/#campfirein/byterover-cli&Date">
-  <img width="500" alt="Star History Chart" src="https://api.star-history.com/svg?repos=campfirein/byterover-cli&type=Date&v=2">
+<a href="https://star-history.dera.page/#campfirein/byterover-cli&Date">
+  <img width="500" alt="Star History Chart" src="https://star-history.dera.page/svg?repos=campfirein/byterover-cli&type=Date&v=2">
 </a>
 
 ## License
