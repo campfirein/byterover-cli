@@ -1,10 +1,10 @@
-import type {CurateLogEntry, CurateLogOperation, CurateLogSummary, CurateLogTiming, CurateUsageRecord} from '../../core/domain/entities/curate-log-entry.js'
+import type {CurateLogEntry, CurateLogOperation, CurateLogSummary, CurateLogTiming, CurateUsageRecord, ReviewIntegrity} from '../../core/domain/entities/curate-log-entry.js'
 import type {LlmToolResultEvent} from '../../core/domain/transport/schemas.js'
 import type {TaskInfo} from '../../core/domain/transport/task-info.js'
 import type {ITaskLifecycleHook} from '../../core/interfaces/process/i-task-lifecycle-hook.js'
 import type {ICurateLogStore} from '../../core/interfaces/storage/i-curate-log-store.js'
 
-import {extractCurateOperations} from '../../utils/curate-result-parser.js'
+import {extractCurateOperationCapture} from '../../utils/curate-result-parser.js'
 import {getProjectDataDir} from '../../utils/path-utils.js'
 import {transportLog} from '../../utils/process-logger.js'
 import {FileCurateLogStore} from '../storage/file-curate-log-store.js'
@@ -26,6 +26,8 @@ type TaskState = {
    * daemon stamps once at the task-create boundary.
    */
   reviewDisabled: boolean
+  reviewIntegrity: ReviewIntegrity
+  reviewIntegrityFailed: boolean
   /** Telemetry from the executor . Set by `setCurateUsage`. */
   usage?: CurateUsageRecord
 }
@@ -175,6 +177,7 @@ export class CurateLogHandler implements ITaskLifecycleHook {
       ...telemetryFields(state.usage),
       completedAt: Date.now(),
       operations: state.operations,
+      reviewIntegrity: state.reviewIntegrity,
       status: 'cancelled',
       summary: computeSummary(state.operations),
     }
@@ -198,6 +201,7 @@ export class CurateLogHandler implements ITaskLifecycleHook {
       completedAt: Date.now(),
       operations: state.operations,
       response: result || undefined,
+      reviewIntegrity: state.reviewIntegrity,
       status: 'completed',
       summary: computeSummary(state.operations),
     }
@@ -237,6 +241,7 @@ export class CurateLogHandler implements ITaskLifecycleHook {
         ...(task.folderPath ? {folders: [task.folderPath]} : {}),
       },
       operations: [],
+      reviewIntegrity: {reason: 'No valid curation operation channel captured', status: 'unresolved'},
       startedAt: task.createdAt,
       status: 'processing',
       summary: {added: 0, deleted: 0, failed: 0, merged: 0, updated: 0},
@@ -248,7 +253,14 @@ export class CurateLogHandler implements ITaskLifecycleHook {
     // without a getById round-trip — so completion is never lost even if this initial
     // save fails.
     const reviewDisabled = task.reviewDisabled ?? false
-    this.tasks.set(task.taskId, {entry, operations: [], projectPath: task.projectPath, reviewDisabled})
+    this.tasks.set(task.taskId, {
+      entry,
+      operations: [],
+      projectPath: task.projectPath,
+      reviewDisabled,
+      reviewIntegrity: entry.reviewIntegrity!,
+      reviewIntegrityFailed: false,
+    })
     this.activeTaskCount.set(task.projectPath, (this.activeTaskCount.get(task.projectPath) ?? 0) + 1)
 
     // Fire-and-forget: logId is already known, save is best-effort.
@@ -277,6 +289,7 @@ export class CurateLogHandler implements ITaskLifecycleHook {
       completedAt: Date.now(),
       error: errorMessage,
       operations: state.operations,
+      reviewIntegrity: state.reviewIntegrity,
       status: 'error',
       summary: computeSummary(state.operations),
       ...telemetryFields(state.usage),
@@ -293,8 +306,15 @@ export class CurateLogHandler implements ITaskLifecycleHook {
     const state = this.tasks.get(taskId)
     if (!state) return
 
-    const ops = extractCurateOperations(payload)
-    for (const op of ops) {
+    const capture = extractCurateOperationCapture(payload)
+    if (capture.reviewIntegrity?.status === 'unresolved') {
+      state.reviewIntegrity = capture.reviewIntegrity
+      state.reviewIntegrityFailed = true
+    } else if (capture.reviewIntegrity?.status === 'verified' && !state.reviewIntegrityFailed) {
+      state.reviewIntegrity = capture.reviewIntegrity
+    }
+
+    for (const op of capture.operations) {
       if (op.needsReview && op.status === 'success' && !state.reviewDisabled) {
         op.reviewStatus = 'pending'
       }
@@ -310,6 +330,17 @@ export class CurateLogHandler implements ITaskLifecycleHook {
       }
 
       state.operations.push(op)
+    }
+
+    if (
+      !state.reviewDisabled
+      && capture.operations.some((op) => op.needsReview === true && op.status === 'success' && op.reviewStatus !== 'pending')
+    ) {
+      state.reviewIntegrity = {
+        reason: 'Successful review-required operation was not marked pending',
+        status: 'unresolved',
+      }
+      state.reviewIntegrityFailed = true
     }
   }
 

@@ -127,6 +127,7 @@ export function createCodeExecTool(sandboxService: ISandboxService): Tool {
         }
 
         return {
+          ...(result.curateResults === undefined ? {} : {curateResults: result.curateResults}),
           executionTime: result.executionTime,
           finalResult: result.finalResult,
           locals: result.locals,
@@ -146,7 +147,7 @@ export function createCodeExecTool(sandboxService: ISandboxService): Tool {
       }
 
       return {
-        ...(result.curateResults ? {curateResults: result.curateResults} : {}),
+        ...(result.curateResults === undefined ? {} : {curateResults: result.curateResults}),
         executionTime: result.executionTime,
         finalResult: result.finalResult,
         locals: result.locals,

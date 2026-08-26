@@ -1,6 +1,7 @@
 import {expect} from 'chai'
 
 import {
+  LlmToolResultEventSchema,
   TaskClearCompletedRequestSchema,
   TaskCreatedSchema,
   TaskDeleteBulkRequestSchema,
@@ -14,6 +15,24 @@ import {
 } from '../../../../../src/server/core/domain/transport/schemas.js'
 
 describe('task transport schemas', () => {
+  it('accepts lifecycleResult on tool-result events', () => {
+    const lifecycleResult = {
+      curateResults: [{applied: [{path: '/a.md', status: 'success', type: 'ADD'}]}],
+    }
+    const result = LlmToolResultEventSchema.safeParse({
+      lifecycleResult,
+      sessionId: 'session-1',
+      success: true,
+      taskId: 'task-1',
+      toolName: 'code_exec',
+    })
+
+    expect(result.success).to.equal(true)
+    if (result.success) {
+      expect((result.data as typeof result.data & {lifecycleResult?: unknown}).lifecycleResult).to.deep.equal(lifecycleResult)
+    }
+  })
+
   describe('TaskListItemSchema', () => {
     const baseEntry = {
       content: 'test',

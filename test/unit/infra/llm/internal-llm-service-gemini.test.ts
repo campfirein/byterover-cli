@@ -6,7 +6,7 @@ import type {GenerateContentResponse} from '../../../../src/agent/core/interface
 import {ToolErrorType} from '../../../../src/agent/core/domain/tools/tool-error.js'
 import {SessionEventBus} from '../../../../src/agent/infra/events/event-emitter.js'
 import {ByteRoverLlmHttpService} from '../../../../src/agent/infra/http/internal-llm-http-service.js'
-import {AgentLLMService} from '../../../../src/agent/infra/llm/agent-llm-service.js'
+import {AgentLLMService, selectLifecycleResult} from '../../../../src/agent/infra/llm/agent-llm-service.js'
 import {ByteRoverContentGenerator} from '../../../../src/agent/infra/llm/generators/byterover-content-generator.js'
 import {SystemPromptManager} from '../../../../src/agent/infra/system-prompt/system-prompt-manager.js'
 import {ToolManager} from '../../../../src/agent/infra/tools/tool-manager.js'
@@ -47,6 +47,7 @@ describe('AgentLLMService - Gemini Integration', () => {
       getAllTools: sandbox.stub().returns({}),
       getAvailableMarkers: sandbox.stub().returns(new Set<string>()),
       getToolNames: sandbox.stub().returns([]),
+      hasTool: sandbox.stub().returns(true),
     })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     toolManager = new ToolManager(mockToolProvider as any)
@@ -353,6 +354,80 @@ describe('AgentLLMService - Gemini Integration', () => {
 
       const result = await service.completeTask('Search for TypeScript files')
       expect(result).to.equal('I found 5 TypeScript files')
+    })
+
+    it('preserves malformed code_exec curateResults presence for integrity validation', () => {
+      expect(selectLifecycleResult(
+        'code_exec',
+        {curateResults: 'malformed producer value', stdout: 'do not preserve'},
+        'curate',
+      )).to.deep.equal({curateResults: 'malformed producer value'})
+    })
+
+    it('preserves only code_exec curateResults when the display result is truncated', async () => {
+      const generator = createContentGenerator('gemini-2.5-flash')
+      const service = new AgentLLMService(
+        'test-session',
+        generator,
+        {model: 'gemini-2.5-flash'},
+        {sessionEventBus, systemPromptManager, toolManager},
+      )
+      const highImpactOperation = {
+        impact: 'high',
+        needsReview: true,
+        path: '/topics/review-integrity.md',
+        status: 'success',
+        type: 'UPSERT',
+      }
+      const curateResults = [{applied: [highImpactOperation]}]
+      const rawResult = {
+        curateResults,
+        diagnostics: Array.from({length: 500}, (_, index) => `${index}:${'x'.repeat(300)}`),
+        stdout: 'full memory body must not enter the lifecycle channel',
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sandbox.stub(service.getContextManager() as any, 'addUserMessage').resolves()
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sandbox.stub(service.getContextManager() as any, 'getFormattedMessagesWithCompression').resolves({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        formattedMessages: [{parts: [{text: 'curate'}], role: 'user'} as any],
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sandbox.stub(service.getContextManager() as any, 'addAssistantMessage').resolves()
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sandbox.stub(service.getContextManager() as any, 'addToolResult').resolves('tool-result')
+      sandbox.stub(toolManager, 'executeTool').resolves({content: rawResult, metadata: {}, success: true})
+
+      const generateStub = sandbox.stub(generator, 'generateContent')
+      generateStub.onFirstCall().resolves({
+        content: '',
+        finishReason: 'tool_calls',
+        toolCalls: [{
+          function: {arguments: '{}', name: 'code_exec'},
+          id: 'call-1',
+          type: 'function',
+        }],
+      })
+      generateStub.onSecondCall().resolves({content: 'done', finishReason: 'stop', toolCalls: []})
+
+      const toolResultEvents: unknown[] = []
+      sessionEventBus.on('llmservice:toolResult', (event) => toolResultEvents.push(event))
+      await service.completeTask('curate', {
+        executionContext: {commandType: 'curate'},
+        taskId: 'task-review-integrity',
+      })
+
+      expect(toolResultEvents).to.have.lengthOf(1)
+      const event = toolResultEvents[0] as {
+        lifecycleResult?: unknown
+        metadata?: {truncated?: boolean}
+        result?: unknown
+      }
+      expect(event.metadata?.truncated).to.equal(true)
+      expect(event.lifecycleResult).to.deep.equal({curateResults})
+      expect(event.lifecycleResult).to.not.have.property('stdout')
+      expect(event.lifecycleResult).to.not.have.property('diagnostics')
     })
 
     it('should handle multiple parallel tool calls with Gemini', async () => {

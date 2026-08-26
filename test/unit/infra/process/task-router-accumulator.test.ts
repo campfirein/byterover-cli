@@ -97,6 +97,7 @@ type StubHook = ITaskLifecycleHook & {
   onTaskCreate: SinonStub
   onTaskError: SinonStub
   onTaskUpdate: SinonStub
+  onToolResult: SinonStub
 }
 
 function makeStubLifecycleHook(sandbox: SinonSandbox): StubHook {
@@ -107,6 +108,7 @@ function makeStubLifecycleHook(sandbox: SinonSandbox): StubHook {
     onTaskCreate: sandbox.stub().resolves(),
     onTaskError: sandbox.stub().resolves(),
     onTaskUpdate: sandbox.stub().resolves(),
+    onToolResult: sandbox.stub(),
   }
 }
 
@@ -333,6 +335,45 @@ describe('TaskRouter — llmservice accumulator', () => {
     expect(task?.toolCalls).to.have.lengthOf(1)
     expect(task?.toolCalls?.[0]).to.include({callId: 'c1', status: 'completed'})
     expect(task?.toolCalls?.[0].result).to.deep.equal({ok: true})
+  })
+
+  it('keeps lifecycleResult internal to hooks and excludes it from history and client broadcasts', async () => {
+    const taskId = randomUUID()
+    const lifecycleResult = {
+      curateResults: [{applied: [{needsReview: true, path: '/high-impact.md', status: 'success', type: 'UPSERT'}]}],
+    }
+    await createTask(taskId)
+
+    dispatchLlm(LlmEventNames.TOOL_CALL, {
+      args: {},
+      callId: 'c1',
+      sessionId: 's1',
+      taskId,
+      toolName: 'code_exec',
+    })
+    dispatchLlm(LlmEventNames.TOOL_RESULT, {
+      callId: 'c1',
+      lifecycleResult,
+      result: 'truncated display output',
+      sessionId: 's1',
+      success: true,
+      taskId,
+      toolName: 'code_exec',
+    })
+
+    expect(hook.onToolResult.calledOnce).to.equal(true)
+    expect(hook.onToolResult.firstCall.args[1].lifecycleResult).to.deep.equal(lifecycleResult)
+
+    const task = getLiveTask(taskId)
+    expect(task?.toolCalls?.[0]).to.not.have.property('lifecycleResult')
+
+    const directPayload = (transportHelper.transport.sendTo as SinonStub).getCalls()
+      .find((call) => call.args[1] === LlmEventNames.TOOL_RESULT)?.args[2]
+    expect(directPayload).to.not.have.property('lifecycleResult')
+
+    const projectPayload = projectRouter.broadcastToProject.getCalls()
+      .find((call) => call.args[1] === LlmEventNames.TOOL_RESULT)?.args[2]
+    expect(projectPayload).to.not.have.property('lifecycleResult')
   })
 
   it('llmservice:error / :unsupportedInput do NOT mutate TaskInfo', async () => {
