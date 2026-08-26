@@ -74,6 +74,20 @@ export function buildDateTimePrefix(now: Date = new Date()): string {
 }
 
 /**
+ * Select the bounded curation result carried to lifecycle hooks before display truncation.
+ * code_exec intentionally exposes only its curate accumulator, never stdout, locals, or return values.
+ */
+export function selectLifecycleResult(toolName: string, result: unknown, commandType?: string): unknown {
+  if (commandType !== 'curate') return undefined
+  if (toolName === 'curate') return result
+  if (toolName !== 'code_exec' || !result || typeof result !== 'object' || Array.isArray(result)) return undefined
+
+  const resultRecord = result as Record<string, unknown>
+  if (!Object.hasOwn(resultRecord, 'curateResults')) return undefined
+  return {curateResults: resultRecord.curateResults}
+}
+
+/**
  * Result of parallel tool execution (before adding to context).
  * Contains all information needed to add the result to context in order.
  */
@@ -1171,6 +1185,7 @@ export class AgentLLMService implements ILLMService {
 
       // Process output (truncation and file saving if needed, with per-command overrides)
       const processedOutput = await this.outputProcessor.processStructuredOutput(toolName, result.content, executionContext?.commandType)
+      const lifecycleResult = selectLifecycleResult(toolName, result.content, executionContext?.commandType)
 
       // Emit truncation event if output was truncated
       if (processedOutput.metadata?.truncated) {
@@ -1191,6 +1206,7 @@ export class AgentLLMService implements ILLMService {
           ...result.metadata,
           ...processedOutput.metadata,
         },
+        ...(lifecycleResult === undefined ? {} : {lifecycleResult}),
         result: processedOutput.content,
         success: result.success,
         taskId: taskId || undefined,

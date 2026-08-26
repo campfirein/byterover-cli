@@ -52,6 +52,59 @@ describe('CipherAgent', () => {
     restore()
   })
 
+  describe('stream', () => {
+    it('keeps lifecycleResult on the internal event bus but not the public stream', async () => {
+      const agent = new CipherAgent(agentConfig)
+      const abortController = new AbortController()
+
+      try {
+        await agent.start()
+        const internalEvents: unknown[] = []
+        agent.agentEventBus!.on('llmservice:toolResult', (payload) => internalEvents.push(payload))
+        const iterator = await agent.stream('inspect stream privacy', {signal: abortController.signal})
+        const lifecycleResult = {
+          applied: [{
+            confidence: 'high',
+            impact: 'high',
+            needsReview: true,
+            path: '/private-operation.md',
+            reason: 'Internal lifecycle metadata',
+            status: 'success',
+            type: 'UPSERT',
+          }],
+        }
+
+        agent.agentEventBus!.emit('llmservice:toolResult', {
+          lifecycleResult,
+          result: 'public display result',
+          sessionId: agent.sessionId!,
+          success: true,
+          toolName: 'curate',
+        } as never)
+
+        const readPublicToolResult = async (attemptsRemaining: number): Promise<Record<string, unknown> | undefined> => {
+          if (attemptsRemaining === 0) return undefined
+          const next = await iterator.next()
+          if (next.done) return undefined
+          if (next.value.name === 'llmservice:toolResult') {
+            return next.value as unknown as Record<string, unknown>
+          }
+
+          return readPublicToolResult(attemptsRemaining - 1)
+        }
+
+        const publicToolResult = await readPublicToolResult(10)
+
+        expect(internalEvents[0]).to.deep.include({lifecycleResult})
+        expect(publicToolResult).to.include({result: 'public display result'})
+        expect(publicToolResult).to.not.have.property('lifecycleResult')
+      } finally {
+        abortController.abort()
+        await agent.stop()
+      }
+    })
+  })
+
   describe('constructor', () => {
     it('should create instance with valid agent config', () => {
       const agent = new CipherAgent(agentConfig)

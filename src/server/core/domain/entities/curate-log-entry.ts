@@ -27,6 +27,11 @@ export type CurateLogSummary = {
   updated: number
 }
 
+export type ReviewIntegrity = {
+  reason?: string
+  status: 'unresolved' | 'verified'
+}
+
 /**
  * Curate-side latency tiers . All optional for back-compat with
  * pre-telemetry entries. No `searchMs` — curate has no BM25 search phase.
@@ -71,6 +76,8 @@ type CurateLogBase = {
   operations: CurateLogOperation[]
   /** Tokens emitted for the completion across all curate sub-phases. */
   outputTokens?: number
+  /** Whether the structured curation operation channel was validated for this run. */
+  reviewIntegrity?: ReviewIntegrity
   startedAt: number
   summary: CurateLogSummary
   taskId: string

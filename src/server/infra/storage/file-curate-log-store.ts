@@ -34,6 +34,11 @@ const CurateLogSummaryFileSchema = z.object({
   updated: z.number(),
 })
 
+const ReviewIntegrityFileSchema = z.object({
+  reason: z.string().optional(),
+  status: z.enum(['unresolved', 'verified']),
+})
+
 const CurateLogTimingFileSchema = z.object({
   llmMs: z.number().optional(),
   totalMs: z.number().optional(),
@@ -52,6 +57,7 @@ const CurateLogEntryBaseSchema = z.object({
   inputTokens: z.number().optional(),
   operations: z.array(CurateLogOperationFileSchema),
   outputTokens: z.number().optional(),
+  reviewIntegrity: ReviewIntegrityFileSchema.optional(),
   startedAt: z.number(),
   summary: CurateLogSummaryFileSchema,
   taskId: z.string(),

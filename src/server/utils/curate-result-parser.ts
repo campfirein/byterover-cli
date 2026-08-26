@@ -1,6 +1,6 @@
 import {z} from 'zod'
 
-import type {CurateLogOperation} from '../core/domain/entities/curate-log-entry.js'
+import type {CurateLogOperation, ReviewIntegrity} from '../core/domain/entities/curate-log-entry.js'
 import type {LlmToolResultEvent} from '../core/domain/transport/schemas.js'
 
 // ── Zod schemas ──────────────────────────────────────────────────────────────
@@ -33,6 +33,36 @@ export const CurateResultSchema = z.object({
     })
     .optional(),
 })
+
+const CapturedCurateOperationSchema = CurateOperationSchema.extend({
+  confidence: z.enum(['high', 'low']),
+  impact: z.enum(['high', 'low']),
+  needsReview: z.boolean(),
+  reason: z.string(),
+}).superRefine((operation, context) => {
+  if (operation.status !== 'success') return
+  const policyRequiresReview = operation.type === 'DELETE' || operation.impact === 'high'
+  if (operation.needsReview !== policyRequiresReview) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'needsReview contradicts ByteRover 3.16.1 review policy',
+      path: ['needsReview'],
+    })
+  }
+})
+
+const CapturedCurateResultSchema = z.object({
+  applied: z.array(CapturedCurateOperationSchema),
+})
+
+const CapturedCodeExecResultSchema = z.object({
+  curateResults: z.array(CapturedCurateResultSchema).min(1),
+})
+
+export type CurateOperationCapture = {
+  operations: CurateLogOperation[]
+  reviewIntegrity?: ReviewIntegrity
+}
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -114,10 +144,15 @@ export function extractCurateResultFromCodeExec(resultData: Record<string, unkno
  * @param filter - Optional predicate to filter individual operations (e.g. success-only)
  */
 export function extractCurateOperations(
-  payload: Pick<LlmToolResultEvent, 'result' | 'toolName'>,
+  payload: Pick<LlmToolResultEvent, 'lifecycleResult' | 'result' | 'toolName'>,
   filter?: (op: CurateLogOperation) => boolean,
 ): CurateLogOperation[] {
-  const {result: rawPayload, toolName} = payload
+  const {lifecycleResult, result: rawPayload, toolName} = payload
+
+  if (lifecycleResult !== undefined) {
+    const capture = extractCurateOperationCapture(payload)
+    return filter ? capture.operations.filter((op) => filter(op)) : capture.operations
+  }
 
   // ToolOutputProcessor always stringifies tool output — parse if string
   let result: unknown = rawPayload
@@ -143,4 +178,41 @@ export function extractCurateOperations(
 
   const ops: CurateLogOperation[] = parsed.data.applied
   return filter ? ops.filter((op) => filter(op)) : ops
+}
+
+/** Validate the internal, pre-truncation curation operation channel. */
+export function extractCurateOperationCapture(
+  payload: Pick<LlmToolResultEvent, 'lifecycleResult' | 'toolName'>,
+): CurateOperationCapture {
+  const {lifecycleResult, toolName} = payload
+
+  if (toolName === 'curate') {
+    const parsed = CapturedCurateResultSchema.safeParse(lifecycleResult)
+    if (!parsed.success) {
+      return {
+        operations: [],
+        reviewIntegrity: {reason: 'Invalid direct curate lifecycle result', status: 'unresolved'},
+      }
+    }
+
+    return {operations: parsed.data.applied, reviewIntegrity: {status: 'verified'}}
+  }
+
+  if (toolName === 'code_exec') {
+    if (lifecycleResult === undefined) return {operations: []}
+    const parsed = CapturedCodeExecResultSchema.safeParse(lifecycleResult)
+    if (!parsed.success) {
+      return {
+        operations: [],
+        reviewIntegrity: {reason: 'Invalid code_exec curate lifecycle result', status: 'unresolved'},
+      }
+    }
+
+    return {
+      operations: parsed.data.curateResults.flatMap((curateResult) => curateResult.applied),
+      reviewIntegrity: {status: 'verified'},
+    }
+  }
+
+  return {operations: []}
 }

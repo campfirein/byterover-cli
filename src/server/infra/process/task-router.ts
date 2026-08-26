@@ -1803,6 +1803,7 @@ export class TaskRouter {
    */
   private routeLlmEvent(eventName: string, data: {[key: string]: unknown; taskId: string}): void {
     const {taskId, ...rest} = data
+    Reflect.deleteProperty(rest, 'lifecycleResult')
     const activeTask = this.tasks.get(taskId)
     const task = activeTask ?? this.completedTasks.get(taskId)?.task
 
@@ -1815,7 +1816,7 @@ export class TaskRouter {
     // Only mutates for ACTIVE tasks — grace-period entries already had their
     // terminal save persisted by the lifecycle hook.
     if (activeTask) {
-      this.accumulateLlmEvent(taskId, eventName, data)
+      this.accumulateLlmEvent(taskId, eventName, {taskId, ...rest})
     }
 
     // Notify onToolResult hooks only for active tasks

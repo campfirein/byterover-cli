@@ -893,8 +893,14 @@ export class CipherAgent extends BaseAgent implements ICipherAgent {
         const data = payload as {sessionId?: string}
         if (data.sessionId !== sessionId) return
 
+        const streamData = eventName === 'llmservice:toolResult'
+          ? (({lifecycleResult: _lifecycleResult, ...publicData}) => publicData)(
+            data as {lifecycleResult?: unknown; sessionId?: string},
+          )
+          : data
+
         // Add event to queue with name discriminant
-        eventQueue.push({name: eventName, ...data} as StreamingEvent)
+        eventQueue.push({name: eventName, ...streamData} as StreamingEvent)
 
         // Close iterator on run:complete
         if (eventName === 'run:complete') {

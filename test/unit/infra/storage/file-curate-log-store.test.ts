@@ -108,6 +108,7 @@ describe('FileCurateLogStore', () => {
         input: {context: 'test context', files: ['src/auth.ts']},
         operations: [{path: '/a.md', status: 'success', type: 'ADD'}],
         response: 'Done!',
+        reviewIntegrity: {status: 'verified'},
         startedAt: Date.now() - 1000,
         status: 'completed',
         summary: {added: 1, deleted: 0, failed: 0, merged: 0, updated: 0},
@@ -119,6 +120,7 @@ describe('FileCurateLogStore', () => {
 
       expect(retrieved).to.deep.equal(entry)
       expect(retrieved?.status).to.equal('completed')
+      expect(retrieved?.reviewIntegrity).to.deep.equal({status: 'verified'})
     })
 
     it('should save an error entry', async () => {

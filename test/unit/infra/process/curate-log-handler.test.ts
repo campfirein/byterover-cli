@@ -23,6 +23,26 @@ function makeTask(overrides: Partial<TaskInfo> = {}): TaskInfo {
   }
 }
 
+type NativeCapturedOperation = CurateLogOperation & {
+  confidence: 'high' | 'low'
+  impact: 'high' | 'low'
+  needsReview: boolean
+  reason: string
+}
+
+function makeCapturedOperation(overrides: Partial<NativeCapturedOperation> = {}): NativeCapturedOperation {
+  return {
+    confidence: 'high',
+    impact: 'low',
+    needsReview: false,
+    path: '/captured.md',
+    reason: 'Native operation metadata',
+    status: 'success',
+    type: 'ADD',
+    ...overrides,
+  }
+}
+
 function makeStore(sandbox: SinonSandbox): ICurateLogStore & {
   batchUpdateOperationReviewStatus: SinonStub
   getById: SinonStub
@@ -97,7 +117,7 @@ describe('computeSummary', () => {
     expect(summary.added).to.equal(0)
     expect(summary.deleted).to.equal(0)
   })
-})
+  })
 
 // ============================================================================
 // CurateLogHandler
@@ -213,9 +233,9 @@ describe('CurateLogHandler', () => {
 
     it('should collect curate operations from tool result', () => {
       handler.onToolResult('task-abc', {
-        result: {
+        lifecycleResult: {
           applied: [
-            {path: '/topics/auth.md', status: 'success', type: 'ADD'},
+            makeCapturedOperation({path: '/topics/auth.md'}),
           ],
         },
         sessionId: 'sess-1',
@@ -230,7 +250,7 @@ describe('CurateLogHandler', () => {
 
     it('should set reviewStatus=pending for operations with needsReview=true', async () => {
       handler.onToolResult('task-abc', {
-        result: {
+        lifecycleResult: {
           applied: [
             {confidence: 'low', impact: 'high', needsReview: true, path: '/a.md', reason: 'uncertain', status: 'success', type: 'UPDATE'},
             {confidence: 'high', impact: 'low', needsReview: false, path: '/b.md', reason: 'clear', status: 'success', type: 'ADD'},
@@ -253,7 +273,7 @@ describe('CurateLogHandler', () => {
 
     it('should NOT set reviewStatus=pending for failed operations even with needsReview=true', async () => {
       handler.onToolResult('task-abc', {
-        result: {
+        lifecycleResult: {
           applied: [
             {confidence: 'low', impact: 'high', needsReview: true, path: '/a.md', reason: 'uncertain', status: 'failed', type: 'UPDATE'},
             {confidence: 'high', impact: 'high', needsReview: true, path: '/b.md', reason: 'irreversible', status: 'success', type: 'DELETE'},
@@ -278,9 +298,9 @@ describe('CurateLogHandler', () => {
 
     it('should not set reviewStatus for operations without needsReview', async () => {
       handler.onToolResult('task-abc', {
-        result: {
+        lifecycleResult: {
           applied: [
-            {confidence: 'high', impact: 'low', needsReview: false, path: '/a.md', status: 'success', type: 'ADD'},
+            makeCapturedOperation({path: '/a.md'}),
           ],
         },
         sessionId: 'sess-1',
@@ -298,12 +318,12 @@ describe('CurateLogHandler', () => {
     it('should deduplicate operations by filePath, keeping the latest', async () => {
       // First tool result: initial UPSERT for a file
       handler.onToolResult('task-abc', {
-        result: {
+        lifecycleResult: {
           applied: [{
             confidence: 'low',
             filePath: '/app/.brv/context-tree/design/caching/caching_strategy.md',
             impact: 'low',
-            needsReview: true,
+            needsReview: false,
             path: 'design/caching',
             reason: 'first pass',
             status: 'success',
@@ -318,7 +338,7 @@ describe('CurateLogHandler', () => {
 
       // Second tool result: same file updated again
       handler.onToolResult('task-abc', {
-        result: {
+        lifecycleResult: {
           applied: [{
             confidence: 'low',
             filePath: '/app/.brv/context-tree/design/caching/caching_strategy.md',
@@ -347,10 +367,10 @@ describe('CurateLogHandler', () => {
 
     it('should keep separate operations for different filePaths', async () => {
       handler.onToolResult('task-abc', {
-        result: {
+        lifecycleResult: {
           applied: [
-            {filePath: '/app/.brv/context-tree/design/caching/redis.md', path: 'design/caching', status: 'success', type: 'ADD'},
-            {filePath: '/app/.brv/context-tree/design/caching/memcache.md', path: 'design/caching', status: 'success', type: 'ADD'},
+            makeCapturedOperation({filePath: '/app/.brv/context-tree/design/caching/redis.md', path: 'design/caching'}),
+            makeCapturedOperation({filePath: '/app/.brv/context-tree/design/caching/memcache.md', path: 'design/caching'}),
           ],
         },
         sessionId: 'sess-1',
@@ -367,9 +387,9 @@ describe('CurateLogHandler', () => {
 
     it('should not deduplicate operations without filePath', async () => {
       handler.onToolResult('task-abc', {
-        result: {
+        lifecycleResult: {
           applied: [
-            {path: 'design/caching', status: 'failed', type: 'ADD'},
+            makeCapturedOperation({path: 'design/caching', status: 'failed'}),
           ],
         },
         sessionId: 'sess-1',
@@ -379,9 +399,9 @@ describe('CurateLogHandler', () => {
       } as never)
 
       handler.onToolResult('task-abc', {
-        result: {
+        lifecycleResult: {
           applied: [
-            {path: 'design/caching', status: 'failed', type: 'ADD'},
+            makeCapturedOperation({path: 'design/caching', status: 'failed'}),
           ],
         },
         sessionId: 'sess-1',
@@ -400,7 +420,7 @@ describe('CurateLogHandler', () => {
     it('should silently skip unknown taskId', () => {
       expect(() => {
         handler.onToolResult('unknown-task', {
-          result: {applied: [{path: '/a.md', status: 'success', type: 'ADD'}]},
+          lifecycleResult: {applied: [{path: '/a.md', status: 'success', type: 'ADD'}]},
           sessionId: 'sess-1',
           success: true,
           taskId: 'unknown-task',
@@ -420,7 +440,7 @@ describe('CurateLogHandler', () => {
 
       // Inject operations via onToolResult
       handler.onToolResult('task-abc', {
-        result: {applied: [{path: '/a.md', status: 'success', type: 'ADD'}]},
+        lifecycleResult: {applied: [makeCapturedOperation({path: '/a.md'})]},
         sessionId: 'sess-1',
         success: true,
         taskId: 'task-abc',
@@ -441,7 +461,7 @@ describe('CurateLogHandler', () => {
 
     it('should compute correct summary from collected operations', async () => {
       handler.onToolResult('task-abc', {
-        result: {applied: [{path: '/b.md', status: 'failed', type: 'UPDATE'}]},
+        lifecycleResult: {applied: [makeCapturedOperation({path: '/b.md', status: 'failed', type: 'UPDATE'})]},
         sessionId: 'sess-1',
         success: true,
         taskId: 'task-abc',
@@ -459,6 +479,50 @@ describe('CurateLogHandler', () => {
       await handler.onTaskCompleted('unknown-task', 'result', makeTask())
       // Should not throw; save should not be called again
       expect(store.save.callCount).to.equal(1) // only the initial processing save
+    })
+  })
+
+  describe('review integrity capture', () => {
+    it('records verified structured operations and pending status', async () => {
+      await handler.onTaskCreate(makeTask())
+      handler.onToolResult('task-abc', {
+        lifecycleResult: {
+          applied: [makeCapturedOperation({impact: 'high', needsReview: true, path: '/high.md', type: 'UPSERT'})],
+        },
+        result: 'truncated display output',
+        sessionId: 'sess-1',
+        success: true,
+        taskId: 'task-abc',
+        toolName: 'curate',
+      } as never)
+
+      await handler.onTaskCompleted('task-abc', 'done', makeTask())
+      const completed = store.save.secondCall.args[0] as CurateLogEntry & {reviewIntegrity?: {status: string}}
+      expect(completed.operations[0].reviewStatus).to.equal('pending')
+      expect(completed.reviewIntegrity).to.deep.equal({status: 'verified'})
+    })
+
+    it('keeps integrity unresolved after malformed lifecycle data follows valid capture', async () => {
+      await handler.onTaskCreate(makeTask())
+      handler.onToolResult('task-abc', {
+        lifecycleResult: {applied: [makeCapturedOperation({path: '/valid.md'})]},
+        sessionId: 'sess-1',
+        success: true,
+        taskId: 'task-abc',
+        toolName: 'curate',
+      } as never)
+      handler.onToolResult('task-abc', {
+        lifecycleResult: {applied: [{path: '/invalid.md', status: 'success', type: 'UPSERT'}]},
+        sessionId: 'sess-1',
+        success: true,
+        taskId: 'task-abc',
+        toolName: 'curate',
+      } as never)
+
+      await handler.onTaskCompleted('task-abc', 'done', makeTask())
+      const completed = store.save.secondCall.args[0] as CurateLogEntry & {reviewIntegrity?: {status: string}}
+      expect(completed.operations).to.have.lengthOf(1)
+      expect(completed.reviewIntegrity?.status).to.equal('unresolved')
     })
   })
 
@@ -577,12 +641,13 @@ describe('CurateLogHandler', () => {
 
       // Inject operation with reviewStatus=pending
       handlerWithCallback.onToolResult('task-abc', {
-        result: {
+        lifecycleResult: {
           applied: [{
             confidence: 'low',
             impact: 'high',
             needsReview: true,
             path: '/a.md',
+            reason: 'Irreversible deletion',
             status: 'success',
             type: 'DELETE',
           }],
@@ -613,7 +678,7 @@ describe('CurateLogHandler', () => {
 
       // Inject operation without needsReview
       handlerWithCallback.onToolResult('task-abc', {
-        result: {applied: [{path: '/a.md', status: 'success', type: 'ADD'}]},
+        lifecycleResult: {applied: [makeCapturedOperation({path: '/a.md'})]},
         sessionId: 'sess-1',
         success: true,
         taskId: 'task-abc',
@@ -634,8 +699,8 @@ describe('CurateLogHandler', () => {
       await handlerWithBadCallback.onTaskCreate(makeTask())
 
       handlerWithBadCallback.onToolResult('task-abc', {
-        result: {
-          applied: [{needsReview: true, path: '/a.md', status: 'success', type: 'DELETE'}],
+        lifecycleResult: {
+          applied: [makeCapturedOperation({impact: 'high', needsReview: true, path: '/a.md', type: 'DELETE'})],
         },
         sessionId: 'sess-1',
         success: true,
@@ -658,7 +723,7 @@ describe('CurateLogHandler', () => {
 
       await handlerWithToggle.onTaskCreate(makeTask({reviewDisabled: true}))
       handlerWithToggle.onToolResult('task-abc', {
-        result: {
+        lifecycleResult: {
           applied: [
             {confidence: 'low', impact: 'high', needsReview: true, path: '/a.md', reason: 'uncertain', status: 'success', type: 'UPDATE'},
             {confidence: 'high', impact: 'high', needsReview: true, path: '/b.md', reason: 'irreversible', status: 'success', type: 'DELETE'},
@@ -672,7 +737,9 @@ describe('CurateLogHandler', () => {
 
       await handlerWithToggle.onTaskCompleted('task-abc', 'done', makeTask({reviewDisabled: true}))
 
-      const completed: CurateLogEntry = store.save.secondCall.args[0]
+      const completed = store.save.secondCall.args[0] as CurateLogEntry & {
+        reviewIntegrity: {reason?: string; status: 'unresolved' | 'verified'}
+      }
       expect(completed.operations[0].reviewStatus).to.be.undefined
       expect(completed.operations[1].reviewStatus).to.be.undefined
     })
@@ -682,9 +749,9 @@ describe('CurateLogHandler', () => {
 
       await handlerWithToggle.onTaskCreate(makeTask({reviewDisabled: false}))
       handlerWithToggle.onToolResult('task-abc', {
-        result: {
+        lifecycleResult: {
           applied: [
-            {confidence: 'low', impact: 'high', needsReview: true, path: '/a.md', status: 'success', type: 'UPDATE'},
+            makeCapturedOperation({confidence: 'low', impact: 'high', needsReview: true, path: '/a.md', type: 'UPDATE'}),
           ],
         },
         sessionId: 'sess-1',
@@ -703,7 +770,7 @@ describe('CurateLogHandler', () => {
 
       await handlerWithToggle.onTaskCreate(makeTask())
       handlerWithToggle.onToolResult('task-abc', {
-        result: {applied: [{needsReview: true, path: '/a.md', status: 'success', type: 'DELETE'}]},
+        lifecycleResult: {applied: [makeCapturedOperation({impact: 'high', needsReview: true, path: '/a.md', type: 'DELETE'})]},
         sessionId: 'sess-1',
         success: true,
         taskId: 'task-abc',
@@ -724,8 +791,8 @@ describe('CurateLogHandler', () => {
 
       await handlerWithToggle.onTaskCreate(makeTask({reviewDisabled: true}))
       handlerWithToggle.onToolResult('task-abc', {
-        result: {
-          applied: [{needsReview: true, path: '/a.md', status: 'success', type: 'DELETE'}],
+        lifecycleResult: {
+          applied: [makeCapturedOperation({impact: 'high', needsReview: true, path: '/a.md', type: 'DELETE'})],
         },
         sessionId: 'sess-1',
         success: true,
@@ -743,7 +810,7 @@ describe('CurateLogHandler', () => {
 
       await handlerWithToggle.onTaskCreate(makeTask({reviewDisabled: true}))
       handlerWithToggle.onToolResult('task-abc', {
-        result: {applied: [{needsReview: true, path: '/a.md', status: 'success', type: 'DELETE'}]},
+        lifecycleResult: {applied: [makeCapturedOperation({impact: 'high', needsReview: true, path: '/a.md', type: 'DELETE'})]},
         sessionId: 'sess-1',
         success: true,
         taskId: 'task-abc',
@@ -764,7 +831,7 @@ describe('CurateLogHandler', () => {
       task.reviewDisabled = false
 
       handlerWithToggle.onToolResult('task-abc', {
-        result: {applied: [{needsReview: true, path: '/a.md', status: 'success', type: 'DELETE'}]},
+        lifecycleResult: {applied: [makeCapturedOperation({impact: 'high', needsReview: true, path: '/a.md', type: 'DELETE'})]},
         sessionId: 'sess-1',
         success: true,
         taskId: 'task-abc',
@@ -777,5 +844,4 @@ describe('CurateLogHandler', () => {
     })
   })
 })
-
-}) // end curate-log-handler
+})

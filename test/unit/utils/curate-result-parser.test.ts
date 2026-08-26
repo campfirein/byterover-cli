@@ -3,6 +3,7 @@ import {expect} from 'chai'
 import {
   CurateOperationSchema,
   CurateResultSchema,
+  extractCurateOperationCapture,
   extractCurateOperations,
   extractCurateResultFromCodeExec,
 } from '../../../src/server/utils/curate-result-parser.js'
@@ -191,6 +192,15 @@ describe('curate-result-parser', () => {
 
   describe('extractCurateOperations', () => {
     const validOp = {path: '/topics/auth.md', status: 'success' as const, type: 'ADD' as const}
+    const capturedOperation = {
+      confidence: 'high' as const,
+      impact: 'low' as const,
+      needsReview: false,
+      path: '/topics/auth.md',
+      reason: 'Capture a stable authentication rule',
+      status: 'success' as const,
+      type: 'ADD' as const,
+    }
 
     it('should extract operations from curate tool result', () => {
       const ops = extractCurateOperations({
@@ -256,6 +266,77 @@ describe('curate-result-parser', () => {
         toolName: 'curate',
       })
       expect(ops).to.have.lengthOf(0)
+    })
+
+    it('should extract direct curate operations from lifecycleResult when display output is truncated', () => {
+      const ops = extractCurateOperations({
+        lifecycleResult: {applied: [capturedOperation]},
+        result: '{"applied":[{"path":"/topics/auth.md"... output truncated',
+        toolName: 'curate',
+      } as never)
+
+      expect(ops).to.deep.equal([capturedOperation])
+    })
+
+    it('should extract only code_exec curateResults from lifecycleResult', () => {
+      const ops = extractCurateOperations({
+        lifecycleResult: {
+          curateResults: [{applied: [capturedOperation]}],
+        },
+        result: 'truncated display output',
+        toolName: 'code_exec',
+      } as never)
+
+      expect(ops).to.deep.equal([capturedOperation])
+    })
+  })
+
+  describe('extractCurateOperationCapture integrity policy', () => {
+    const capturedOperation = {
+      confidence: 'high' as const,
+      impact: 'low' as const,
+      needsReview: false,
+      path: '/topics/auth.md',
+      reason: 'Capture a stable authentication rule',
+      status: 'success' as const,
+      type: 'ADD' as const,
+    }
+
+    it('verifies a complete low-impact non-delete operation', () => {
+      const capture = extractCurateOperationCapture({lifecycleResult: {applied: [capturedOperation]}, toolName: 'curate'})
+      expect(capture.reviewIntegrity).to.deep.equal({status: 'verified'})
+      expect(capture.operations).to.deep.equal([capturedOperation])
+    })
+
+    it('verifies complete high-impact and delete operations that require review', () => {
+      for (const operation of [
+        {...capturedOperation, impact: 'high' as const, needsReview: true, type: 'UPSERT' as const},
+        {...capturedOperation, needsReview: true, type: 'DELETE' as const},
+      ]) {
+        const capture = extractCurateOperationCapture({lifecycleResult: {applied: [operation]}, toolName: 'curate'})
+        expect(capture.reviewIntegrity).to.deep.equal({status: 'verified'})
+        expect(capture.operations).to.deep.equal([operation])
+      }
+    })
+
+    it('marks missing native review-decision fields unresolved', () => {
+      const missingImpact: Partial<typeof capturedOperation> = {...capturedOperation}
+      delete missingImpact.impact
+      const capture = extractCurateOperationCapture({lifecycleResult: {applied: [missingImpact]}, toolName: 'curate'})
+      expect(capture.operations).to.deep.equal([])
+      expect(capture.reviewIntegrity?.status).to.equal('unresolved')
+    })
+
+    it('marks successful high-impact and delete review contradictions unresolved', () => {
+      for (const operation of [
+        {...capturedOperation, impact: 'high' as const, needsReview: false, type: 'UPSERT' as const},
+        {...capturedOperation, needsReview: false, type: 'DELETE' as const},
+        {...capturedOperation, needsReview: true},
+      ]) {
+        const capture = extractCurateOperationCapture({lifecycleResult: {applied: [operation]}, toolName: 'curate'})
+        expect(capture.operations).to.deep.equal([])
+        expect(capture.reviewIntegrity?.status).to.equal('unresolved')
+      }
     })
   })
 })

@@ -442,6 +442,7 @@ export interface AgentEventMap {
     callId?: string
     error?: string
     errorType?: ToolErrorType
+    lifecycleResult?: unknown
     metadata?: Record<string, unknown>
     result?: unknown
     sessionId: string
@@ -787,6 +788,7 @@ export interface SessionEventMap {
     callId?: string
     error?: string
     errorType?: ToolErrorType
+    lifecycleResult?: unknown
     metadata?: Record<string, unknown>
     result?: unknown
     success: boolean
